@@ -93,6 +93,12 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private usingInMemory = false;
   private readonly userCache = new Map<string, { expiresAt: number; user: User | null }>();
 
+  constructor() {
+    super({
+      datasources: config.databaseUrl ? { db: { url: config.databaseUrl } } : undefined,
+    });
+  }
+
   async findActiveUserCached(userId: string): Promise<User | null> {
     const now = Date.now();
     const cached = this.userCache.get(userId);
@@ -115,20 +121,31 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   }
 
   async onModuleInit(): Promise<void> {
-    try {
-      await this.$connect();
-      this.logger.log('✅ Connected to PostgreSQL / Supabase database successfully.');
-      await this.ensureCompanyIds();
-    } catch (error) {
-      if (config.isProd) {
-        throw error;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await this.$connect();
+        this.logger.log('✅ Connected to PostgreSQL / Supabase database successfully.');
+        await this.ensureCompanyIds();
+        return;
+      } catch (error) {
+        lastError = error;
+        this.logger.warn(
+          `Supabase connection attempt ${attempt}/3 failed: ${(error as Error).message}`,
+        );
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, 1500));
+        }
       }
-      this.usingInMemory = true;
-      this.logger.warn(
-        'PostgreSQL / Supabase is not reachable at DATABASE_URL; running with clean in-memory development store with single admin account (zero dummy projects/tasks).',
-      );
-      await this.enableInMemoryStore();
     }
+    if (config.isProd) {
+      throw lastError;
+    }
+    this.usingInMemory = true;
+    this.logger.warn(
+      'PostgreSQL / Supabase is not reachable at DATABASE_URL; running with clean in-memory development store with single admin account (zero dummy projects/tasks).',
+    );
+    await this.enableInMemoryStore();
   }
 
   /** Ensures every user in the database has a unique Company ID (e.g., YNX-0001). */
