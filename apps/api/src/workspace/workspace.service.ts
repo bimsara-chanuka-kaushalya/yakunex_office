@@ -1,10 +1,25 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import {
+  BugSeverity,
+  BugStatus,
+  ChannelType,
+  DocumentType,
+  LeaveType,
+  MeetingStatus,
+  Priority,
+  Prisma,
+  ProjectCategory,
+  ProjectStatus,
+  Role,
+  SprintStatus,
+  StageStatus,
+  TaskStatus,
+} from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../common/types';
 import { PrismaService } from '../prisma/prisma.service';
-import { ALL_PERMISSION_KEYS, DEFAULT_ROLE_PERMISSIONS, isPermissionKey, PERMISSIONS } from '../rbac/permissions';
+import { ALL_PERMISSION_KEYS, DEFAULT_ROLE_PERMISSIONS, isPermissionKey } from '../rbac/permissions';
 
 export interface ClientItem {
   id: string;
@@ -251,7 +266,10 @@ export interface OrganizationSettings {
 }
 
 @Injectable()
-export class WorkspaceService {
+export class WorkspaceService implements OnModuleInit {
+  private readonly logger = new Logger(WorkspaceService.name);
+  private defaultOrgId: string | null = null;
+
   private clients: ClientItem[] = [];
 
   private projects: ProjectItem[] = [];
@@ -305,6 +323,161 @@ export class WorkspaceService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.hydrateFromSupabase();
+  }
+
+  private async resolveOrgId(organizationId?: string): Promise<string | null> {
+    if (organizationId) {
+      this.defaultOrgId = organizationId;
+      return organizationId;
+    }
+    if (this.defaultOrgId) return this.defaultOrgId;
+    try {
+      const org = await this.prisma.organization.findFirst({ select: { id: true } });
+      this.defaultOrgId = org?.id ?? null;
+      return this.defaultOrgId;
+    } catch {
+      return null;
+    }
+  }
+
+  private async hydrateFromSupabase(): Promise<void> {
+    try {
+      const org = await this.prisma.organization.findFirst({
+        select: { id: true, name: true, slug: true, timezone: true },
+      });
+      if (!org) return;
+      this.defaultOrgId = org.id;
+      this.settings.name = org.name;
+      this.settings.slug = org.slug;
+      this.settings.timezone = org.timezone;
+
+      // 1. Load saved workspace state snapshot from SystemSetting if present
+      const stateRow = await this.prisma.systemSetting?.findUnique?.({
+        where: { organizationId_key: { organizationId: org.id, key: 'workspace_state' } },
+      });
+      if (stateRow?.value && typeof stateRow.value === 'object') {
+        const snap = stateRow.value as Record<string, unknown>;
+        if (Array.isArray(snap.clients)) this.clients = snap.clients as ClientItem[];
+        if (Array.isArray(snap.projects)) this.projects = snap.projects as ProjectItem[];
+        if (Array.isArray(snap.sprints)) this.sprints = snap.sprints as SprintItem[];
+        if (Array.isArray(snap.tasks)) this.tasks = snap.tasks as TaskItem[];
+        if (Array.isArray(snap.bugs)) this.bugs = snap.bugs as BugItem[];
+        if (Array.isArray(snap.documents)) this.documents = snap.documents as DocumentItem[];
+        if (Array.isArray(snap.timeEntries)) this.timeEntries = snap.timeEntries as TimeEntryItem[];
+        if (Array.isArray(snap.attendance)) this.attendance = snap.attendance as AttendanceItem[];
+        if (Array.isArray(snap.leaveRequests)) this.leaveRequests = snap.leaveRequests as LeaveRequestItem[];
+        if (Array.isArray(snap.interns)) this.interns = snap.interns as InternItem[];
+        if (Array.isArray(snap.channels) && snap.channels.length > 0) {
+          this.channels = snap.channels as ChatChannelItem[];
+        }
+        if (Array.isArray(snap.messages)) this.messages = snap.messages as ChatMessageItem[];
+        if (Array.isArray(snap.meetings)) this.meetings = snap.meetings as MeetingItem[];
+        if (snap.settings && typeof snap.settings === 'object') {
+          this.settings = { ...this.settings, ...(snap.settings as Partial<OrganizationSettings>) };
+        }
+      }
+
+      // 2. Load role permission matrix from Supabase RolePermission table
+      const rolePerms = await this.prisma.rolePermission?.findMany?.({
+        where: { organizationId: org.id },
+        select: { role: true, permissionKey: true },
+      });
+      if (Array.isArray(rolePerms) && rolePerms.length > 0) {
+        const grouped: Record<Role, string[]> = {
+          SUPER_ADMIN: [...ALL_PERMISSION_KEYS],
+          ADMIN: [],
+          PROJECT_MANAGER: [],
+          STAFF: [],
+          INTERN: [],
+        };
+        for (const rp of rolePerms) {
+          if (rp.role !== Role.SUPER_ADMIN) {
+            grouped[rp.role].push(rp.permissionKey);
+          }
+        }
+        this.roleMatrix = grouped;
+      }
+
+      // 3. Ensure #general channel exists in Supabase ChatChannel table
+      await this.prisma.chatChannel?.upsert?.({
+        where: { id: 'ch_general' },
+        update: {},
+        create: {
+          id: 'ch_general',
+          organizationId: org.id,
+          name: 'general',
+          type: ChannelType.GROUP,
+        },
+      });
+
+      this.logger.log('✅ Workspace state hydrated from Supabase PostgreSQL.');
+    } catch (err) {
+      this.logger.warn(`Workspace hydration skipped (in-memory fallback): ${(err as Error).message}`);
+    }
+  }
+
+  private persistState(organizationId?: string): void {
+    void (async () => {
+      try {
+        const orgId = await this.resolveOrgId(organizationId);
+        if (!orgId || !this.prisma.systemSetting?.upsert) return;
+        const payload = {
+          clients: this.clients,
+          projects: this.projects,
+          sprints: this.sprints,
+          tasks: this.tasks,
+          bugs: this.bugs,
+          documents: this.documents,
+          timeEntries: this.timeEntries,
+          attendance: this.attendance,
+          leaveRequests: this.leaveRequests,
+          interns: this.interns,
+          channels: this.channels,
+          messages: this.messages,
+          meetings: this.meetings,
+          settings: this.settings,
+        } as unknown as Prisma.InputJsonValue;
+
+        await this.prisma.systemSetting.upsert({
+          where: { organizationId_key: { organizationId: orgId, key: 'workspace_state' } },
+          update: { value: payload },
+          create: {
+            organizationId: orgId,
+            key: 'workspace_state',
+            value: payload,
+          },
+        });
+      } catch (err) {
+        this.logger.warn(`Failed to persist workspace_state to Supabase: ${(err as Error).message}`);
+      }
+    })();
+  }
+
+  /** Ensures a valid Project row exists in PostgreSQL when tasks/sprints/bugs use 'gen' or a projectId. */
+  private async ensureDbProjectId(organizationId: string, projectId: string | null | undefined): Promise<string> {
+    if (projectId && projectId !== 'gen') {
+      const exists = await this.prisma.project?.findUnique?.({ where: { id: projectId }, select: { id: true } });
+      if (exists) return projectId;
+    }
+    const genId = `prj_general_${organizationId.slice(0, 8)}`;
+    await this.prisma.project?.upsert?.({
+      where: { id: genId },
+      update: {},
+      create: {
+        id: genId,
+        organizationId,
+        code: 'GEN-000',
+        name: 'General Workspace',
+        category: ProjectCategory.OTHER,
+        status: ProjectStatus.IN_PROGRESS,
+        priority: Priority.MEDIUM,
+      },
+    });
+    return genId;
+  }
 
   // ─── Overview counts for Dashboard ────────────────────────────────────────
   getWorkspaceCounts(actor: AuthUser) {
@@ -363,6 +536,29 @@ export class WorkspaceService {
       createdAt: new Date().toISOString(),
     };
     this.clients.unshift(created);
+    this.persistState(actor.organizationId);
+    void this.prisma.client?.upsert?.({
+      where: { id: created.id },
+      update: {
+        name: created.name,
+        contactName: created.contactName,
+        contactEmail: created.contactEmail,
+        contactPhone: created.contactPhone,
+        address: created.address,
+        notes: created.notes,
+      },
+      create: {
+        id: created.id,
+        organizationId: actor.organizationId,
+        name: created.name,
+        contactName: created.contactName,
+        contactEmail: created.contactEmail,
+        contactPhone: created.contactPhone,
+        address: created.address,
+        notes: created.notes,
+      },
+    }).catch((err: Error) => this.logger.warn(`Supabase Client sync: ${err.message}`));
+
     await this.audit.log({
       organizationId: actor.organizationId,
       actorId: actor.id,
@@ -376,6 +572,8 @@ export class WorkspaceService {
 
   deleteClient(id: string) {
     this.clients = this.clients.filter((c) => c.id !== id);
+    this.persistState();
+    void this.prisma.client?.deleteMany?.({ where: { id } }).catch(() => undefined);
     return { ok: true };
   }
 
@@ -421,6 +619,39 @@ export class WorkspaceService {
       createdAt: new Date().toISOString(),
     };
     this.projects.unshift(created);
+    this.persistState(actor.organizationId);
+
+    void this.prisma.project?.upsert?.({
+      where: { id: created.id },
+      update: {},
+      create: {
+        id: created.id,
+        organizationId: actor.organizationId,
+        code: created.code,
+        name: created.name,
+        description: created.description,
+        clientId: created.clientId,
+        category: (created.category in ProjectCategory ? created.category : 'WEB_DEVELOPMENT') as ProjectCategory,
+        status: (created.status in ProjectStatus ? created.status : 'PLANNING') as ProjectStatus,
+        priority: (created.priority in Priority ? created.priority : 'MEDIUM') as Priority,
+        budget: created.budget,
+        currency: created.currency,
+        startDate: new Date(created.startDate),
+        expectedEndDate: new Date(created.expectedEndDate),
+        managerId: actor.id,
+        techStack: created.techStack,
+        progressPercent: created.progressPercent,
+        stages: {
+          create: created.stages.map((s) => ({
+            id: s.id,
+            position: s.position,
+            name: s.name,
+            status: s.status as StageStatus,
+          })),
+        },
+      },
+    }).catch((err: Error) => this.logger.warn(`Supabase Project sync: ${err.message}`));
+
     await this.audit.log({
       organizationId: actor.organizationId,
       actorId: actor.id,
@@ -444,6 +675,24 @@ export class WorkspaceService {
       const stage = project.stages.find((s) => s.id === body.stageId);
       if (stage) stage.status = body.stageStatus as ProjectStageItem['status'];
     }
+    this.persistState(actor.organizationId);
+
+    void this.prisma.project?.updateMany?.({
+      where: { id: project.id },
+      data: {
+        status: (project.status in ProjectStatus ? project.status : 'PLANNING') as ProjectStatus,
+        priority: (project.priority in Priority ? project.priority : 'MEDIUM') as Priority,
+        progressPercent: project.progressPercent,
+      },
+    }).catch(() => undefined);
+
+    if (body.stageId && body.stageStatus) {
+      void this.prisma.projectStage?.updateMany?.({
+        where: { id: String(body.stageId) },
+        data: { status: String(body.stageStatus) as StageStatus },
+      }).catch(() => undefined);
+    }
+
     await this.audit.log({
       organizationId: actor.organizationId,
       actorId: actor.id,
@@ -457,6 +706,8 @@ export class WorkspaceService {
 
   deleteProject(id: string) {
     this.projects = this.projects.filter((p) => p.id !== id);
+    this.persistState();
+    void this.prisma.project?.deleteMany?.({ where: { id } }).catch(() => undefined);
     return { ok: true };
   }
 
@@ -495,6 +746,31 @@ export class WorkspaceService {
       retrospective: '',
     };
     this.sprints.unshift(created);
+    this.persistState(actor.organizationId);
+
+    void (async () => {
+      try {
+        const dbProjId = await this.ensureDbProjectId(actor.organizationId, created.projectId);
+        await this.prisma.sprint?.upsert?.({
+          where: { id: created.id },
+          update: {},
+          create: {
+            id: created.id,
+            organizationId: actor.organizationId,
+            projectId: dbProjId,
+            name: created.name,
+            goal: created.goal,
+            status: (created.status in SprintStatus ? created.status : 'PLANNED') as SprintStatus,
+            startDate: new Date(created.startDate),
+            endDate: new Date(created.endDate),
+            retrospective: created.retrospective,
+          },
+        });
+      } catch (err) {
+        this.logger.warn(`Supabase Sprint sync: ${(err as Error).message}`);
+      }
+    })();
+
     await this.audit.log({
       organizationId: actor.organizationId,
       actorId: actor.id,
@@ -511,6 +787,14 @@ export class WorkspaceService {
     if (!sprint) throw new NotFoundException('Sprint not found.');
     if (body.status) sprint.status = body.status as SprintItem['status'];
     if (body.retrospective !== undefined) sprint.retrospective = String(body.retrospective);
+    this.persistState();
+    void this.prisma.sprint?.updateMany?.({
+      where: { id: sprint.id },
+      data: {
+        status: (sprint.status in SprintStatus ? sprint.status : 'PLANNED') as SprintStatus,
+        retrospective: sprint.retrospective,
+      },
+    }).catch(() => undefined);
     return sprint;
   }
 
@@ -554,6 +838,37 @@ export class WorkspaceService {
             .filter(Boolean),
     };
     this.tasks.unshift(created);
+    this.persistState(actor.organizationId);
+
+    void (async () => {
+      try {
+        const dbProjId = await this.ensureDbProjectId(actor.organizationId, created.projectId);
+        await this.prisma.task?.upsert?.({
+          where: { id: created.id },
+          update: {},
+          create: {
+            id: created.id,
+            organizationId: actor.organizationId,
+            projectId: dbProjId,
+            sprintId: created.sprintId,
+            code: `${created.code}-${created.id.slice(-4)}`,
+            title: created.title,
+            description: created.description,
+            status: (created.status in TaskStatus ? created.status : 'TODO') as TaskStatus,
+            priority: (created.priority in Priority ? created.priority : 'MEDIUM') as Priority,
+            storyPoints: created.storyPoints,
+            estimatedHours: created.estimatedHours,
+            actualHours: created.actualHours,
+            labels: created.labels,
+            dueDate: new Date(created.dueDate),
+            createdById: actor.id,
+          },
+        });
+      } catch (err) {
+        this.logger.warn(`Supabase Task sync: ${(err as Error).message}`);
+      }
+    })();
+
     await this.audit.log({
       organizationId: actor.organizationId,
       actorId: actor.id,
@@ -571,11 +886,22 @@ export class WorkspaceService {
     if (body.status) task.status = body.status as TaskItem['status'];
     if (body.priority) task.priority = body.priority as TaskItem['priority'];
     if (body.assigneeName) task.assigneeName = String(body.assigneeName);
+    this.persistState();
+    void this.prisma.task?.updateMany?.({
+      where: { id: task.id },
+      data: {
+        status: (task.status in TaskStatus ? task.status : 'TODO') as TaskStatus,
+        priority: (task.priority in Priority ? task.priority : 'MEDIUM') as Priority,
+        completedAt: task.status === 'COMPLETED' ? new Date() : null,
+      },
+    }).catch(() => undefined);
     return task;
   }
 
   deleteTask(id: string) {
     this.tasks = this.tasks.filter((t) => t.id !== id);
+    this.persistState();
+    void this.prisma.task?.deleteMany?.({ where: { id } }).catch(() => undefined);
     return { ok: true };
   }
 
@@ -607,6 +933,36 @@ export class WorkspaceService {
       createdAt: new Date().toISOString(),
     };
     this.bugs.unshift(created);
+    this.persistState(actor.organizationId);
+
+    void (async () => {
+      try {
+        const dbProjId = await this.ensureDbProjectId(actor.organizationId, created.projectId);
+        await this.prisma.bug?.upsert?.({
+          where: { id: created.id },
+          update: {},
+          create: {
+            id: created.id,
+            organizationId: actor.organizationId,
+            projectId: dbProjId,
+            code: `${created.code}-${created.id.slice(-4)}`,
+            title: created.title,
+            description: created.description,
+            stepsToReproduce: created.stepsToReproduce,
+            expectedResult: created.expectedResult,
+            actualResult: created.actualResult,
+            severity: (created.severity in BugSeverity ? created.severity : 'MAJOR') as BugSeverity,
+            priority: (created.priority in Priority ? created.priority : 'HIGH') as Priority,
+            status: BugStatus.NEW,
+            reportedById: actor.id,
+            assigneeId: actor.id,
+          },
+        });
+      } catch (err) {
+        this.logger.warn(`Supabase Bug sync: ${(err as Error).message}`);
+      }
+    })();
+
     await this.audit.log({
       organizationId: actor.organizationId,
       actorId: actor.id,
@@ -624,6 +980,14 @@ export class WorkspaceService {
     if (body.status) bug.status = body.status as BugItem['status'];
     if (body.severity) bug.severity = body.severity as BugItem['severity'];
     if (body.assigneeName) bug.assigneeName = String(body.assigneeName);
+    this.persistState();
+    void this.prisma.bug?.updateMany?.({
+      where: { id: bug.id },
+      data: {
+        status: (bug.status in BugStatus ? bug.status : 'NEW') as BugStatus,
+        severity: (bug.severity in BugSeverity ? bug.severity : 'MAJOR') as BugSeverity,
+      },
+    }).catch(() => undefined);
     return bug;
   }
 
@@ -652,6 +1016,27 @@ export class WorkspaceService {
       updatedAt: new Date().toISOString(),
     };
     this.documents.unshift(created);
+    this.persistState(actor.organizationId);
+
+    void this.prisma.document?.upsert?.({
+      where: { id: created.id },
+      update: {},
+      create: {
+        id: created.id,
+        organizationId: actor.organizationId,
+        projectId: created.projectId && created.projectId !== 'gen' ? created.projectId : null,
+        folder: created.folder,
+        title: created.title,
+        type: (created.type in DocumentType ? created.type : 'TECHNICAL_DOC') as DocumentType,
+        version: created.version,
+        storageKey: `documents/${actor.organizationId}/${created.id}`,
+        mimeType: created.mimeType,
+        sizeBytes: created.sizeBytes,
+        visibility: created.visibility,
+        uploadedById: actor.id,
+      },
+    }).catch((err: Error) => this.logger.warn(`Supabase Document sync: ${err.message}`));
+
     await this.audit.log({
       organizationId: actor.organizationId,
       actorId: actor.id,
@@ -695,6 +1080,25 @@ export class WorkspaceService {
       note: String(body.note ?? '').trim() || 'Active timer session',
     };
     this.timeEntries.unshift(entry);
+    this.persistState(actor.organizationId);
+
+    void this.prisma.timeEntry?.upsert?.({
+      where: { id: entry.id },
+      update: {},
+      create: {
+        id: entry.id,
+        organizationId: actor.organizationId,
+        userId: actor.id,
+        projectId: entry.projectId && entry.projectId !== 'gen' ? entry.projectId : null,
+        taskId: entry.taskId,
+        source: 'TIMER',
+        startedAt: new Date(entry.startedAt),
+        endedAt: null,
+        billable: entry.billable,
+        note: entry.note,
+      },
+    }).catch((err: Error) => this.logger.warn(`Supabase TimeEntry sync: ${err.message}`));
+
     return entry;
   }
 
@@ -714,6 +1118,11 @@ export class WorkspaceService {
         task.actualHours = Math.round((task.actualHours + elapsedMinutes / 60) * 10) / 10;
       }
     }
+    this.persistState(actor.organizationId);
+    void this.prisma.timeEntry?.updateMany?.({
+      where: { id: running.id },
+      data: { endedAt },
+    }).catch(() => undefined);
     return running;
   }
 
@@ -745,6 +1154,25 @@ export class WorkspaceService {
     if (task) {
       task.actualHours = Math.round((task.actualHours + minutes / 60) * 10) / 10;
     }
+    this.persistState(actor.organizationId);
+
+    void this.prisma.timeEntry?.upsert?.({
+      where: { id: entry.id },
+      update: {},
+      create: {
+        id: entry.id,
+        organizationId: actor.organizationId,
+        userId: actor.id,
+        projectId: entry.projectId && entry.projectId !== 'gen' ? entry.projectId : null,
+        taskId: entry.taskId,
+        source: 'MANUAL',
+        startedAt,
+        endedAt,
+        billable: entry.billable,
+        note: entry.note,
+      },
+    }).catch((err: Error) => this.logger.warn(`Supabase Manual TimeEntry sync: ${err.message}`));
+
     return entry;
   }
 
@@ -785,6 +1213,33 @@ export class WorkspaceService {
     } else {
       record.clockOutAt = null;
     }
+    this.persistState(actor.organizationId);
+
+    const rec = record;
+    void this.prisma.attendance?.upsert?.({
+      where: {
+        userId_workDate: {
+          userId: actor.id,
+          workDate: new Date(`${rec.workDate}T00:00:00.000Z`),
+        },
+      },
+      update: {
+        clockInAt: rec.clockInAt ? new Date(rec.clockInAt) : null,
+        clockOutAt: null,
+        notes: rec.notes,
+      },
+      create: {
+        id: rec.id,
+        organizationId: actor.organizationId,
+        userId: actor.id,
+        workDate: new Date(`${rec.workDate}T00:00:00.000Z`),
+        clockInAt: rec.clockInAt ? new Date(rec.clockInAt) : new Date(),
+        clockOutAt: null,
+        isLate: rec.isLate,
+        notes: rec.notes,
+      },
+    }).catch((err: Error) => this.logger.warn(`Supabase Attendance sync: ${err.message}`));
+
     return record;
   }
 
@@ -800,6 +1255,7 @@ export class WorkspaceService {
     } else {
       record.onBreak = true;
     }
+    this.persistState(actor.organizationId);
     return record;
   }
 
@@ -811,6 +1267,13 @@ export class WorkspaceService {
     if (!record) throw new BadRequestException('No active clock-in record found.');
     record.onBreak = false;
     record.clockOutAt = new Date().toISOString();
+    this.persistState(actor.organizationId);
+
+    void this.prisma.attendance?.updateMany?.({
+      where: { userId: actor.id, workDate: new Date(`${record.workDate}T00:00:00.000Z`) },
+      data: { clockOutAt: new Date(record.clockOutAt) },
+    }).catch(() => undefined);
+
     return record;
   }
 
@@ -838,6 +1301,24 @@ export class WorkspaceService {
       createdAt: new Date().toISOString(),
     };
     this.leaveRequests.unshift(created);
+    this.persistState(actor.organizationId);
+
+    void this.prisma.leaveRequest?.upsert?.({
+      where: { id: created.id },
+      update: {},
+      create: {
+        id: created.id,
+        organizationId: actor.organizationId,
+        userId: actor.id,
+        type: (created.type in LeaveType ? created.type : 'ANNUAL') as LeaveType,
+        startDate: new Date(`${created.startDate}T00:00:00.000Z`),
+        endDate: new Date(`${created.endDate}T00:00:00.000Z`),
+        days: created.days,
+        reason: created.reason,
+        status: 'PENDING',
+      },
+    }).catch((err: Error) => this.logger.warn(`Supabase LeaveRequest sync: ${err.message}`));
+
     await this.audit.log({
       organizationId: actor.organizationId,
       actorId: actor.id,
@@ -856,6 +1337,18 @@ export class WorkspaceService {
     req.status = status;
     req.approverName = actor.fullName;
     req.decisionNote = String(body.decisionNote ?? '').trim() || (status === 'APPROVED' ? 'Approved.' : 'Declined.');
+    this.persistState(actor.organizationId);
+
+    void this.prisma.leaveRequest?.updateMany?.({
+      where: { id: req.id },
+      data: {
+        status,
+        approverId: actor.id,
+        decidedAt: new Date(),
+        decisionNote: req.decisionNote,
+      },
+    }).catch(() => undefined);
+
     await this.audit.log({
       organizationId: actor.organizationId,
       actorId: actor.id,
@@ -868,7 +1361,58 @@ export class WorkspaceService {
   }
 
   // ─── Interns ──────────────────────────────────────────────────────────────
-  listInterns() {
+  async listInterns() {
+    try {
+      const internUsers = await this.prisma.user.findMany({
+        where: { role: Role.INTERN, deletedAt: null },
+        select: { id: true, fullName: true, email: true, organizationId: true },
+      });
+      let changed = false;
+      for (const u of internUsers) {
+        if (!this.interns.some((i) => i.userId === u.id || i.email === u.email)) {
+          const today = new Date().toISOString().slice(0, 10);
+          const endDate = new Date(Date.now() + 180 * 86_400_000).toISOString().slice(0, 10);
+          const item: InternItem = {
+            id: `int_${u.id.slice(0, 8)}`,
+            userId: u.id,
+            fullName: u.fullName,
+            email: u.email,
+            mentorName: 'Engineering Lead',
+            university: 'University / Institute',
+            programme: 'Software Engineering Internship',
+            startDate: today,
+            endDate,
+            progressPercent: 0,
+            trainingTasks: [
+              { id: randomUUID(), weekNumber: 1, title: 'Workspace & Git Workflow Onboarding', completed: false },
+              { id: randomUUID(), weekNumber: 2, title: 'TypeScript, React & NestJS Architecture', completed: false },
+              { id: randomUUID(), weekNumber: 3, title: 'Database Schema & API Integration', completed: false },
+              { id: randomUUID(), weekNumber: 4, title: 'Sprint Feature Delivery & Code Review', completed: false },
+            ],
+            evaluations: [],
+          };
+          this.interns.push(item);
+          changed = true;
+          void this.prisma.internProfile?.upsert?.({
+            where: { userId: u.id },
+            update: {},
+            create: {
+              id: item.id,
+              organizationId: u.organizationId,
+              userId: u.id,
+              university: item.university,
+              programme: item.programme,
+              startDate: new Date(`${today}T00:00:00.000Z`),
+              endDate: new Date(`${endDate}T00:00:00.000Z`),
+              progressPercent: 0,
+            },
+          }).catch(() => undefined);
+        }
+      }
+      if (changed) this.persistState();
+    } catch {
+      // Fallback to in-memory interns
+    }
     return this.interns;
   }
 
@@ -880,6 +1424,11 @@ export class WorkspaceService {
     task.completed = !task.completed;
     const done = intern.trainingTasks.filter((t) => t.completed).length;
     intern.progressPercent = Math.round((done / Math.max(1, intern.trainingTasks.length)) * 100);
+    this.persistState();
+    void this.prisma.internProfile?.updateMany?.({
+      where: { userId: intern.userId },
+      data: { progressPercent: intern.progressPercent },
+    }).catch(() => undefined);
     return intern;
   }
 
@@ -897,6 +1446,20 @@ export class WorkspaceService {
       createdAt: new Date().toISOString(),
     };
     intern.evaluations.unshift(evalItem);
+    this.persistState(actor.organizationId);
+    void this.prisma.evaluation?.create?.({
+      data: {
+        id: evalItem.id,
+        organizationId: actor.organizationId,
+        internProfileId: intern.id,
+        evaluatorId: actor.id,
+        period: evalItem.period,
+        score: evalItem.score,
+        strengths: evalItem.strengths,
+        improvements: evalItem.improvements,
+        feedback: evalItem.feedback,
+      },
+    }).catch(() => undefined);
     return intern;
   }
 
@@ -922,6 +1485,34 @@ export class WorkspaceService {
       createdAt: new Date().toISOString(),
     };
     this.messages.push(msg);
+    this.persistState(actor.organizationId);
+
+    void (async () => {
+      try {
+        await this.prisma.chatChannel?.upsert?.({
+          where: { id: channelId },
+          update: {},
+          create: {
+            id: channelId,
+            organizationId: actor.organizationId,
+            name: this.channels.find((c) => c.id === channelId)?.name ?? 'general',
+            type: ChannelType.GROUP,
+          },
+        });
+        await this.prisma.message?.create?.({
+          data: {
+            id: msg.id,
+            channelId: msg.channelId,
+            senderId: actor.id,
+            body: msg.body,
+            mentions: [],
+          },
+        });
+      } catch (err) {
+        this.logger.warn(`Supabase Chat Message sync: ${(err as Error).message}`);
+      }
+    })();
+
     return msg;
   }
 
@@ -936,6 +1527,27 @@ export class WorkspaceService {
       projectName: body.projectName ? String(body.projectName) : null,
     };
     this.channels.push(created);
+    this.persistState();
+
+    void (async () => {
+      try {
+        const orgId = await this.resolveOrgId();
+        if (!orgId) return;
+        await this.prisma.chatChannel?.upsert?.({
+          where: { id: created.id },
+          update: {},
+          create: {
+            id: created.id,
+            organizationId: orgId,
+            name: created.name,
+            type: (created.type in ChannelType ? created.type : 'GROUP') as ChannelType,
+          },
+        });
+      } catch {
+        // Ignore if offline
+      }
+    })();
+
     return created;
   }
 
@@ -958,7 +1570,7 @@ export class WorkspaceService {
     const instant = Boolean(body.instant);
     const created: MeetingItem = {
       id: `mtg_${randomUUID().slice(0, 8)}`,
-      roomCode: `PF-ROOM-${roomNum}`,
+      roomCode: `YH-ROOM-${roomNum}`,
       projectId: project?.id ?? null,
       projectName: project?.name ?? 'General / All-Hands',
       organizerName: actor.fullName,
@@ -986,6 +1598,25 @@ export class WorkspaceService {
       chatMessages: [],
     };
     this.meetings.unshift(created);
+    this.persistState(actor.organizationId);
+
+    void this.prisma.meeting?.upsert?.({
+      where: { id: created.id },
+      update: {},
+      create: {
+        id: created.id,
+        organizationId: actor.organizationId,
+        projectId: created.projectId && created.projectId !== 'gen' ? created.projectId : null,
+        organizerId: actor.id,
+        title: created.title,
+        agenda: created.agenda,
+        startsAt: new Date(created.startsAt),
+        endsAt: new Date(created.endsAt),
+        status: MeetingStatus.SCHEDULED,
+        joinUrl: `/meetings?room=${created.roomCode}`,
+      },
+    }).catch((err: Error) => this.logger.warn(`Supabase Meeting sync: ${err.message}`));
+
     return created;
   }
 
@@ -994,6 +1625,18 @@ export class WorkspaceService {
     if (!mtg) throw new NotFoundException('Meeting not found.');
     if (body.status) mtg.status = body.status as MeetingItem['status'];
     if (body.notes !== undefined) mtg.notes = String(body.notes);
+    this.persistState();
+    void this.prisma.meeting?.updateMany?.({
+      where: { id: mtg.id },
+      data: {
+        status:
+          mtg.status === 'COMPLETED'
+            ? MeetingStatus.COMPLETED
+            : mtg.status === 'CANCELLED'
+              ? MeetingStatus.CANCELLED
+              : MeetingStatus.SCHEDULED,
+      },
+    }).catch(() => undefined);
     return mtg;
   }
 
@@ -1015,6 +1658,7 @@ export class WorkspaceService {
       });
     }
     mtg.attendeeCount = Math.max(mtg.attendeeCount, mtg.participants.length);
+    this.persistState(actor.organizationId);
     return mtg;
   }
 
@@ -1022,6 +1666,7 @@ export class WorkspaceService {
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
     mtg.participants = mtg.participants.filter((p) => p.userId !== actor.id);
+    this.persistState(actor.organizationId);
     return mtg;
   }
 
@@ -1046,6 +1691,7 @@ export class WorkspaceService {
     if (body.camOn !== undefined) participant.camOn = Boolean(body.camOn);
     if (body.screenSharing !== undefined) participant.screenSharing = Boolean(body.screenSharing);
     if (body.handRaised !== undefined) participant.handRaised = Boolean(body.handRaised);
+    this.persistState(actor.organizationId);
     return mtg;
   }
 
@@ -1060,6 +1706,7 @@ export class WorkspaceService {
       body: text,
       createdAt: new Date().toISOString(),
     });
+    this.persistState(actor.organizationId);
     return mtg;
   }
 
@@ -1146,6 +1793,15 @@ export class WorkspaceService {
         ? { requirePasswordRotationDays: Number(body.requirePasswordRotationDays) }
         : {}),
     };
+    this.persistState(actor.organizationId);
+    void this.prisma.organization?.update?.({
+      where: { id: actor.organizationId },
+      data: {
+        name: this.settings.name,
+        timezone: this.settings.timezone,
+      },
+    }).catch(() => undefined);
+
     await this.audit.log({
       organizationId: actor.organizationId,
       actorId: actor.id,
