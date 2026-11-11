@@ -50,6 +50,11 @@ export class CreateUserDto {
   @IsEmail()
   email!: string;
 
+  @IsOptional()
+  @IsString()
+  @Length(0, 32)
+  companyId?: string;
+
   @IsEnum(Role)
   role!: Role;
 

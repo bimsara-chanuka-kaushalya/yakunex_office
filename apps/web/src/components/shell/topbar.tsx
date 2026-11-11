@@ -97,7 +97,14 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
 
         {user && (
           <div className="ml-2 hidden text-right leading-tight md:block">
-            <p className="text-sm font-medium">{user.fullName}</p>
+            <div className="flex items-center justify-end gap-1.5">
+              {user.companyId && (
+                <span className="rounded border border-gold/40 bg-gold/10 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-gold">
+                  {user.companyId}
+                </span>
+              )}
+              <p className="text-sm font-medium">{user.fullName}</p>
+            </div>
             <p className="text-xs text-muted">{ROLE_LABELS[user.role as Role]?.[lang] ?? user.role}</p>
           </div>
         )}

@@ -18,6 +18,7 @@ type AccountStatus = 'INVITED' | 'ACTIVE' | 'SUSPENDED' | 'DEACTIVATED';
 
 interface UserRow {
   id: string;
+  companyId: string | null;
   email: string;
   fullName: string;
   title: string | null;
@@ -170,7 +171,7 @@ export default function UsersPage() {
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
             <Input
               aria-label={t('search')}
-              placeholder={t('search')}
+              placeholder="Search by Company ID (e.g. YNX-0001), name, or email…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="pl-9"
@@ -222,6 +223,9 @@ export default function UsersPage() {
               <thead className="bg-canvas/60 text-xs uppercase tracking-wider text-muted">
                 <tr>
                   <th scope="col" className="px-5 py-3 font-semibold">
+                    Company ID
+                  </th>
+                  <th scope="col" className="px-5 py-3 font-semibold">
                     Person
                   </th>
                   <th scope="col" className="px-5 py-3 font-semibold">
@@ -242,18 +246,18 @@ export default function UsersPage() {
                 {loading && !list ? (
                   Array.from({ length: 5 }).map((_, i) => (
                     <tr key={i}>
-                      <td colSpan={5} className="px-5 py-4">
+                      <td colSpan={6} className="px-5 py-4">
                         <Skeleton />
                       </td>
                     </tr>
                   ))
                 ) : list && list.items.length === 0 ? (
                   <tr>
-                    <td colSpan={5}>
+                    <td colSpan={6}>
                       <EmptyState
                         icon={<UsersIcon className="h-5 w-5" />}
                         title="No matching accounts"
-                        description="Try a different name, email or filter."
+                        description="Try a different Company ID, name, email or filter."
                       />
                     </td>
                   </tr>
@@ -266,6 +270,11 @@ export default function UsersPage() {
                         key={row.id}
                         className={cn('transition-colors hover:bg-canvas/50', loading && 'opacity-60')}
                       >
+                        <td className="px-5 py-3.5">
+                          <span className="inline-flex items-center rounded-md border border-gold/40 bg-gold/10 px-2.5 py-1 font-mono text-xs font-semibold text-gold">
+                            {row.companyId ?? '—'}
+                          </span>
+                        </td>
                         <td className="px-5 py-3.5">
                           <div className="flex items-center gap-3">
                             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gold/15 font-semibold text-gold">
@@ -561,17 +570,19 @@ function CreateUserDialog({
   const { t, lang } = useLang();
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
+  const [companyId, setCompanyId] = useState('');
   const [role, setRole] = useState<Role>('STAFF');
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [created, setCreated] = useState<{ name: string; password: string } | null>(null);
+  const [created, setCreated] = useState<{ name: string; companyId: string | null; email: string; password: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [showCreatedPassword, setShowCreatedPassword] = useState(true);
 
   function reset() {
     setFullName('');
     setEmail('');
+    setCompanyId('');
     setRole('STAFF');
     setTitle('');
     setError(null);
@@ -589,16 +600,22 @@ function CreateUserDialog({
     setBusy(true);
     setError(null);
     try {
-      const result = await post<{ user: { fullName: string }; temporaryPassword: string }>(
+      const result = await post<{ user: { fullName: string; companyId: string | null; email: string }; temporaryPassword: string }>(
         '/users',
         {
           fullName,
           email,
+          companyId: companyId.trim() || undefined,
           role,
           title: title || undefined,
         },
       );
-      setCreated({ name: result.user.fullName, password: result.temporaryPassword });
+      setCreated({
+        name: result.user.fullName,
+        companyId: result.user.companyId,
+        email: result.user.email,
+        password: result.temporaryPassword,
+      });
       await onCreated(result.user.fullName);
     } catch (err) {
       setError(errorText(err));
@@ -609,7 +626,8 @@ function CreateUserDialog({
 
   async function copyPassword() {
     if (!created) return;
-    await navigator.clipboard.writeText(created.password).catch(() => undefined);
+    const text = `Company ID: ${created.companyId ?? '—'}\nEmail: ${created.email}\nPassword: ${created.password}`;
+    await navigator.clipboard.writeText(text).catch(() => undefined);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
@@ -624,32 +642,44 @@ function CreateUserDialog({
       {created ? (
         <div className="space-y-5">
           <p className="text-sm text-muted">
-            Give {created.name} this temporary password. It is shown only once. They will be asked
-            to set a new password on first sign-in.
+            Give {created.name} their Company ID and temporary password. They can sign in using either their{' '}
+            <strong className="text-ink">Company ID ({created.companyId})</strong> or their email.
           </p>
-          <div className="flex items-center justify-between gap-3 rounded-xl border border-gold/40 bg-gold/10 px-4 py-3">
-            <div>
-              <p className="text-xs uppercase tracking-wider text-muted">
-                {t('temporaryPassword')}
-              </p>
-              <p className="font-mono text-lg tracking-wider">
-                {showCreatedPassword ? created.password : '••••••••••••••••'}
-              </p>
+          <div className="space-y-3 rounded-xl border border-gold/40 bg-gold/10 px-4 py-3">
+            <div className="flex items-center justify-between border-b border-gold/20 pb-2">
+              <div>
+                <p className="text-xs uppercase tracking-wider text-muted">Company ID</p>
+                <p className="font-mono text-base font-bold text-gold">{created.companyId ?? '—'}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs uppercase tracking-wider text-muted">{t('email')}</p>
+                <p className="font-mono text-xs text-ink">{created.email}</p>
+              </div>
             </div>
-            <div className="flex items-center gap-1.5">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setShowCreatedPassword((v) => !v)}
-                title={showCreatedPassword ? t('hidePassword') : t('showPassword')}
-                aria-label={showCreatedPassword ? t('hidePassword') : t('showPassword')}
-              >
-                {showCreatedPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </Button>
-              <Button variant="secondary" size="sm" onClick={copyPassword}>
-                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                {copied ? t('copied') : t('copy')}
-              </Button>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-wider text-muted">
+                  {t('temporaryPassword')}
+                </p>
+                <p className="font-mono text-lg tracking-wider">
+                  {showCreatedPassword ? created.password : '••••••••••••••••'}
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowCreatedPassword((v) => !v)}
+                  title={showCreatedPassword ? t('hidePassword') : t('showPassword')}
+                  aria-label={showCreatedPassword ? t('hidePassword') : t('showPassword')}
+                >
+                  {showCreatedPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </Button>
+                <Button variant="secondary" size="sm" onClick={copyPassword}>
+                  {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                  {copied ? t('copied') : t('copy')}
+                </Button>
+              </div>
             </div>
           </div>
           <div className="flex justify-end">
@@ -658,16 +688,27 @@ function CreateUserDialog({
         </div>
       ) : (
         <form onSubmit={onSubmit} className="space-y-4">
-          <Field label="Full name" htmlFor="new-name">
-            <Input
-              id="new-name"
-              required
-              minLength={2}
-              maxLength={120}
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-            />
-          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Full name" htmlFor="new-name">
+              <Input
+                id="new-name"
+                required
+                minLength={2}
+                maxLength={120}
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+              />
+            </Field>
+            <Field label="Company ID (Auto if blank)" htmlFor="new-company-id">
+              <Input
+                id="new-company-id"
+                maxLength={32}
+                value={companyId}
+                onChange={(e) => setCompanyId(e.target.value.toUpperCase())}
+                placeholder="Auto (e.g. YNX-0002)"
+              />
+            </Field>
+          </div>
           <Field label={t('email')} htmlFor="new-email">
             <Input
               id="new-email"

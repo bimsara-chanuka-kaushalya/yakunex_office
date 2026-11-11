@@ -85,16 +85,15 @@ export default function LoginPage() {
           <p className="mt-1.5 text-sm text-muted">{t('signInSubtitle')}</p>
 
           <form onSubmit={onSubmit} className="mt-8 space-y-5" noValidate>
-            <Field label={t('email')} htmlFor="email" error={undefined}>
+            <Field label={t('companyIdOrEmail')} htmlFor="email" error={undefined}>
               <Input
                 id="email"
-                type="email"
+                type="text"
                 autoComplete="username"
-                inputMode="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="name@yakunex.lk"
+                placeholder="YNX-0001 or admin@yakunexhub.local"
               />
             </Field>
 

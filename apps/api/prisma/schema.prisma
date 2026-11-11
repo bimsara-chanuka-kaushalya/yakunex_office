@@ -286,6 +286,7 @@ model TeamMember {
 model User {
   id                 String     @id @default(cuid())
   organizationId     String
+  companyId          String?    @unique
   email              String     @unique
   passwordHash       String
   fullName           String
@@ -346,6 +347,7 @@ model User {
   auditLogs          AuditLog[]
 
   @@index([organizationId])
+  @@index([companyId])
   @@index([departmentId])
   @@index([role])
 }

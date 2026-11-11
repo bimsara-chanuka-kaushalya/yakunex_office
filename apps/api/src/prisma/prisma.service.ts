@@ -50,6 +50,9 @@ function matchesUserWhere(user: User, where?: Prisma.UserWhereInput): boolean {
   if (where.email !== undefined && typeof where.email === 'string' && user.email !== where.email) {
     return false;
   }
+  if (where.companyId !== undefined && typeof where.companyId === 'string' && user.companyId !== where.companyId) {
+    return false;
+  }
   if (where.deletedAt === null && user.deletedAt !== null) return false;
   if (where.role !== undefined && typeof where.role === 'string' && user.role !== where.role) {
     return false;
@@ -60,12 +63,22 @@ function matchesUserWhere(user: User, where?: Prisma.UserWhereInput): boolean {
   if (Array.isArray(where.OR) && where.OR.length > 0) {
     const matchedOr = where.OR.some((clause) => {
       const fullNameFilter = clause.fullName as { contains?: string } | undefined;
-      const emailFilter = clause.email as { contains?: string } | undefined;
+      const emailFilter = clause.email as { contains?: string; in?: string[] } | string | undefined;
+      const companyIdFilter = clause.companyId as { contains?: string } | string | undefined;
       if (fullNameFilter?.contains) {
         if (user.fullName.toLowerCase().includes(fullNameFilter.contains.toLowerCase())) return true;
       }
-      if (emailFilter?.contains) {
+      if (typeof emailFilter === 'string') {
+        if (user.email.toLowerCase() === emailFilter.toLowerCase()) return true;
+      } else if (emailFilter?.in) {
+        if (emailFilter.in.some((e) => e.toLowerCase() === user.email.toLowerCase())) return true;
+      } else if (emailFilter?.contains) {
         if (user.email.toLowerCase().includes(emailFilter.contains.toLowerCase())) return true;
+      }
+      if (typeof companyIdFilter === 'string') {
+        if ((user.companyId ?? '').toUpperCase() === companyIdFilter.toUpperCase()) return true;
+      } else if (companyIdFilter?.contains) {
+        if ((user.companyId ?? '').toLowerCase().includes(companyIdFilter.contains.toLowerCase())) return true;
       }
       return false;
     });
@@ -105,6 +118,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     try {
       await this.$connect();
       this.logger.log('✅ Connected to PostgreSQL / Supabase database successfully.');
+      await this.ensureCompanyIds();
     } catch (error) {
       if (config.isProd) {
         throw error;
@@ -114,6 +128,54 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         'PostgreSQL / Supabase is not reachable at DATABASE_URL; running with clean in-memory development store with single admin account (zero dummy projects/tasks).',
       );
       await this.enableInMemoryStore();
+    }
+  }
+
+  /** Ensures every user in the database has a unique Company ID (e.g., YNX-0001). */
+  private async ensureCompanyIds(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "companyId" TEXT;`);
+      await this.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "User_companyId_key" ON "User"("companyId");`);
+      const allUsers = await this.user.findMany({
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, email: true, companyId: true },
+      });
+      const used = new Set<string>();
+      let maxNum = 0;
+      for (const u of allUsers) {
+        if (u.companyId) {
+          used.add(u.companyId.toUpperCase());
+          const match = u.companyId.match(/^YNX-(\d+)$/i);
+          if (match) {
+            const n = parseInt(match[1], 10);
+            if (n > maxNum) maxNum = n;
+          }
+        }
+      }
+      for (const u of allUsers) {
+        if (!u.companyId) {
+          let assigned = '';
+          if (
+            (u.email === 'admin@yakunexhub.local' || u.email === 'admin@projectflow.local') &&
+            !used.has('YNX-0001')
+          ) {
+            assigned = 'YNX-0001';
+            if (maxNum < 1) maxNum = 1;
+          } else {
+            do {
+              maxNum += 1;
+              assigned = `YNX-${String(maxNum).padStart(4, '0')}`;
+            } while (used.has(assigned));
+          }
+          used.add(assigned);
+          await this.user.update({
+            where: { id: u.id },
+            data: { companyId: assigned },
+          });
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`Could not backfill companyId automatically: ${(err as Error).message}`);
     }
   }
 
@@ -164,14 +226,15 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     const passwordHash = await argon2.hash(seedPassword, { type: argon2.argon2id });
 
     // Clean initial admin accounts without fake staff/interns
-    const initialAccounts: Array<{ id: string; email: string; fullName: string; title: string; role: Role; departmentId: string | null }> = [
-      { id: 'usr_admin', email: 'admin@yakunexhub.local', fullName: 'Workspace Admin', title: 'System Administrator', role: Role.SUPER_ADMIN, departmentId: dept.id },
-      { id: 'usr_yakunex', email: 'admin@yakunex.com', fullName: 'System Admin', title: 'Administrator', role: Role.SUPER_ADMIN, departmentId: dept.id },
+    const initialAccounts: Array<{ id: string; companyId: string; email: string; fullName: string; title: string; role: Role; departmentId: string | null }> = [
+      { id: 'usr_admin', companyId: 'YNX-0001', email: 'admin@yakunexhub.local', fullName: 'Workspace Admin', title: 'System Administrator', role: Role.SUPER_ADMIN, departmentId: dept.id },
+      { id: 'usr_yakunex', companyId: 'YNX-0002', email: 'admin@yakunex.com', fullName: 'System Admin', title: 'Administrator', role: Role.SUPER_ADMIN, departmentId: dept.id },
     ];
 
     const users: User[] = initialAccounts.map((acc) => ({
       id: acc.id,
       organizationId: org.id,
+      companyId: acc.companyId,
       email: acc.email,
       passwordHash,
       fullName: acc.fullName,
@@ -402,6 +465,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         const created: User = {
           id: randomUUID(),
           organizationId: data.organizationId,
+          companyId: data.companyId ?? null,
           email: data.email,
           passwordHash: data.passwordHash,
           fullName: data.fullName,

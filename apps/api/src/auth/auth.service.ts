@@ -36,6 +36,7 @@ export function hashToken(raw: string): string {
 export function toAuthUser(user: User): AuthUser {
   return {
     id: user.id,
+    companyId: user.companyId ?? null,
     email: user.email,
     fullName: user.fullName,
     role: user.role,
@@ -61,9 +62,22 @@ export class AuthService {
   ) {}
 
   async login(email: string, password: string, meta: RequestMeta) {
-    const normalizedEmail = email.trim().toLowerCase();
+    const raw = email.trim();
+    const normalizedEmail = raw.toLowerCase();
+    const normalizedCompanyId = raw.toUpperCase();
+    const emailCandidates =
+      normalizedEmail === 'admin@projectflow.local'
+        ? ['admin@projectflow.local', 'admin@yakunexhub.local']
+        : [normalizedEmail];
+
     const user = await this.prisma.user.findFirst({
-      where: { email: normalizedEmail, deletedAt: null },
+      where: {
+        deletedAt: null,
+        OR: [
+          { email: { in: emailCandidates } },
+          { companyId: normalizedCompanyId },
+        ],
+      },
     });
 
     if (!user) {
@@ -240,12 +254,25 @@ export class AuthService {
     email: string,
     meta: RequestMeta,
   ): Promise<{ ok: boolean; message: string; resetToken?: string; resetUrl?: string }> {
-    const normalizedEmail = email.trim().toLowerCase();
+    const raw = email.trim();
+    const normalizedEmail = raw.toLowerCase();
+    const normalizedCompanyId = raw.toUpperCase();
+    const emailCandidates =
+      normalizedEmail === 'admin@projectflow.local'
+        ? ['admin@projectflow.local', 'admin@yakunexhub.local']
+        : [normalizedEmail];
+
     const user = await this.prisma.user.findFirst({
-      where: { email: normalizedEmail, deletedAt: null },
+      where: {
+        deletedAt: null,
+        OR: [
+          { email: { in: emailCandidates } },
+          { companyId: normalizedCompanyId },
+        ],
+      },
     });
 
-    const defaultMessage = 'If an account exists with this email, a password reset link has been generated.';
+    const defaultMessage = 'If an account exists with this Company ID or email, a password reset link has been generated.';
     if (!user || user.status !== UserStatus.ACTIVE) {
       return { ok: true, message: defaultMessage };
     }

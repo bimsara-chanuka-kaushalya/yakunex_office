@@ -110,16 +110,15 @@ export default function ForgotPasswordPage() {
 
           {!result ? (
             <form onSubmit={onSubmit} className="mt-8 space-y-5" noValidate>
-              <Field label={t('email')} htmlFor="email" error={undefined}>
+              <Field label={t('companyIdOrEmail')} htmlFor="email" error={undefined}>
                 <Input
                   id="email"
-                  type="email"
-                  autoComplete="email"
-                  inputMode="email"
+                  type="text"
+                  autoComplete="username"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="name@yakunex.lk"
+                  placeholder="YNX-0001 or admin@yakunexhub.local"
                 />
               </Field>
 

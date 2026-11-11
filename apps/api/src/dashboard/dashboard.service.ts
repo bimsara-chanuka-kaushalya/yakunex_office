@@ -27,7 +27,7 @@ export class DashboardService {
     }
 
     return {
-      user: { id: actor.id, fullName: actor.fullName, role: actor.role },
+      user: { id: actor.id, companyId: actor.companyId, fullName: actor.fullName, role: actor.role },
       organization,
       mustChangePassword: actor.mustChangePassword,
       workspace: this.workspace.getWorkspaceCounts(actor),

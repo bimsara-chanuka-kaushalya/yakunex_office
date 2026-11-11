@@ -179,7 +179,14 @@ export default function DashboardPage() {
       <div className="space-y-8">
         <header className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <p className="text-sm text-muted">{roleLabel} · Yakunex Technologies (Pvt) Ltd.</p>
+            <p className="flex items-center gap-2 text-sm text-muted">
+              {user?.companyId && (
+                <span className="rounded border border-gold/40 bg-gold/10 px-2 py-0.5 font-mono text-xs font-semibold text-gold">
+                  {user.companyId}
+                </span>
+              )}
+              <span>{roleLabel} · Yakunex Hub</span>
+            </p>
             <h2 className="mt-1 font-display text-3xl font-semibold">
               {greeting(new Date().getHours())}, {firstName}
             </h2>
@@ -332,7 +339,14 @@ export default function DashboardPage() {
     <div className="space-y-8">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-sm text-muted">{personal?.organization.name ?? 'Yakunex Technologies (Pvt) Ltd.'}</p>
+          <p className="flex items-center gap-2 text-sm text-muted">
+            {user?.companyId && (
+              <span className="rounded border border-gold/40 bg-gold/10 px-2 py-0.5 font-mono text-xs font-semibold text-gold">
+                {user.companyId}
+              </span>
+            )}
+            <span>{personal?.organization.name ?? 'Yakunex Hub'}</span>
+          </p>
           <h2 className="mt-1 font-display text-3xl font-semibold">
             {greeting(new Date().getHours())}, {firstName}
           </h2>

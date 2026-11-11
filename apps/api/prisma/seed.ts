@@ -26,6 +26,9 @@ async function main(): Promise<void> {
 
   console.log('⚡ Initializing Yakunex Hub database with clean production-ready structure...');
 
+  await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "companyId" TEXT;`);
+  await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "User_companyId_key" ON "User"("companyId");`);
+
   // 1. Organization - check for existing or create new
   let organization = await prisma.organization.findFirst({
     where: { OR: [{ slug: 'yakunex-hub' }, { slug: 'projectflow' }] },
@@ -74,34 +77,27 @@ async function main(): Promise<void> {
   // 4. Initial Super Admin Account
   const passwordHash = await argon2.hash(seedPassword, { type: argon2.argon2id });
 
+  // Remove legacy duplicate alias if present so only one clean Super Admin row exists
+  await prisma.user.deleteMany({
+    where: { email: 'admin@projectflow.local' },
+  });
+
   const adminUser = await prisma.user.upsert({
     where: { email: adminEmail },
     update: {
       role: Role.SUPER_ADMIN,
       fullName: adminName,
-    },
-    create: {
-      organizationId: organization.id,
-      email: adminEmail,
-      fullName: adminName,
-      title: 'Workspace Administrator',
-      role: Role.SUPER_ADMIN,
-      departmentId: coreDept.id,
+      companyId: 'YNX-0001',
       passwordHash,
+      status: 'ACTIVE',
+      lockedUntil: null,
+      failedLoginCount: 0,
       mustChangePassword: false,
     },
-  });
-
-  // Also maintain alias for continuity
-  await prisma.user.upsert({
-    where: { email: 'admin@projectflow.local' },
-    update: {
-      role: Role.SUPER_ADMIN,
-      organizationId: organization.id,
-    },
     create: {
       organizationId: organization.id,
-      email: 'admin@projectflow.local',
+      companyId: 'YNX-0001',
+      email: adminEmail,
       fullName: adminName,
       title: 'Workspace Administrator',
       role: Role.SUPER_ADMIN,
@@ -113,7 +109,7 @@ async function main(): Promise<void> {
 
   console.log(`✅ Organization created: ${organization.name} (${organization.slug})`);
   console.log(`✅ System RBAC permissions provisioned across all roles.`);
-  console.log(`✅ Initial Super Admin created: ${adminUser.email}`);
+  console.log(`✅ Initial Super Admin ready: ${adminUser.companyId} / ${adminUser.email}`);
   console.log(`🚀 Database is ready and completely clean (zero dummy data).`);
 }
 

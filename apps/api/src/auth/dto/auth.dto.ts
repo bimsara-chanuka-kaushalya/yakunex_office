@@ -1,8 +1,9 @@
-import { IsEmail, IsString, Length, MaxLength } from 'class-validator';
+import { IsString, Length, MaxLength } from 'class-validator';
 
 export class LoginDto {
-  @IsEmail()
-  @MaxLength(254)
+  /** Accepts either a Company ID (e.g. YNX-0001) or work email address. */
+  @IsString()
+  @Length(2, 254)
   email!: string;
 
   @IsString()
@@ -21,7 +22,9 @@ export class ChangePasswordDto {
 }
 
 export class ForgotPasswordDto {
-  @IsEmail()
+  /** Accepts either a Company ID (e.g. YNX-0001) or work email address. */
+  @IsString()
+  @Length(2, 254)
   @MaxLength(254)
   email!: string;
 }

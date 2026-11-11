@@ -8,6 +8,7 @@ import { translate, type Lang } from '@/lib/i18n';
 
 export interface SessionUser {
   id: string;
+  companyId?: string | null;
   email: string;
   fullName: string;
   role: string;

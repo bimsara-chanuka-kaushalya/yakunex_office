@@ -18,6 +18,7 @@ import { ChangeRoleDto, CreateUserDto, ListUsersQuery, SetPermissionsDto } from 
 
 const publicUserSelect = {
   id: true,
+  companyId: true,
   email: true,
   fullName: true,
   title: true,
@@ -66,6 +67,7 @@ export class UsersService {
             OR: [
               { fullName: { contains: query.search, mode: 'insensitive' } },
               { email: { contains: query.search, mode: 'insensitive' } },
+              { companyId: { contains: query.search, mode: 'insensitive' } },
             ],
           }
         : {}),
@@ -106,12 +108,23 @@ export class UsersService {
       if (!department) throw new BadRequestException('Department not found.');
     }
 
+    let companyId = dto.companyId?.trim().toUpperCase() || '';
+    if (companyId) {
+      const existingCompanyId = await this.prisma.user.findUnique?.({ where: { companyId } });
+      if (existingCompanyId) {
+        throw new ConflictException(`Company ID ${companyId} is already assigned to another user.`);
+      }
+    } else {
+      companyId = await this.generateNextCompanyId(actor.organizationId);
+    }
+
     const temporaryPassword = generateTemporaryPassword();
     const passwordHash = await argon2.hash(temporaryPassword, { type: argon2.argon2id });
 
     const user = await this.prisma.user.create({
       data: {
         organizationId: actor.organizationId,
+        companyId,
         email,
         fullName: dto.fullName.trim(),
         title: dto.title,
@@ -129,13 +142,29 @@ export class UsersService {
       action: 'USER_CREATED',
       entityType: 'User',
       entityId: user.id,
-      metadata: { role: dto.role },
+      metadata: { role: dto.role, companyId },
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent,
     });
 
     // Returned exactly once. It is never stored in plain text or logged.
     return { user, temporaryPassword };
+  }
+
+  private async generateNextCompanyId(organizationId: string): Promise<string> {
+    const rows = await this.prisma.user.findMany({
+      where: { organizationId },
+      select: { companyId: true },
+    });
+    let maxNum = 0;
+    for (const row of rows) {
+      const match = row.companyId?.match(/^YNX-(\d+)$/i);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxNum) maxNum = num;
+      }
+    }
+    return `YNX-${String(maxNum + 1).padStart(4, '0')}`;
   }
 
   async changeRole(actor: AuthUser, targetId: string, dto: ChangeRoleDto, meta: { ipAddress?: string; userAgent?: string }) {
