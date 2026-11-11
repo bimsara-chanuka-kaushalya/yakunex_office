@@ -6,11 +6,18 @@
  * 3. Default Core Department
  * 4. Initial Super Admin Account (no fake/dummy projects, clients, or tasks)
  */
+import '../src/config/config';
 import { PrismaClient, Role } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { DEFAULT_ROLE_PERMISSIONS, PermissionKey } from '../src/rbac/permissions';
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: process.env.DATABASE_URL,
+    },
+  },
+});
 
 async function main(): Promise<void> {
   const seedPassword = process.env.SEED_PASSWORD || 'ChangeMe!2026';
