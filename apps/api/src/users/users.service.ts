@@ -71,7 +71,7 @@ export class UsersService {
         : {}),
     };
 
-    const [items, total] = await this.prisma.$transaction([
+    const [items, total] = await Promise.all([
       this.prisma.user.findMany({
         where,
         select: publicUserSelect,
@@ -151,6 +151,8 @@ export class UsersService {
       data: { role: dto.role },
       select: publicUserSelect,
     });
+    this.prisma.invalidateUserCache?.(target.id);
+    this.rbac.invalidateCache?.(target.id);
 
     await this.audit.log({
       organizationId: actor.organizationId,
@@ -192,6 +194,7 @@ export class UsersService {
       }
       return user;
     });
+    this.prisma.invalidateUserCache?.(target.id);
 
     await this.audit.log({
       organizationId: actor.organizationId,
@@ -208,14 +211,16 @@ export class UsersService {
 
   async getPermissionOverrides(actor: AuthUser, targetId: string) {
     const target = await this.findTargetOrFail(actor, targetId);
-    const overrides = await this.prisma.userPermission.findMany({
-      where: { userId: target.id },
-      select: { permissionKey: true, granted: true },
-    });
-    const roleDefaults = await this.prisma.rolePermission.findMany({
-      where: { organizationId: actor.organizationId, role: target.role },
-      select: { permissionKey: true },
-    });
+    const [overrides, roleDefaults] = await Promise.all([
+      this.prisma.userPermission.findMany({
+        where: { userId: target.id },
+        select: { permissionKey: true, granted: true },
+      }),
+      this.prisma.rolePermission.findMany({
+        where: { organizationId: actor.organizationId, role: target.role },
+        select: { permissionKey: true },
+      }),
+    ]);
     return {
       userId: target.id,
       role: target.role,
@@ -278,6 +283,7 @@ export class UsersService {
         ],
       }),
     ]);
+    this.rbac.invalidateCache?.(target.id);
 
     await this.audit.log({
       organizationId: actor.organizationId,

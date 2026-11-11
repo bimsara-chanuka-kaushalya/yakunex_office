@@ -50,9 +50,7 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Your session has expired.');
     }
 
-    const user = await this.prisma.user.findFirst({
-      where: { id: subject, deletedAt: null },
-    });
+    const user = await this.prisma.findActiveUserCached(subject);
     if (!user || user.status !== UserStatus.ACTIVE) {
       throw new UnauthorizedException('Your account is not active.');
     }

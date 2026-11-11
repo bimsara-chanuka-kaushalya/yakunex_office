@@ -9,7 +9,21 @@ import {
 
 @Injectable()
 export class RbacService {
+  private readonly cache = new Map<string, { expiresAt: number; permissions: Set<string> }>();
+
   constructor(private readonly prisma: PrismaService) {}
+
+  invalidateCache(userId?: string): void {
+    if (!userId) {
+      this.cache.clear();
+      return;
+    }
+    for (const key of this.cache.keys()) {
+      if (key.startsWith(`${userId}:`)) {
+        this.cache.delete(key);
+      }
+    }
+  }
 
   /**
    * Effective permissions = role defaults (RolePermission)
@@ -23,6 +37,13 @@ export class RbacService {
   ): Promise<Set<string>> {
     if (role === Role.SUPER_ADMIN) {
       return new Set(ALL_PERMISSION_KEYS);
+    }
+
+    const cacheKey = `${userId}:${organizationId}:${role}`;
+    const now = Date.now();
+    const cached = this.cache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return cached.permissions;
     }
 
     const [defaults, overrides] = await Promise.all([
@@ -44,6 +65,7 @@ export class RbacService {
         effective.delete(override.permissionKey);
       }
     }
+    this.cache.set(cacheKey, { expiresAt: now + 60_000, permissions: effective });
     return effective;
   }
 

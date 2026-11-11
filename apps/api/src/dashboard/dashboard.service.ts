@@ -6,17 +6,25 @@ import { WorkspaceService } from '../workspace/workspace.service';
 
 @Injectable()
 export class DashboardService {
+  private readonly orgCache = new Map<string, { data: { name: string; timezone: string }; expiresAt: number }>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly workspace: WorkspaceService,
   ) {}
 
   async personal(actor: AuthUser) {
-    const organization = await this.prisma.organization.findUnique({
-      where: { id: actor.organizationId },
-      select: { name: true, timezone: true },
-    });
-    if (!organization) throw new NotFoundException('Organization not found.');
+    const now = Date.now();
+    let organization = this.orgCache.get(actor.organizationId)?.data;
+    if (!organization || (this.orgCache.get(actor.organizationId)?.expiresAt ?? 0) <= now) {
+      const found = await this.prisma.organization.findUnique({
+        where: { id: actor.organizationId },
+        select: { name: true, timezone: true },
+      });
+      if (!found) throw new NotFoundException('Organization not found.');
+      organization = found;
+      this.orgCache.set(actor.organizationId, { data: organization, expiresAt: now + 60_000 });
+    }
 
     return {
       user: { id: actor.id, fullName: actor.fullName, role: actor.role },
@@ -29,8 +37,7 @@ export class DashboardService {
   async adminSummary(actor: AuthUser) {
     const scope = { organizationId: actor.organizationId, deletedAt: null };
 
-    const [total, byRoleRows, byStatusRows, recentAudit] = await Promise.all([
-      this.prisma.user.count({ where: scope }),
+    const [byRoleRows, byStatusRows, recentAudit] = await Promise.all([
       this.prisma.user.groupBy({
         by: ['role'],
         where: scope,
@@ -54,6 +61,8 @@ export class DashboardService {
         },
       }),
     ]);
+
+    const total = byStatusRows.reduce((sum, row) => sum + row._count._all, 0);
 
     const byRole = Object.fromEntries(
       (Object.values(Role) as Role[]).map((role) => [

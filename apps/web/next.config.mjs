@@ -3,9 +3,13 @@ const apiInternalUrl = process.env.API_INTERNAL_URL ?? 'http://localhost:4000';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  compress: true,
   // Self-contained server bundle when building Docker runtime image.
   output: process.env.STANDALONE === 'true' ? 'standalone' : undefined,
   poweredByHeader: false,
+  experimental: {
+    optimizePackageImports: ['lucide-react'],
+  },
   // Same-origin API: the browser talks to /api, Next forwards it to the Nest API.
   // Cookies therefore stay first-party and HttpOnly without CORS gymnastics.
   async rewrites() {

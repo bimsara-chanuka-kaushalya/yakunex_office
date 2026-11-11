@@ -20,8 +20,9 @@ export class AuditService {
   constructor(private readonly prisma: PrismaService) {}
 
   async log(entry: AuditEntry): Promise<void> {
-    try {
-      await this.prisma.auditLog.create({
+    // Fire-and-forget write so remote DB latency does not block user-facing HTTP responses.
+    void this.prisma.auditLog
+      .create({
         data: {
           organizationId: entry.organizationId,
           actorId: entry.actorId ?? null,
@@ -34,10 +35,10 @@ export class AuditService {
           ipAddress: entry.ipAddress,
           userAgent: entry.userAgent?.slice(0, 500),
         },
+      })
+      .catch((error: unknown) => {
+        // Audit failures are logged at error level so they can alert; they never crash the request.
+        this.logger.error(`Failed to write audit entry ${entry.action}`, error as Error);
       });
-    } catch (error) {
-      // Audit failures are logged at error level so they can alert; they never crash the request.
-      this.logger.error(`Failed to write audit entry ${entry.action}`, error as Error);
-    }
   }
 }

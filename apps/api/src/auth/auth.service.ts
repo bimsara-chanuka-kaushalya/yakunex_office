@@ -88,12 +88,14 @@ export class AuthService {
       throw new ForbiddenException('This account is not active. Contact your administrator.');
     }
 
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: new Date() },
-    });
-
-    const tokens = await this.issueTokens(user, randomUUID(), meta);
+    const [, tokens] = await Promise.all([
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: new Date() },
+      }),
+      this.issueTokens(user, randomUUID(), meta),
+    ]);
+    this.prisma.invalidateUserCache?.(user.id);
     await this.audit.log({
       organizationId: user.organizationId,
       actorId: user.id,
@@ -221,6 +223,7 @@ export class AuthService {
         data: { revokedAt: new Date() },
       }),
     ]);
+    this.prisma.invalidateUserCache?.(userId);
 
     await this.audit.log({
       organizationId: user.organizationId,
@@ -330,6 +333,7 @@ export class AuthService {
         where: { userId: user.id },
       }),
     ]);
+    this.prisma.invalidateUserCache?.(user.id);
 
     await this.audit.log({
       organizationId: user.organizationId,

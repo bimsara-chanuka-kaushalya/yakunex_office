@@ -25,7 +25,6 @@ import {
   Users,
   Video,
 } from 'lucide-react';
-import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { useAuth, useLang } from '@/components/providers';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -1307,25 +1306,27 @@ export function ReportsView() {
                 title="Project completion (%)"
                 description="Delivery progress across active projects."
               />
-              <div className="h-64 p-5">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={data.projectProgress} layout="vertical" margin={{ left: 12, right: 24 }}>
-                    <CartesianGrid horizontal={false} stroke="#E4E6EA" strokeDasharray="3 3" />
-                    <XAxis type="number" domain={[0, 100]} tick={{ fill: '#737780', fontSize: 12 }} />
-                    <YAxis
-                      type="category"
-                      dataKey="code"
-                      width={105}
-                      tick={{ fill: '#737780', fontSize: 12 }}
-                    />
-                    <Tooltip />
-                    <Bar dataKey="progressPercent" radius={[0, 6, 6, 0]} barSize={20}>
-                      {data.projectProgress.map((entry) => (
-                        <Cell key={entry.id} fill="#D5A52E" />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+              <div className="flex h-64 flex-col justify-center gap-3 overflow-y-auto p-5">
+                {data.projectProgress.length === 0 ? (
+                  <p className="text-center text-xs text-muted">No active projects yet.</p>
+                ) : (
+                  data.projectProgress.map((entry) => (
+                    <div key={entry.id} className="grid grid-cols-[96px_1fr_42px] items-center gap-3 text-xs">
+                      <span className="truncate font-mono font-medium text-muted" title={entry.name}>
+                        {entry.code}
+                      </span>
+                      <div className="h-4 w-full overflow-hidden rounded-r-md bg-canvas">
+                        <div
+                          className="h-full rounded-r-md bg-[#D5A52E] transition-all duration-300"
+                          style={{ width: `${Math.min(100, Math.max(0, entry.progressPercent))}%` }}
+                        />
+                      </div>
+                      <span className="text-right font-semibold tabular-nums text-text">
+                        {entry.progressPercent}%
+                      </span>
+                    </div>
+                  ))
+                )}
               </div>
             </Card>
 
@@ -1334,16 +1335,25 @@ export function ReportsView() {
                 title="Tasks by workflow stage"
                 description="Distribution of tasks across Kanban columns."
               />
-              <div className="h-64 p-5">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={data.tasksByStatus}>
-                    <CartesianGrid vertical={false} stroke="#E4E6EA" strokeDasharray="3 3" />
-                    <XAxis dataKey="status" tick={{ fill: '#737780', fontSize: 11 }} />
-                    <YAxis allowDecimals={false} tick={{ fill: '#737780', fontSize: 12 }} />
-                    <Tooltip />
-                    <Bar dataKey="count" radius={[6, 6, 0, 0]} barSize={28} fill="#D5A52E" />
-                  </BarChart>
-                </ResponsiveContainer>
+              <div className="flex h-64 flex-col justify-center gap-3 p-5">
+                {(() => {
+                  const maxCount = Math.max(...data.tasksByStatus.map((s) => s.count), 1);
+                  return data.tasksByStatus.map((stage) => {
+                    const pct = Math.round((stage.count / maxCount) * 100);
+                    return (
+                      <div key={stage.status} className="grid grid-cols-[110px_1fr_36px] items-center gap-3 text-xs">
+                        <span className="truncate font-medium text-muted">{stage.status}</span>
+                        <div className="h-4 w-full overflow-hidden rounded-r-md bg-canvas">
+                          <div
+                            className="h-full rounded-r-md bg-[#D5A52E] transition-all duration-300"
+                            style={{ width: `${stage.count > 0 ? Math.max(pct, 6) : 0}%` }}
+                          />
+                        </div>
+                        <span className="text-right font-semibold tabular-nums text-text">{stage.count}</span>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             </Card>
           </div>

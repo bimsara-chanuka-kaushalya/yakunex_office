@@ -78,6 +78,28 @@ function matchesUserWhere(user: User, where?: Prisma.UserWhereInput): boolean {
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
   private usingInMemory = false;
+  private readonly userCache = new Map<string, { expiresAt: number; user: User | null }>();
+
+  async findActiveUserCached(userId: string): Promise<User | null> {
+    const now = Date.now();
+    const cached = this.userCache.get(userId);
+    if (cached && cached.expiresAt > now) {
+      return cached.user;
+    }
+    const user = await this.user.findFirst({
+      where: { id: userId, deletedAt: null },
+    });
+    this.userCache.set(userId, { expiresAt: now + 60_000, user });
+    return user;
+  }
+
+  invalidateUserCache(userId?: string): void {
+    if (userId) {
+      this.userCache.delete(userId);
+    } else {
+      this.userCache.clear();
+    }
+  }
 
   async onModuleInit(): Promise<void> {
     try {
