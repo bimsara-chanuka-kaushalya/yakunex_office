@@ -1,3 +1,4 @@
+import { config } from '../config/config';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import {
   AuditLog,
@@ -14,8 +15,26 @@ import {
 } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { randomUUID } from 'crypto';
-import { config } from '../config/config';
 import { DEFAULT_ROLE_PERMISSIONS, PermissionKey } from '../rbac/permissions';
+
+function buildPooledDatabaseUrl(rawUrl?: string): string | undefined {
+  if (!rawUrl) return undefined;
+  try {
+    const parsed = new URL(rawUrl);
+    if (!parsed.searchParams.has('connection_limit')) {
+      parsed.searchParams.set('connection_limit', '5');
+    }
+    if (!parsed.searchParams.has('connect_timeout')) {
+      parsed.searchParams.set('connect_timeout', '30');
+    }
+    if (!parsed.searchParams.has('pool_timeout')) {
+      parsed.searchParams.set('pool_timeout', '30');
+    }
+    return parsed.toString();
+  } catch {
+    return rawUrl;
+  }
+}
 
 const ROLE_ORDER: Role[] = [
   Role.SUPER_ADMIN,
@@ -95,8 +114,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private readonly userCache = new Map<string, { expiresAt: number; user: User | null }>();
 
   constructor() {
+    const dbUrl = buildPooledDatabaseUrl(config.databaseUrl);
     super({
-      datasources: config.databaseUrl ? { db: { url: config.databaseUrl } } : undefined,
+      datasources: dbUrl ? { db: { url: dbUrl } } : undefined,
     });
   }
 
