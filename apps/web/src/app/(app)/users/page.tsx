@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { Check, Copy, KeyRound, Search, UserPlus, Users as UsersIcon } from 'lucide-react';
+import { Check, Copy, Eye, EyeOff, KeyRound, Search, UserPlus, Users as UsersIcon } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -567,6 +567,7 @@ function CreateUserDialog({
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<{ name: string; password: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [showCreatedPassword, setShowCreatedPassword] = useState(true);
 
   function reset() {
     setFullName('');
@@ -631,12 +632,25 @@ function CreateUserDialog({
               <p className="text-xs uppercase tracking-wider text-muted">
                 {t('temporaryPassword')}
               </p>
-              <p className="font-mono text-lg tracking-wider">{created.password}</p>
+              <p className="font-mono text-lg tracking-wider">
+                {showCreatedPassword ? created.password : '••••••••••••••••'}
+              </p>
             </div>
-            <Button variant="secondary" size="sm" onClick={copyPassword}>
-              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-              {copied ? t('copied') : t('copy')}
-            </Button>
+            <div className="flex items-center gap-1.5">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowCreatedPassword((v) => !v)}
+                title={showCreatedPassword ? t('hidePassword') : t('showPassword')}
+                aria-label={showCreatedPassword ? t('hidePassword') : t('showPassword')}
+              >
+                {showCreatedPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </Button>
+              <Button variant="secondary" size="sm" onClick={copyPassword}>
+                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                {copied ? t('copied') : t('copy')}
+              </Button>
+            </div>
           </div>
           <div className="flex justify-end">
             <Button onClick={close}>Done</Button>

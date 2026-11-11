@@ -1,8 +1,10 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   HttpException,
   Injectable,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -229,6 +231,117 @@ export class AuthService {
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent,
     });
+  }
+
+  async forgotPassword(
+    email: string,
+    meta: RequestMeta,
+  ): Promise<{ ok: boolean; message: string; resetToken?: string; resetUrl?: string }> {
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await this.prisma.user.findFirst({
+      where: { email: normalizedEmail, deletedAt: null },
+    });
+
+    const defaultMessage = 'If an account exists with this email, a password reset link has been generated.';
+    if (!user || user.status !== UserStatus.ACTIVE) {
+      return { ok: true, message: defaultMessage };
+    }
+
+    const secret = config.jwtAccessSecret;
+    const fp = createHash('sha256').update(user.passwordHash).digest('hex').slice(0, 16);
+    const resetToken = await this.jwt.signAsync(
+      {
+        sub: user.id,
+        email: user.email,
+        fp,
+        purpose: 'password-reset',
+      },
+      {
+        secret,
+        expiresIn: '1h',
+      },
+    );
+
+    await this.audit.log({
+      organizationId: user.organizationId,
+      actorId: user.id,
+      action: 'PASSWORD_RESET_REQUESTED',
+      entityType: 'User',
+      entityId: user.id,
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent,
+      metadata: { email: normalizedEmail },
+    });
+
+    const resetUrl = `/reset-password?token=${encodeURIComponent(resetToken)}`;
+
+    return {
+      ok: true,
+      message: defaultMessage,
+      resetToken,
+      resetUrl,
+    };
+  }
+
+  async resetPassword(
+    token: string,
+    newPassword: string,
+    meta: RequestMeta,
+  ): Promise<{ ok: boolean; message: string }> {
+    validatePasswordStrength(newPassword);
+
+    let payload: { sub: string; email: string; fp: string; purpose: string };
+    try {
+      payload = await this.jwt.verifyAsync(token, { secret: config.jwtAccessSecret });
+    } catch {
+      throw new BadRequestException('Password reset link is invalid or has expired. Please request a new one.');
+    }
+
+    if (payload.purpose !== 'password-reset' || !payload.sub) {
+      throw new BadRequestException('Invalid password reset token.');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+    });
+
+    if (!user || user.deletedAt) {
+      throw new NotFoundException('User account no longer exists.');
+    }
+
+    const currentFp = createHash('sha256').update(user.passwordHash).digest('hex').slice(0, 16);
+    if (currentFp !== payload.fp) {
+      throw new BadRequestException('This reset link has already been used. Please request a new one.');
+    }
+
+    const passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });
+
+    await Promise.all([
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          passwordHash,
+          mustChangePassword: false,
+          failedLoginCount: 0,
+          lockedUntil: null,
+        },
+      }),
+      this.prisma.refreshToken.deleteMany({
+        where: { userId: user.id },
+      }),
+    ]);
+
+    await this.audit.log({
+      organizationId: user.organizationId,
+      actorId: user.id,
+      action: 'PASSWORD_RESET_COMPLETED',
+      entityType: 'User',
+      entityId: user.id,
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent,
+    });
+
+    return { ok: true, message: 'Password has been reset successfully. You can now sign in.' };
   }
 
   private async issueTokens(user: User, familyId: string, meta: RequestMeta): Promise<TokenPair> {

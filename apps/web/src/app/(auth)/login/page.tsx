@@ -1,12 +1,12 @@
 'use client';
 
 import { useState, type FormEvent } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Eye, EyeOff } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { YakunexLogo, YakunexMark } from '@/components/brand/logo';
 import { Button } from '@/components/ui/button';
-import { Field, Input } from '@/components/ui/field';
+import { Field, Input, PasswordInput } from '@/components/ui/field';
 import { ApiError } from '@/lib/api';
 
 /** Only same-site relative paths are allowed, which blocks open redirects. */
@@ -22,7 +22,6 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -99,27 +98,27 @@ export default function LoginPage() {
               />
             </Field>
 
-            <Field label={t('password')} htmlFor="password">
-              <div className="relative">
-                <Input
-                  id="password"
-                  type={showPassword ? 'text' : 'password'}
-                  autoComplete="current-password"
-                  required
-                  minLength={8}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="pr-11"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((v) => !v)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-muted hover:text-ink"
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+            <Field
+              label={t('password')}
+              htmlFor="password"
+              action={
+                <Link
+                  href="/forgot-password"
+                  className="text-xs font-medium text-gold hover:underline focus:outline-none"
                 >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
+                  {t('forgotPassword')}
+                </Link>
+              }
+            >
+              <PasswordInput
+                id="password"
+                autoComplete="current-password"
+                required
+                minLength={8}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••••••"
+              />
             </Field>
 
             <div aria-live="polite" className="min-h-[1.25rem]">
@@ -132,7 +131,7 @@ export default function LoginPage() {
           </form>
 
           <p className="mt-8 text-center text-xs text-muted">
-            Accounts are created by your administrator. Forgotten password reset is coming in a later release.
+            Enterprise Project & Workforce Management System by Yakunex Technologies.
           </p>
         </div>
       </section>

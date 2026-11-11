@@ -19,3 +19,18 @@ export class ChangePasswordDto {
   @Length(12, 200)
   newPassword!: string;
 }
+
+export class ForgotPasswordDto {
+  @IsEmail()
+  @MaxLength(254)
+  email!: string;
+}
+
+export class ResetPasswordDto {
+  @IsString()
+  token!: string;
+
+  @IsString()
+  @Length(12, 200)
+  newPassword!: string;
+}

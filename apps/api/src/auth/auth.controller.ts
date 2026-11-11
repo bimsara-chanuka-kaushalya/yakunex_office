@@ -6,7 +6,7 @@ import type { AuthUser, RequestMeta } from '../common/types';
 import { config } from '../config/config';
 import { RbacService } from '../rbac/rbac.service';
 import { AuthService, TokenPair } from './auth.service';
-import { ChangePasswordDto, LoginDto } from './dto/auth.dto';
+import { ChangePasswordDto, ForgotPasswordDto, LoginDto, ResetPasswordDto } from './dto/auth.dto';
 
 const ACCESS_COOKIE = 'access_token';
 const REFRESH_COOKIE = 'refresh_token';
@@ -96,5 +96,21 @@ export class AuthController {
     await this.auth.changePassword(user.id, dto.currentPassword, dto.newPassword, metaOf(req));
     clearAuthCookies(res);
     return { ok: true, message: 'Password changed. Please sign in again.' };
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  async forgotPassword(@Body() dto: ForgotPasswordDto, @Req() req: Request) {
+    return this.auth.forgotPassword(dto.email, metaOf(req));
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  async resetPassword(@Body() dto: ResetPasswordDto, @Req() req: Request) {
+    return this.auth.resetPassword(dto.token, dto.newPassword, metaOf(req));
   }
 }

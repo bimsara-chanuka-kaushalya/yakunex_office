@@ -4,7 +4,7 @@ import { useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth, useLang } from '@/components/providers';
 import { Modal } from '@/components/ui/modal';
-import { Field, Input } from '@/components/ui/field';
+import { Field, PasswordInput } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
 import { ApiError, post } from '@/lib/api';
 
@@ -43,10 +43,10 @@ export function ForcePasswordChange() {
         <form onSubmit={onSubmit} className="space-y-4">
           <p className="text-sm text-muted">Use at least 12 characters with letters and numbers. You will be signed out on all devices.</p>
           <Field label={t('currentPassword')} htmlFor="current-password">
-            <Input id="current-password" type="password" autoComplete="current-password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
+            <PasswordInput id="current-password" autoComplete="current-password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
           </Field>
           <Field label={t('newPassword')} htmlFor="new-password" error={error ?? undefined}>
-            <Input id="new-password" type="password" autoComplete="new-password" minLength={12} required value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+            <PasswordInput id="new-password" autoComplete="new-password" minLength={12} required value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
           </Field>
           <div className="flex justify-end">
             <Button type="submit" disabled={busy}>{busy ? t('loading') : t('save')}</Button>

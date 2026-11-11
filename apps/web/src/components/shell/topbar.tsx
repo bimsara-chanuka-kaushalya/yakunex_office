@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
-import { LogOut, Menu, Monitor, Moon, Sun } from 'lucide-react';
+import { ArrowLeft, LogOut, Menu, Monitor, Moon, Sun } from 'lucide-react';
 import { useAuth, useLang, useTheme, type ThemeChoice } from '@/components/providers';
 import { Button } from '@/components/ui/button';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
@@ -40,6 +40,19 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
       >
         <Menu className="h-5 w-5" />
       </button>
+
+      {segment !== 'dashboard' && (
+        <button
+          type="button"
+          onClick={() => router.push('/dashboard')}
+          className="flex items-center gap-1.5 rounded-lg border border-line bg-canvas px-2.5 py-1 text-xs font-medium text-muted transition-colors hover:bg-surface hover:text-ink focus:outline-none"
+          title={t('backToDashboard')}
+          aria-label={t('backToDashboard')}
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">{t('back')}</span>
+        </button>
+      )}
 
       <h1 className="font-display text-xl font-semibold capitalize">{title}</h1>
 
