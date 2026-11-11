@@ -325,6 +325,7 @@ export class WorkspaceService implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    await this.prisma.waitForReady?.();
     await this.hydrateFromSupabase();
   }
 

@@ -91,6 +91,7 @@ function matchesUserWhere(user: User, where?: Prisma.UserWhereInput): boolean {
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
   private usingInMemory = false;
+  private initPromise: Promise<void> | null = null;
   private readonly userCache = new Map<string, { expiresAt: number; user: User | null }>();
 
   constructor() {
@@ -120,32 +121,43 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     }
   }
 
+  async waitForReady(): Promise<void> {
+    if (this.initPromise) {
+      await this.initPromise;
+    }
+  }
+
   async onModuleInit(): Promise<void> {
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    this.initPromise = this.connectAndInitialize();
+    await this.initPromise;
+  }
+
+  private async connectAndInitialize(): Promise<void> {
+    if (!config.databaseUrl) {
+      this.usingInMemory = true;
+      this.logger.warn('No DATABASE_URL configured; running with in-memory store.');
+      await this.enableInMemoryStore();
+      return;
+    }
+
+    for (let attempt = 1; attempt <= 5; attempt++) {
       try {
         await this.$connect();
         this.logger.log('✅ Connected to PostgreSQL / Supabase database successfully.');
         await this.ensureCompanyIds();
         return;
       } catch (error) {
-        lastError = error;
         this.logger.warn(
-          `Supabase connection attempt ${attempt}/3 failed: ${(error as Error).message}`,
+          `Supabase connection attempt ${attempt}/5 failed: ${(error as Error).message}`,
         );
-        if (attempt < 3) {
-          await new Promise((r) => setTimeout(r, 1500));
+        if (attempt < 5) {
+          await new Promise((r) => setTimeout(r, 2000));
         }
       }
     }
-    if (config.isProd) {
-      throw lastError;
-    }
-    this.usingInMemory = true;
-    this.logger.warn(
-      'PostgreSQL / Supabase is not reachable at DATABASE_URL; running with clean in-memory development store with single admin account (zero dummy projects/tasks).',
+    this.logger.error(
+      'Could not connect on initial boot; Prisma will continue retrying on incoming requests against Supabase PostgreSQL.',
     );
-    await this.enableInMemoryStore();
   }
 
   /** Ensures every user in the database has a unique Company ID (e.g., YNX-0001). */
