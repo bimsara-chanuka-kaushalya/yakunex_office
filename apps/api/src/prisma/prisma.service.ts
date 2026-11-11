@@ -21,9 +21,8 @@ function buildPooledDatabaseUrl(rawUrl?: string): string | undefined {
   if (!rawUrl) return undefined;
   try {
     const parsed = new URL(rawUrl);
-    if (!parsed.searchParams.has('connection_limit')) {
-      parsed.searchParams.set('connection_limit', '5');
-    }
+    // Keep a single warm TCP+SSL connection so Prisma never blocks 10-15s opening a 2nd cold socket to remote pooler
+    parsed.searchParams.set('connection_limit', '1');
     if (!parsed.searchParams.has('connect_timeout')) {
       parsed.searchParams.set('connect_timeout', '30');
     }
@@ -112,6 +111,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private usingInMemory = false;
   private initPromise: Promise<void> | null = null;
   private readonly userCache = new Map<string, { expiresAt: number; user: User | null }>();
+  private readonly allUsersCache = new Map<string, User>();
 
   constructor() {
     const dbUrl = buildPooledDatabaseUrl(config.databaseUrl);
@@ -120,7 +120,52 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     });
   }
 
+  upsertUserInCache(user: User): void {
+    if (user.deletedAt) {
+      this.allUsersCache.delete(user.id);
+      this.userCache.delete(user.id);
+      return;
+    }
+    this.allUsersCache.set(user.id, user);
+    this.userCache.set(user.id, { expiresAt: Date.now() + 300_000, user });
+  }
+
+  getCachedUsers(organizationId?: string): User[] {
+    const list = Array.from(this.allUsersCache.values()).filter(
+      (u) => !u.deletedAt && (!organizationId || u.organizationId === organizationId),
+    );
+    return list;
+  }
+
+  async findUserByIdentifierCached(emailCandidates: string[], companyId: string): Promise<User | null> {
+    const lowerEmails = new Set(emailCandidates.map((e) => e.toLowerCase()));
+    const upperCompany = companyId.toUpperCase();
+    for (const u of this.allUsersCache.values()) {
+      if (u.deletedAt) continue;
+      if (lowerEmails.has(u.email.toLowerCase()) || (u.companyId && u.companyId.toUpperCase() === upperCompany)) {
+        return u;
+      }
+    }
+    const user = await this.user.findFirst({
+      where: {
+        deletedAt: null,
+        OR: [
+          { email: { in: emailCandidates } },
+          { companyId: upperCompany },
+        ],
+      },
+    });
+    if (user) {
+      this.upsertUserInCache(user);
+    }
+    return user;
+  }
+
   async findActiveUserCached(userId: string): Promise<User | null> {
+    const memUser = this.allUsersCache.get(userId);
+    if (memUser && !memUser.deletedAt) {
+      return memUser;
+    }
     const now = Date.now();
     const cached = this.userCache.get(userId);
     if (cached && cached.expiresAt > now) {
@@ -129,15 +174,21 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     const user = await this.user.findFirst({
       where: { id: userId, deletedAt: null },
     });
-    this.userCache.set(userId, { expiresAt: now + 60_000, user });
+    if (user) {
+      this.upsertUserInCache(user);
+    } else {
+      this.userCache.set(userId, { expiresAt: now + 60_000, user: null });
+    }
     return user;
   }
 
   invalidateUserCache(userId?: string): void {
     if (userId) {
       this.userCache.delete(userId);
+      this.allUsersCache.delete(userId);
     } else {
       this.userCache.clear();
+      this.allUsersCache.clear();
     }
   }
 
@@ -180,14 +231,13 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     );
   }
 
-  /** Ensures every user in the database has a unique Company ID (e.g., YNX-0001). */
+  /** Ensures every user in the database has a unique Company ID (e.g., YNX-0001) and warms the in-memory user cache. */
   private async ensureCompanyIds(): Promise<void> {
     try {
       await this.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "companyId" TEXT;`);
       await this.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "User_companyId_key" ON "User"("companyId");`);
       const allUsers = await this.user.findMany({
         orderBy: { createdAt: 'asc' },
-        select: { id: true, email: true, companyId: true },
       });
       const used = new Set<string>();
       let maxNum = 0;
@@ -217,10 +267,13 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
             } while (used.has(assigned));
           }
           used.add(assigned);
-          await this.user.update({
+          const updated = await this.user.update({
             where: { id: u.id },
             data: { companyId: assigned },
           });
+          this.upsertUserInCache(updated);
+        } else {
+          this.upsertUserInCache(u);
         }
       }
     } catch (err) {

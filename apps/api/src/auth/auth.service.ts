@@ -55,6 +55,20 @@ export function validatePasswordStrength(password: string): void {
 
 @Injectable()
 export class AuthService {
+  private readonly refreshTokenCache = new Map<
+    string,
+    {
+      id: string;
+      organizationId: string;
+      userId: string;
+      familyId: string;
+      tokenHash: string;
+      expiresAt: Date;
+      revokedAt: Date | null;
+      user: User;
+    }
+  >();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
@@ -70,15 +84,17 @@ export class AuthService {
         ? ['admin@projectflow.local', 'admin@yakunexhub.local']
         : [normalizedEmail];
 
-    const user = await this.prisma.user.findFirst({
-      where: {
-        deletedAt: null,
-        OR: [
-          { email: { in: emailCandidates } },
-          { companyId: normalizedCompanyId },
-        ],
-      },
-    });
+    const user = this.prisma.findUserByIdentifierCached
+      ? await this.prisma.findUserByIdentifierCached(emailCandidates, normalizedCompanyId)
+      : await this.prisma.user.findFirst({
+          where: {
+            deletedAt: null,
+            OR: [
+              { email: { in: emailCandidates } },
+              { companyId: normalizedCompanyId },
+            ],
+          },
+        });
 
     if (!user) {
       await argon2.verify(await getDummyHash(), password).catch(() => false);
@@ -102,14 +118,25 @@ export class AuthService {
       throw new ForbiddenException('This account is not active. Contact your administrator.');
     }
 
-    const [, tokens] = await Promise.all([
-      this.prisma.user.update({
+    const now = new Date();
+    const updatedUser: User = {
+      ...user,
+      failedLoginCount: 0,
+      lockedUntil: null,
+      lastLoginAt: now,
+    };
+    this.prisma.upsertUserInCache?.(updatedUser);
+
+    const tokens = await this.issueTokens(updatedUser, randomUUID(), meta);
+
+    // Persist login metadata to Supabase asynchronously so login response is instant (<50ms)
+    void this.prisma.user
+      .update({
         where: { id: user.id },
-        data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: new Date() },
-      }),
-      this.issueTokens(user, randomUUID(), meta),
-    ]);
-    this.prisma.invalidateUserCache?.(user.id);
+        data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: now },
+      })
+      .catch(() => undefined);
+
     await this.audit.log({
       organizationId: user.organizationId,
       actorId: user.id,
@@ -120,7 +147,7 @@ export class AuthService {
       userAgent: meta.userAgent,
     });
 
-    return { user: toAuthUser(user), tokens };
+    return { user: toAuthUser(updatedUser), tokens };
   }
 
   private async recordFailedLogin(user: User, meta: RequestMeta): Promise<void> {
@@ -130,13 +157,22 @@ export class AuthService {
       ? new Date(Date.now() + config.lockoutMinutes * 60_000)
       : null;
 
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: {
-        failedLoginCount: shouldLock ? 0 : failures,
-        lockedUntil,
-      },
-    });
+    const updatedUser: User = {
+      ...user,
+      failedLoginCount: shouldLock ? 0 : failures,
+      lockedUntil,
+    };
+    this.prisma.upsertUserInCache?.(updatedUser);
+
+    void this.prisma.user
+      .update({
+        where: { id: user.id },
+        data: {
+          failedLoginCount: shouldLock ? 0 : failures,
+          lockedUntil,
+        },
+      })
+      .catch(() => undefined);
 
     await this.audit.log({
       organizationId: user.organizationId,
@@ -156,20 +192,31 @@ export class AuthService {
       throw new UnauthorizedException('Your session has ended. Please sign in again.');
     }
 
-    const record = await this.prisma.refreshToken.findUnique({
-      where: { tokenHash: hashToken(rawRefreshToken) },
-      include: { user: true },
-    });
+    const hashed = hashToken(rawRefreshToken);
+    let record = this.refreshTokenCache.get(hashed) ?? null;
+    if (!record) {
+      record = await this.prisma.refreshToken.findUnique({
+        where: { tokenHash: hashed },
+        include: { user: true },
+      });
+    }
 
     if (!record) {
       throw new UnauthorizedException('Your session has ended. Please sign in again.');
     }
 
     if (record.revokedAt) {
-      await this.prisma.refreshToken.updateMany({
-        where: { familyId: record.familyId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      });
+      for (const rt of this.refreshTokenCache.values()) {
+        if (rt.familyId === record.familyId && !rt.revokedAt) {
+          rt.revokedAt = new Date();
+        }
+      }
+      void this.prisma.refreshToken
+        .updateMany({
+          where: { familyId: record.familyId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        })
+        .catch(() => undefined);
       await this.audit.log({
         organizationId: record.organizationId,
         actorId: record.userId,
@@ -182,15 +229,18 @@ export class AuthService {
       throw new UnauthorizedException('Your session has ended. Please sign in again.');
     }
 
-    const user = record.user;
+    const user = (await this.prisma.findActiveUserCached?.(record.userId)) ?? record.user;
     if (record.expiresAt < new Date() || user.deletedAt || user.status !== UserStatus.ACTIVE) {
       throw new UnauthorizedException('Your session has ended. Please sign in again.');
     }
 
-    await this.prisma.refreshToken.update({
-      where: { id: record.id },
-      data: { revokedAt: new Date() },
-    });
+    record.revokedAt = new Date();
+    void this.prisma.refreshToken
+      .update({
+        where: { id: record.id },
+        data: { revokedAt: record.revokedAt },
+      })
+      .catch(() => undefined);
 
     const tokens = await this.issueTokens(user, record.familyId, meta);
     return { user: toAuthUser(user), tokens };
@@ -198,14 +248,31 @@ export class AuthService {
 
   async logout(rawRefreshToken: string | undefined): Promise<void> {
     if (!rawRefreshToken) return;
-    const record = await this.prisma.refreshToken.findUnique({
-      where: { tokenHash: hashToken(rawRefreshToken) },
-    });
-    if (!record) return;
-    await this.prisma.refreshToken.updateMany({
-      where: { familyId: record.familyId, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
+    const hashed = hashToken(rawRefreshToken);
+    const cached = this.refreshTokenCache.get(hashed);
+    if (cached) {
+      for (const rt of this.refreshTokenCache.values()) {
+        if (rt.familyId === cached.familyId && !rt.revokedAt) {
+          rt.revokedAt = new Date();
+        }
+      }
+    }
+    void (async () => {
+      try {
+        const record =
+          cached ??
+          (await this.prisma.refreshToken.findUnique({
+            where: { tokenHash: hashed },
+          }));
+        if (!record) return;
+        await this.prisma.refreshToken.updateMany({
+          where: { familyId: record.familyId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+      } catch {
+        // Ignore logout background errors
+      }
+    })();
   }
 
   async changePassword(
@@ -214,7 +281,9 @@ export class AuthService {
     newPassword: string,
     meta: RequestMeta,
   ): Promise<void> {
-    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    const user =
+      (await this.prisma.findActiveUserCached?.(userId)) ??
+      (await this.prisma.user.findUniqueOrThrow({ where: { id: userId } }));
 
     const ok = await argon2.verify(user.passwordHash, currentPassword).catch(() => false);
     if (!ok) {
@@ -226,18 +295,28 @@ export class AuthService {
     validatePasswordStrength(newPassword);
 
     const passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });
-    await this.prisma.$transaction([
-      this.prisma.user.update({
-        where: { id: userId },
-        data: { passwordHash, mustChangePassword: false },
-      }),
-      // Sign out every session, including this one, so a changed password takes effect everywhere.
-      this.prisma.refreshToken.updateMany({
+    this.prisma.upsertUserInCache?.({
+      ...user,
+      passwordHash,
+      mustChangePassword: false,
+      updatedAt: new Date(),
+    });
+    for (const rt of this.refreshTokenCache.values()) {
+      if (rt.userId === userId && !rt.revokedAt) {
+        rt.revokedAt = new Date();
+      }
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash, mustChangePassword: false },
+    });
+    void this.prisma.refreshToken
+      .updateMany({
         where: { userId, revokedAt: null },
         data: { revokedAt: new Date() },
-      }),
-    ]);
-    this.prisma.invalidateUserCache?.(userId);
+      })
+      .catch(() => undefined);
 
     await this.audit.log({
       organizationId: user.organizationId,
@@ -262,15 +341,17 @@ export class AuthService {
         ? ['admin@projectflow.local', 'admin@yakunexhub.local']
         : [normalizedEmail];
 
-    const user = await this.prisma.user.findFirst({
-      where: {
-        deletedAt: null,
-        OR: [
-          { email: { in: emailCandidates } },
-          { companyId: normalizedCompanyId },
-        ],
-      },
-    });
+    const user = this.prisma.findUserByIdentifierCached
+      ? await this.prisma.findUserByIdentifierCached(emailCandidates, normalizedCompanyId)
+      : await this.prisma.user.findFirst({
+          where: {
+            deletedAt: null,
+            OR: [
+              { email: { in: emailCandidates } },
+              { companyId: normalizedCompanyId },
+            ],
+          },
+        });
 
     const defaultMessage = 'If an account exists with this Company ID or email, a password reset link has been generated.';
     if (!user || user.status !== UserStatus.ACTIVE) {
@@ -331,9 +412,11 @@ export class AuthService {
       throw new BadRequestException('Invalid password reset token.');
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub },
-    });
+    const user =
+      (await this.prisma.findActiveUserCached?.(payload.sub)) ??
+      (await this.prisma.user.findUnique({
+        where: { id: payload.sub },
+      }));
 
     if (!user || user.deletedAt) {
       throw new NotFoundException('User account no longer exists.');
@@ -345,22 +428,34 @@ export class AuthService {
     }
 
     const passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });
+    this.prisma.upsertUserInCache?.({
+      ...user,
+      passwordHash,
+      mustChangePassword: false,
+      failedLoginCount: 0,
+      lockedUntil: null,
+      updatedAt: new Date(),
+    });
+    for (const [k, rt] of this.refreshTokenCache.entries()) {
+      if (rt.userId === user.id) {
+        this.refreshTokenCache.delete(k);
+      }
+    }
 
-    await Promise.all([
-      this.prisma.user.update({
-        where: { id: user.id },
-        data: {
-          passwordHash,
-          mustChangePassword: false,
-          failedLoginCount: 0,
-          lockedUntil: null,
-        },
-      }),
-      this.prisma.refreshToken.deleteMany({
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash,
+        mustChangePassword: false,
+        failedLoginCount: 0,
+        lockedUntil: null,
+      },
+    });
+    void this.prisma.refreshToken
+      .deleteMany({
         where: { userId: user.id },
-      }),
-    ]);
-    this.prisma.invalidateUserCache?.(user.id);
+      })
+      .catch(() => undefined);
 
     await this.audit.log({
       organizationId: user.organizationId,
@@ -382,17 +477,35 @@ export class AuthService {
     );
 
     const refreshToken = randomBytes(48).toString('base64url');
-    await this.prisma.refreshToken.create({
-      data: {
-        organizationId: user.organizationId,
-        userId: user.id,
-        familyId,
-        tokenHash: hashToken(refreshToken),
-        userAgent: meta.userAgent?.slice(0, 500),
-        ipAddress: meta.ipAddress,
-        expiresAt: new Date(Date.now() + config.refreshTokenTtlDays * 86_400_000),
-      },
+    const tokenHash = hashToken(refreshToken);
+    const expiresAt = new Date(Date.now() + config.refreshTokenTtlDays * 86_400_000);
+    const recordId = randomUUID();
+
+    this.refreshTokenCache.set(tokenHash, {
+      id: recordId,
+      organizationId: user.organizationId,
+      userId: user.id,
+      familyId,
+      tokenHash,
+      expiresAt,
+      revokedAt: null,
+      user,
     });
+
+    void this.prisma.refreshToken
+      .create({
+        data: {
+          id: recordId,
+          organizationId: user.organizationId,
+          userId: user.id,
+          familyId,
+          tokenHash,
+          userAgent: meta.userAgent?.slice(0, 500),
+          ipAddress: meta.ipAddress,
+          expiresAt,
+        },
+      })
+      .catch(() => undefined);
 
     return { accessToken, refreshToken };
   }

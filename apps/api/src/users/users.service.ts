@@ -73,16 +73,58 @@ export class UsersService {
         : {}),
     };
 
-    const [items, total] = await Promise.all([
-      this.prisma.user.findMany({
-        where,
-        select: publicUserSelect,
-        orderBy: [{ role: 'asc' }, { fullName: 'asc' }],
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-      }),
-      this.prisma.user.count({ where }),
-    ]);
+    const cachedUsers = this.prisma.getCachedUsers?.(actor.organizationId) ?? [];
+    if (cachedUsers.length > 0) {
+      const roleOrder: Role[] = [
+        Role.SUPER_ADMIN,
+        Role.ADMIN,
+        Role.PROJECT_MANAGER,
+        Role.STAFF,
+        Role.INTERN,
+      ];
+      const needle = query.search?.trim().toLowerCase();
+      const filtered = cachedUsers
+        .filter((u) => {
+          if (query.role && u.role !== query.role) return false;
+          if (query.status && u.status !== query.status) return false;
+          if (needle) {
+            const matchName = u.fullName.toLowerCase().includes(needle);
+            const matchEmail = u.email.toLowerCase().includes(needle);
+            const matchCompanyId = (u.companyId ?? '').toLowerCase().includes(needle);
+            if (!matchName && !matchEmail && !matchCompanyId) return false;
+          }
+          return true;
+        })
+        .sort((a, b) => {
+          const rDiff = roleOrder.indexOf(a.role) - roleOrder.indexOf(b.role);
+          if (rDiff !== 0) return rDiff;
+          return a.fullName.localeCompare(b.fullName);
+        });
+      const total = filtered.length;
+      const items = filtered.slice((page - 1) * pageSize, page * pageSize).map((u) => ({
+        id: u.id,
+        companyId: u.companyId,
+        email: u.email,
+        fullName: u.fullName,
+        title: u.title,
+        role: u.role,
+        status: u.status,
+        departmentId: u.departmentId,
+        lastLoginAt: u.lastLoginAt,
+        createdAt: u.createdAt,
+        mustChangePassword: u.mustChangePassword,
+      }));
+      return { items, total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
+    }
+
+    const items = await this.prisma.user.findMany({
+      where,
+      select: publicUserSelect,
+      orderBy: [{ role: 'asc' }, { fullName: 'asc' }],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    });
+    const total = await this.prisma.user.count({ where });
 
     return { items, total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
   }
@@ -121,7 +163,7 @@ export class UsersService {
     const temporaryPassword = generateTemporaryPassword();
     const passwordHash = await argon2.hash(temporaryPassword, { type: argon2.argon2id });
 
-    const user = await this.prisma.user.create({
+    const createdFull = await this.prisma.user.create({
       data: {
         organizationId: actor.organizationId,
         companyId,
@@ -133,8 +175,21 @@ export class UsersService {
         passwordHash,
         mustChangePassword: true,
       },
-      select: publicUserSelect,
     });
+    this.prisma.upsertUserInCache?.(createdFull);
+    const user = {
+      id: createdFull.id,
+      companyId: createdFull.companyId,
+      email: createdFull.email,
+      fullName: createdFull.fullName,
+      title: createdFull.title,
+      role: createdFull.role,
+      status: createdFull.status,
+      departmentId: createdFull.departmentId,
+      lastLoginAt: createdFull.lastLoginAt,
+      createdAt: createdFull.createdAt,
+      mustChangePassword: createdFull.mustChangePassword,
+    };
 
     await this.audit.log({
       organizationId: actor.organizationId,
@@ -180,7 +235,7 @@ export class UsersService {
       data: { role: dto.role },
       select: publicUserSelect,
     });
-    this.prisma.invalidateUserCache?.(target.id);
+    this.prisma.upsertUserInCache?.({ ...target, role: dto.role, updatedAt: new Date() });
     this.rbac.invalidateCache?.(target.id);
 
     await this.audit.log({
@@ -208,22 +263,20 @@ export class UsersService {
     const target = await this.findTargetOrFail(actor, targetId);
     assertCanManageTarget(actor.role, target.role);
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.update({
-        where: { id: target.id },
-        data: { status },
-        select: publicUserSelect,
-      });
-      if (status !== UserStatus.ACTIVE) {
-        // Revoke sessions immediately so the account is locked out, not just on next refresh.
-        await tx.refreshToken.updateMany({
+    const updated = await this.prisma.user.update({
+      where: { id: target.id },
+      data: { status },
+      select: publicUserSelect,
+    });
+    if (status !== UserStatus.ACTIVE) {
+      void this.prisma.refreshToken
+        .updateMany({
           where: { userId: target.id, revokedAt: null },
           data: { revokedAt: new Date() },
-        });
-      }
-      return user;
-    });
-    this.prisma.invalidateUserCache?.(target.id);
+        })
+        .catch(() => undefined);
+    }
+    this.prisma.upsertUserInCache?.({ ...target, status, updatedAt: new Date() });
 
     await this.audit.log({
       organizationId: actor.organizationId,

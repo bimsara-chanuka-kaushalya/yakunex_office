@@ -1,4 +1,4 @@
-const apiInternalUrl = process.env.API_INTERNAL_URL ?? 'http://localhost:4000';
+const apiInternalUrl = process.env.API_INTERNAL_URL ?? 'http://127.0.0.1:4000';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
@@ -9,6 +9,7 @@ const nextConfig = {
   poweredByHeader: false,
   experimental: {
     optimizePackageImports: ['lucide-react'],
+    proxyTimeout: 60000,
   },
   // Same-origin API: the browser talks to /api, Next forwards it to the Nest API.
   // Cookies therefore stay first-party and HttpOnly without CORS gymnastics.
