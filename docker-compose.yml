@@ -1,0 +1,86 @@
+# ProjectFlow – local and single-server deployment.
+# Usage:  cp .env.example .env   (then fill in every value)
+#         docker compose up -d --build
+#         docker compose --profile tools run --rm seed      (development only)
+
+name: projectflow
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: projectflow
+      POSTGRES_USER: projectflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Bound to localhost only, so you can run Prisma migrations from the host. Remove in production.
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U projectflow -d projectflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    # Reserved for sessions, caching and background jobs (Phase 4+). Not used by Phase 1 code yet.
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ./apps/api
+      target: runtime
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://projectflow:${POSTGRES_PASSWORD}@postgres:5432/projectflow?schema=public
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # The API is not published to the host. Only the web container reaches it.
+    expose:
+      - "4000"
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        API_INTERNAL_URL: http://api:4000
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+  seed:
+    # Development data only. Refuses to run when NODE_ENV=production.
+    build:
+      context: ./apps/api
+      target: seed
+    profiles: ["tools"]
+    env_file: .env
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://projectflow:${POSTGRES_PASSWORD}@postgres:5432/projectflow?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:

@@ -1,0 +1,18 @@
+{
+  "name": "projectflow",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ProjectFlow by Yakunex – monorepo root scripts",
+  "scripts": {
+    "dev:api": "npm --prefix apps/api run start:dev",
+    "dev:web": "npm --prefix apps/web run dev",
+    "build": "npm --prefix apps/api run build && npm --prefix apps/web run build",
+    "typecheck": "npm --prefix apps/api run typecheck && npm --prefix apps/web run typecheck",
+    "test": "npm --prefix apps/api test",
+    "seed": "npm --prefix apps/api run seed",
+    "db:push": "npm --prefix apps/api run prisma:db:push",
+    "db:generate": "npm --prefix apps/api run prisma:generate",
+    "db:studio": "npm --prefix apps/api run prisma:studio"
+  }
+}
+
