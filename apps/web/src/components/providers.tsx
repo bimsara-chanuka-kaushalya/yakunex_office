@@ -110,20 +110,24 @@ function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<ThemeChoice>('system');
 
   useEffect(() => {
-    const saved = (localStorage.getItem('pf-theme') as ThemeChoice | null) ?? 'system';
+    const saved =
+      (localStorage.getItem('yh-theme') as ThemeChoice | null) ??
+      (localStorage.getItem('pf-theme') as ThemeChoice | null) ??
+      'system';
     setThemeState(saved);
     applyTheme(saved);
 
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const onChange = () => {
-      if ((localStorage.getItem('pf-theme') ?? 'system') === 'system') applyTheme('system');
+      const current = localStorage.getItem('yh-theme') ?? localStorage.getItem('pf-theme') ?? 'system';
+      if (current === 'system') applyTheme('system');
     };
     media.addEventListener('change', onChange);
     return () => media.removeEventListener('change', onChange);
   }, []);
 
   const setTheme = useCallback((next: ThemeChoice) => {
-    localStorage.setItem('pf-theme', next);
+    localStorage.setItem('yh-theme', next);
     setThemeState(next);
     applyTheme(next);
   }, []);
@@ -152,7 +156,9 @@ function LanguageProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Lang>('en');
 
   useEffect(() => {
-    const saved = localStorage.getItem('pf-lang') as Lang | null;
+    const saved =
+      (localStorage.getItem('yh-lang') as Lang | null) ??
+      (localStorage.getItem('pf-lang') as Lang | null);
     if (saved === 'en' || saved === 'si') setLangState(saved);
   }, []);
 
@@ -161,7 +167,7 @@ function LanguageProvider({ children }: { children: ReactNode }) {
   }, [lang]);
 
   const setLang = useCallback((next: Lang) => {
-    localStorage.setItem('pf-lang', next);
+    localStorage.setItem('yh-lang', next);
     setLangState(next);
   }, []);
 

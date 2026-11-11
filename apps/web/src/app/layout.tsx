@@ -18,7 +18,7 @@ export const viewport: Viewport = {
 };
 
 // Applies the saved theme before first paint to avoid a light flash in dark mode.
-const themeScript = `(function(){try{var t=localStorage.getItem('pf-theme')||'system';var d=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);if(d)document.documentElement.classList.add('dark');}catch(e){}})();`;
+const themeScript = `(function(){try{var t=localStorage.getItem('yh-theme')||localStorage.getItem('pf-theme')||'system';var d=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches);if(d)document.documentElement.classList.add('dark');}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
