@@ -283,8 +283,8 @@ export class WorkspaceService {
   private meetings: MeetingItem[] = [];
 
   private settings: OrganizationSettings = {
-    name: 'ProjectFlow Workspace',
-    slug: 'projectflow',
+    name: 'Yakunex Hub',
+    slug: 'yakunex-hub',
     timezone: 'Asia/Colombo',
     workDayStart: '08:30',
     workDayEnd: '17:30',
@@ -939,7 +939,7 @@ export class WorkspaceService {
     return created;
   }
 
-  // ─── Meetings (Built-in ProjectFlow Meet Engine) ──────────────────────────
+  // ─── Meetings (Built-in Yakunex Hub Meet Engine) ──────────────────────────
   listMeetings() {
     return this.meetings;
   }

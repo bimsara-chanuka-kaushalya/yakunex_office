@@ -18,8 +18,8 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       <div className="flex items-center gap-3 px-5 pb-6 pt-6">
         <YakunexMark className="h-9 w-9" />
         <div className="leading-tight">
-          <p className="font-display text-lg font-semibold text-white">ProjectFlow</p>
-          <p className="text-[11px] uppercase tracking-wider text-white/50">by Yakunex</p>
+          <p className="font-display text-lg font-semibold text-white">Yakunex Hub</p>
+          <p className="text-[11px] uppercase tracking-wider text-white/50">Enterprise Suite</p>
         </div>
       </div>
 

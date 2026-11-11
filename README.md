@@ -1,8 +1,8 @@
-# ProjectFlow by Yakunex
+# Yakunex Hub
 
-An integrated IT project and workforce management platform for a software development company.
-It combines project delivery (Jira-style), time and attendance (Jibble-style), and team communication
-(Zoom-style) in one system. Working name **ProjectFlow**; the product name can be changed later.
+An integrated IT project, workforce management, and collaboration platform by Yakunex Technologies (Pvt) Ltd.
+It combines project delivery (Jira-style), time and attendance (Jibble-style), and built-in video & audio meetings
+(Zoom-style) in one unified system. Product name: **Yakunex Hub**.
 
 > **Status: Phase 1 is built.** Authentication, role-based access control, user management, and the
 > role-based dashboard are implemented end to end. All other modules are defined in the database

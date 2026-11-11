@@ -26,7 +26,7 @@ async function bootstrap(): Promise<void> {
   app.enableShutdownHooks();
 
   await app.listen(config.port);
-  console.log(`ProjectFlow API listening on port ${config.port} (${config.nodeEnv})`);
+  console.log(`Yakunex Hub API listening on port ${config.port} (${config.nodeEnv})`);
 }
 
 void bootstrap();

@@ -238,7 +238,7 @@ export function ChatView() {
   );
 }
 
-// ─── 2. MEETINGS PAGE (/meetings) — BUILT-IN PROJECTFLOW MEET ───────────────
+// ─── 2. MEETINGS PAGE (/meetings) — BUILT-IN YAKUNEX HUB MEET ───────────────
 
 interface MeetingParticipant {
   userId: string;
@@ -420,7 +420,7 @@ export function MeetingsView() {
       } catch {
         setHasCameraStream(false);
         setMediaNotice(
-          'Joined in ProjectFlow Virtual Studio mode (camera/mic hardware not connected).',
+          'Joined in Yakunex Hub Virtual Studio mode (camera/mic hardware not connected).',
         );
       }
     }
@@ -440,7 +440,7 @@ export function MeetingsView() {
   async function startInstantMeeting() {
     const created = await post<MeetingRow>('/meetings', {
       title: `Instant Team Sync (${user?.fullName ?? 'Host'})`,
-      agenda: 'Ad-hoc ProjectFlow live video, screen-share & architecture sync',
+      agenda: 'Ad-hoc Yakunex Hub live video, screen-share & architecture sync',
       instant: true,
       notes: '',
     });
@@ -573,7 +573,7 @@ export function MeetingsView() {
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = `${activeRoom?.roomCode ?? 'projectflow-meet'}-recording.webm`;
+          a.download = `${activeRoom?.roomCode ?? 'yakunex-hub-meet'}-recording.webm`;
           a.click();
           URL.revokeObjectURL(url);
         };
@@ -587,7 +587,7 @@ export function MeetingsView() {
       }
     } else {
       setRecording(true);
-      setMediaNotice('Session recording active for this ProjectFlow Meet room.');
+      setMediaNotice('Session recording active for this Yakunex Hub Meet room.');
     }
   }
 
@@ -655,7 +655,7 @@ export function MeetingsView() {
                 {activeRoom.title}
               </h2>
               <p className="text-xs text-muted">
-                {activeRoom.projectName} · Built-in ProjectFlow Meet Engine (No 3rd-party software)
+                {activeRoom.projectName} · Built-in Yakunex Hub Meet Engine (No 3rd-party software)
               </p>
             </div>
           </div>
@@ -1059,7 +1059,7 @@ export function MeetingsView() {
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="font-display text-3xl font-semibold">
-            ProjectFlow Meet — Built-in Video & Audio Rooms
+            Yakunex Hub Meet — Built-in Video & Audio Rooms
           </h2>
           <p className="mt-1 text-sm text-muted">
             100% self-hosted in-app video, audio, screen-sharing, live room chat & action notes —
@@ -1163,7 +1163,7 @@ export function MeetingsView() {
 
       <Modal
         open={modalOpen}
-        title="Schedule ProjectFlow Meet Room"
+        title="Schedule Yakunex Hub Meet Room"
         onClose={() => setModalOpen(false)}
       >
         <form onSubmit={onCreate} className="space-y-4">
@@ -1252,7 +1252,7 @@ export function ReportsView() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'projectflow-delivery-report.csv';
+    link.download = 'yakunex-hub-delivery-report.csv';
     link.click();
     URL.revokeObjectURL(url);
   }

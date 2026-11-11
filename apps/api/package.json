@@ -1,8 +1,8 @@
 {
-  "name": "@projectflow/api",
+  "name": "@yakunex-hub/api",
   "version": "0.1.0",
   "private": true,
-  "description": "ProjectFlow API (NestJS + Prisma + PostgreSQL)",
+  "description": "Yakunex Hub API (NestJS + Prisma + PostgreSQL)",
   "scripts": {
     "build": "nest build",
     "start": "node dist/main.js",

@@ -104,9 +104,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private async enableInMemoryStore(): Promise<void> {
     const now = new Date();
     const org: Organization = {
-      id: 'org_pf',
-      name: 'ProjectFlow Workspace',
-      slug: 'projectflow',
+      id: 'org_yh',
+      name: 'Yakunex Hub',
+      slug: 'yakunex-hub',
       timezone: 'Asia/Colombo',
       isActive: true,
       createdAt: now,
@@ -143,7 +143,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
     // Clean initial admin accounts without fake staff/interns
     const initialAccounts: Array<{ id: string; email: string; fullName: string; title: string; role: Role; departmentId: string | null }> = [
-      { id: 'usr_admin', email: 'admin@projectflow.local', fullName: 'Workspace Admin', title: 'System Administrator', role: Role.SUPER_ADMIN, departmentId: dept.id },
+      { id: 'usr_admin', email: 'admin@yakunexhub.local', fullName: 'Workspace Admin', title: 'System Administrator', role: Role.SUPER_ADMIN, departmentId: dept.id },
       { id: 'usr_yakunex', email: 'admin@yakunex.com', fullName: 'System Admin', title: 'Administrator', role: Role.SUPER_ADMIN, departmentId: dept.id },
     ];
 

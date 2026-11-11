@@ -45,7 +45,7 @@ export default function LoginPage() {
       <section className="relative hidden flex-col justify-between overflow-hidden bg-sidebar p-12 text-white lg:flex">
         <div className="flex items-center gap-3">
           <YakunexMark />
-          <span className="font-display text-xl font-semibold">ProjectFlow</span>
+          <span className="font-display text-xl font-semibold">Yakunex Hub</span>
         </div>
         <div className="max-w-md">
           <h2 className="font-display text-5xl font-semibold leading-[1.05]">
@@ -131,7 +131,7 @@ export default function LoginPage() {
           </form>
 
           <p className="mt-8 text-center text-xs text-muted">
-            Enterprise Project & Workforce Management System by Yakunex Technologies.
+            Yakunex Hub — Enterprise Workspace & Project Delivery Platform.
           </p>
         </div>
       </section>

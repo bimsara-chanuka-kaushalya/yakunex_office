@@ -4,8 +4,8 @@ import { Providers } from '@/components/providers';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: { default: 'ProjectFlow', template: '%s · ProjectFlow' },
-  description: 'IT project and workforce management by Yakunex Technologies (Pvt) Ltd.',
+  title: { default: 'Yakunex Hub', template: '%s · Yakunex Hub' },
+  description: 'Yakunex Hub — Enterprise workspace, project delivery and video collaboration by Yakunex Technologies.',
 };
 
 export const viewport: Viewport = {

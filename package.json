@@ -1,8 +1,8 @@
 {
-  "name": "projectflow",
+  "name": "yakunex-hub",
   "version": "0.1.0",
   "private": true,
-  "description": "ProjectFlow by Yakunex – monorepo root scripts",
+  "description": "Yakunex Hub – Enterprise Workspace & Delivery Suite",
   "scripts": {
     "dev:api": "npm --prefix apps/api run start:dev",
     "dev:web": "npm --prefix apps/web run dev",

@@ -1,7 +1,7 @@
 /**
- * Clean Supabase & PostgreSQL Seed Script for ProjectFlow.
+ * Clean Supabase & PostgreSQL Seed Script for Yakunex Hub.
  * Seeds only essential system data:
- * 1. Default Organization (ProjectFlow Workspace)
+ * 1. Default Organization (Yakunex Hub)
  * 2. Full Role-Based Access Control (RBAC) matrix for all 5 roles
  * 3. Default Core Department
  * 4. Initial Super Admin Account (no fake/dummy projects, clients, or tasks)
@@ -21,22 +21,34 @@ const prisma = new PrismaClient({
 
 async function main(): Promise<void> {
   const seedPassword = process.env.SEED_PASSWORD || 'ChangeMe!2026';
-  const adminEmail = process.env.SEED_ADMIN_EMAIL || 'admin@projectflow.local';
-  const adminName = process.env.SEED_ADMIN_NAME || 'System Administrator';
+  const adminEmail = process.env.SEED_ADMIN_EMAIL || 'admin@yakunexhub.local';
+  const adminName = process.env.SEED_ADMIN_NAME || 'Yakunex Hub Administrator';
 
-  console.log('⚡ Initializing ProjectFlow database with clean production-ready structure...');
+  console.log('⚡ Initializing Yakunex Hub database with clean production-ready structure...');
 
-  // 1. Organization
-  const organization = await prisma.organization.upsert({
-    where: { slug: 'projectflow' },
-    update: {},
-    create: {
-      name: 'ProjectFlow Workspace',
-      slug: 'projectflow',
-      timezone: 'Asia/Colombo',
-      isActive: true,
-    },
+  // 1. Organization - check for existing or create new
+  let organization = await prisma.organization.findFirst({
+    where: { OR: [{ slug: 'yakunex-hub' }, { slug: 'projectflow' }] },
   });
+
+  if (organization) {
+    organization = await prisma.organization.update({
+      where: { id: organization.id },
+      data: {
+        name: 'Yakunex Hub',
+        slug: 'yakunex-hub',
+      },
+    });
+  } else {
+    organization = await prisma.organization.create({
+      data: {
+        name: 'Yakunex Hub',
+        slug: 'yakunex-hub',
+        timezone: 'Asia/Colombo',
+        isActive: true,
+      },
+    });
+  }
 
   // 2. Role Permissions (RBAC Matrix)
   const rows = (Object.keys(DEFAULT_ROLE_PERMISSIONS) as Role[]).flatMap((role) =>
@@ -66,10 +78,30 @@ async function main(): Promise<void> {
     where: { email: adminEmail },
     update: {
       role: Role.SUPER_ADMIN,
+      fullName: adminName,
     },
     create: {
       organizationId: organization.id,
       email: adminEmail,
+      fullName: adminName,
+      title: 'Workspace Administrator',
+      role: Role.SUPER_ADMIN,
+      departmentId: coreDept.id,
+      passwordHash,
+      mustChangePassword: false,
+    },
+  });
+
+  // Also maintain alias for continuity
+  await prisma.user.upsert({
+    where: { email: 'admin@projectflow.local' },
+    update: {
+      role: Role.SUPER_ADMIN,
+      organizationId: organization.id,
+    },
+    create: {
+      organizationId: organization.id,
+      email: 'admin@projectflow.local',
       fullName: adminName,
       title: 'Workspace Administrator',
       role: Role.SUPER_ADMIN,

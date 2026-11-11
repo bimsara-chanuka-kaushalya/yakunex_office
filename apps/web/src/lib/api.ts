@@ -1,5 +1,5 @@
 /**
- * Thin fetch wrapper for the ProjectFlow API.
+ * Thin fetch wrapper for the Yakunex Hub API.
  * - Sends HttpOnly cookies (credentials: 'include').
  * - On 401, performs one silent refresh and retries the request.
  * - Surfaces the API's human-readable error messages.

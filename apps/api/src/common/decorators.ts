@@ -1,8 +1,8 @@
 import { createParamDecorator, ExecutionContext, SetMetadata } from '@nestjs/common';
 import type { AuthUser } from './types';
 
-export const IS_PUBLIC_KEY = 'projectflow:isPublic';
-export const PERMISSIONS_KEY = 'projectflow:permissions';
+export const IS_PUBLIC_KEY = 'yakunex-hub:isPublic';
+export const PERMISSIONS_KEY = 'yakunex-hub:permissions';
 
 /** Marks a route as reachable without a session. Everything else requires authentication. */
 export const Public = () => SetMetadata(IS_PUBLIC_KEY, true);

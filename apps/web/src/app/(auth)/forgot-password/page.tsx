@@ -51,7 +51,7 @@ export default function ForgotPasswordPage() {
       <section className="relative hidden flex-col justify-between overflow-hidden bg-sidebar p-12 text-white lg:flex">
         <div className="flex items-center gap-3">
           <YakunexMark />
-          <span className="font-display text-xl font-semibold">ProjectFlow</span>
+          <span className="font-display text-xl font-semibold">Yakunex Hub</span>
         </div>
         <div className="max-w-md">
           <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-gold/40 bg-gold/10 px-3 py-1 text-xs font-semibold text-gold">
@@ -196,3 +196,4 @@ export default function ForgotPasswordPage() {
     </main>
   );
 }
+

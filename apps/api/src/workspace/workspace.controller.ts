@@ -245,7 +245,7 @@ export class WorkspaceController {
     return this.workspace.postChatMessage(actor, id, body);
   }
 
-  // ─── Meetings (Built-in ProjectFlow Meet Engine) ──────────────────────────
+  // ─── Meetings (Built-in Yakunex Hub Meet Engine) ──────────────────────────
   @Get('meetings')
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   listMeetings() {

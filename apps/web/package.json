@@ -1,8 +1,8 @@
 {
-  "name": "@projectflow/web",
+  "name": "@yakunex-hub/web",
   "version": "0.1.0",
   "private": true,
-  "description": "ProjectFlow web application (Next.js App Router)",
+  "description": "Yakunex Hub web application (Next.js App Router)",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
