@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
-import { ArrowLeft, LogOut, Menu, Monitor, Moon, Sun } from 'lucide-react';
+import { ArrowLeft, Bell, ChevronRight, Database, LogOut, Menu, Monitor, Moon, Search, Sun } from 'lucide-react';
 import { useAuth, useLang, useTheme, type ThemeChoice } from '@/components/providers';
 import { Button } from '@/components/ui/button';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
@@ -31,33 +31,61 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
   }
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-line bg-surface/85 px-4 backdrop-blur md:px-8">
+    <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-line/80 bg-surface/85 px-4 backdrop-blur-md md:px-8">
       <button
         type="button"
         onClick={onMenu}
-        className="rounded-lg p-2 text-muted hover:bg-canvas hover:text-ink md:hidden"
+        className="rounded-xl p-2 text-muted transition-colors hover:bg-canvas hover:text-ink md:hidden"
         aria-label="Open navigation"
       >
         <Menu className="h-5 w-5" />
       </button>
 
-      {segment !== 'dashboard' && (
-        <button
-          type="button"
-          onClick={() => router.push('/dashboard')}
-          className="flex items-center gap-1.5 rounded-lg border border-line bg-canvas px-2.5 py-1 text-xs font-medium text-muted transition-colors hover:bg-surface hover:text-ink focus:outline-none"
-          title={t('backToDashboard')}
-          aria-label={t('backToDashboard')}
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">{t('back')}</span>
-        </button>
-      )}
+      {/* Back button or Breadcrumbs */}
+      <div className="flex items-center gap-2">
+        {segment !== 'dashboard' ? (
+          <button
+            type="button"
+            onClick={() => router.push('/dashboard')}
+            className="flex items-center gap-1.5 rounded-xl border border-line bg-canvas/80 px-2.5 py-1 text-xs font-semibold text-muted transition-all hover:border-gold/40 hover:bg-surface hover:text-ink focus:outline-none"
+            title={t('backToDashboard')}
+            aria-label={t('backToDashboard')}
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">{t('back')}</span>
+          </button>
+        ) : null}
 
-      <h1 className="font-display text-xl font-semibold capitalize">{title}</h1>
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted">
+          <span className="hidden sm:inline">Yakunex</span>
+          <ChevronRight className="hidden h-3 w-3 sm:inline text-muted/60" />
+          <h1 className="font-display text-lg font-bold tracking-tight text-ink capitalize md:text-xl">
+            {title}
+          </h1>
+        </div>
+      </div>
 
-      <div className="ml-auto flex items-center gap-2">
-        <div role="radiogroup" aria-label={t('theme')} className="hidden items-center rounded-lg border border-line bg-canvas p-0.5 sm:flex">
+      {/* Center Search Simulation Pill */}
+      <div className="mx-auto hidden max-w-xs flex-1 lg:block">
+        <div className="flex items-center gap-2 rounded-xl border border-line/80 bg-canvas/70 px-3 py-1.5 text-xs text-muted transition-all hover:border-gold/40 hover:bg-surface">
+          <Search className="h-3.5 w-3.5 text-muted" />
+          <span className="flex-1 truncate">Search modules, tasks, projects...</span>
+          <kbd className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted shadow-2xs">
+            ⌘K
+          </kbd>
+        </div>
+      </div>
+
+      {/* Right Actions */}
+      <div className="ml-auto flex items-center gap-2.5">
+        {/* Supabase Live Pill */}
+        <div className="hidden items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-1 text-[11px] font-semibold text-success sm:flex">
+          <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
+          <span>Supabase Live</span>
+        </div>
+
+        {/* Theme Switcher */}
+        <div role="radiogroup" aria-label={t('theme')} className="hidden items-center rounded-xl border border-line bg-canvas p-0.5 sm:flex">
           {THEME_OPTIONS.map(({ value, icon: Icon, labelKey }) => (
             <button
               key={value}
@@ -68,8 +96,8 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
               title={t(labelKey)}
               onClick={() => setTheme(value)}
               className={cn(
-                'rounded-md p-1.5 transition-colors',
-                theme === value ? 'bg-surface text-gold shadow-sm' : 'text-muted hover:text-ink',
+                'rounded-lg p-1.5 transition-all',
+                theme === value ? 'bg-surface text-gold shadow-xs' : 'text-muted hover:text-ink',
               )}
             >
               <Icon className="h-4 w-4" />
@@ -77,7 +105,8 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
           ))}
         </div>
 
-        <div role="radiogroup" aria-label={t('language')} className="flex items-center rounded-lg border border-line bg-canvas p-0.5 text-xs font-medium">
+        {/* Language Switcher */}
+        <div role="radiogroup" aria-label={t('language')} className="flex items-center rounded-xl border border-line bg-canvas p-0.5 text-xs font-semibold">
           {(['en', 'si'] as const).map((code) => (
             <button
               key={code}
@@ -86,8 +115,8 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
               aria-checked={lang === code}
               onClick={() => setLang(code)}
               className={cn(
-                'rounded-md px-2 py-1 transition-colors',
-                lang === code ? 'bg-surface text-gold shadow-sm' : 'text-muted hover:text-ink',
+                'rounded-lg px-2.5 py-1 transition-all',
+                lang === code ? 'bg-surface text-gold shadow-xs' : 'text-muted hover:text-ink',
               )}
             >
               {code === 'en' ? 'EN' : 'සිං'}
@@ -95,23 +124,31 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
           ))}
         </div>
 
+        {/* User Profile Pill */}
         {user && (
-          <div className="ml-2 hidden text-right leading-tight md:block">
-            <div className="flex items-center justify-end gap-1.5">
-              {user.companyId && (
-                <span className="rounded border border-gold/40 bg-gold/10 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-gold">
-                  {user.companyId}
-                </span>
-              )}
-              <p className="text-sm font-medium">{user.fullName}</p>
+          <div className="ml-1 hidden items-center gap-2.5 rounded-xl border border-line/70 bg-surface px-2.5 py-1.5 shadow-2xs md:flex">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-gold/30 to-gold/10 font-mono text-xs font-bold text-gold">
+              {user.fullName.slice(0, 1).toUpperCase()}
             </div>
-            <p className="text-xs text-muted">{ROLE_LABELS[user.role as Role]?.[lang] ?? user.role}</p>
+            <div className="leading-none text-left">
+              <div className="flex items-center gap-1.5">
+                <p className="text-xs font-semibold text-ink">{user.fullName}</p>
+                {user.companyId && (
+                  <span className="rounded bg-gold/15 px-1 py-0.5 font-mono text-[10px] font-bold text-gold">
+                    {user.companyId}
+                  </span>
+                )}
+              </div>
+              <p className="mt-0.5 text-[10px] text-muted">
+                {ROLE_LABELS[user.role as Role]?.[lang] ?? user.role}
+              </p>
+            </div>
           </div>
         )}
 
-        <Button variant="ghost" size="sm" onClick={handleLogout} aria-label={t('signOut')} className="ml-1">
+        <Button variant="ghost" size="sm" onClick={handleLogout} aria-label={t('signOut')} className="rounded-xl">
           <LogOut className="h-4 w-4" />
-          <span className="hidden lg:inline">{t('signOut')}</span>
+          <span className="hidden xl:inline">{t('signOut')}</span>
         </Button>
       </div>
     </header>

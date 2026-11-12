@@ -5,8 +5,8 @@ import { Eye, EyeOff } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
 const controlBase =
-  'w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink placeholder:text-muted/70 ' +
-  'transition-colors focus:border-gold focus:outline-none focus:ring-2 focus:ring-gold/25 disabled:opacity-60';
+  'w-full rounded-xl border border-line bg-surface px-3.5 text-sm text-ink placeholder:text-muted/60 ' +
+  'transition-all duration-150 focus:border-gold focus:outline-none focus:ring-3 focus:ring-gold/20 disabled:opacity-60 shadow-2xs';
 
 export function Field({
   label,

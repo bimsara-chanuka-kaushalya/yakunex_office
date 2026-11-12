@@ -5,13 +5,18 @@ import Link from 'next/link';
 import {
   ArrowRight,
   Bug,
+  Calendar,
+  CheckCircle2,
   Clock,
   FolderKanban,
   GraduationCap,
   ListChecks,
+  Plus,
   ShieldCheck,
+  Sparkles,
   UserCheck,
   Users,
+  Video,
 } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { Card, CardHeader, StatCard } from '@/components/ui/card';
@@ -177,42 +182,63 @@ export default function DashboardPage() {
   if (isAdminView) {
     return (
       <div className="space-y-8">
-        <header className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="flex items-center gap-2 text-sm text-muted">
-              {user?.companyId && (
-                <span className="rounded border border-gold/40 bg-gold/10 px-2 py-0.5 font-mono text-xs font-semibold text-gold">
-                  {user.companyId}
+        {/* Top Hero Banner */}
+        <div className="relative overflow-hidden rounded-3xl border border-line bg-gradient-to-r from-surface via-surface to-gold/5 p-6 shadow-card md:p-8">
+          <div className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full bg-gold/10 blur-3xl" />
+          <div className="relative z-10 flex flex-wrap items-center justify-between gap-6">
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {user?.companyId && (
+                  <span className="rounded-lg border border-gold/40 bg-gold/15 px-2.5 py-0.5 font-mono text-xs font-bold text-gold">
+                    {user.companyId}
+                  </span>
+                )}
+                <Badge tone="success" dot>
+                  System Online
+                </Badge>
+                <span className="text-xs text-muted">
+                  {roleLabel} · {personal?.organization.name ?? 'Yakunex Hub'}
                 </span>
-              )}
-              <span>{roleLabel} · Yakunex Hub</span>
-            </p>
-            <h2 className="mt-1 font-display text-3xl font-semibold">
-              {greeting(new Date().getHours())}, {firstName}
-            </h2>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Link href="/projects">
-              <Button variant="secondary" size="sm">
-                <FolderKanban className="h-4 w-4" />
-                {t('projects')}
-              </Button>
-            </Link>
-            <Link href="/tasks">
-              <Button variant="secondary" size="sm">
-                <ListChecks className="h-4 w-4" />
-                {t('tasks')}
-              </Button>
-            </Link>
-            <Link href="/users">
-              <Button size="sm">
-                <Users className="h-4 w-4" />
-                {t('users')}
-              </Button>
-            </Link>
-          </div>
-        </header>
+              </div>
+              <h2 className="font-display text-2xl font-bold tracking-tight text-ink md:text-3xl">
+                {greeting(new Date().getHours())}, {firstName} 👋
+              </h2>
+              <p className="text-xs text-muted md:text-sm">
+                Here is your live enterprise workspace summary and delivery metrics across all 15 modules.
+              </p>
+            </div>
 
+            {/* Quick Action Shortcuts */}
+            <div className="flex flex-wrap items-center gap-2.5">
+              <Link href="/projects">
+                <Button variant="secondary" size="sm" className="rounded-xl shadow-2xs">
+                  <FolderKanban className="h-4 w-4 text-gold" />
+                  <span>Projects</span>
+                </Button>
+              </Link>
+              <Link href="/tasks">
+                <Button variant="secondary" size="sm" className="rounded-xl shadow-2xs">
+                  <ListChecks className="h-4 w-4 text-gold" />
+                  <span>Tasks</span>
+                </Button>
+              </Link>
+              <Link href="/meetings">
+                <Button variant="secondary" size="sm" className="rounded-xl shadow-2xs">
+                  <Video className="h-4 w-4 text-gold" />
+                  <span>Meet</span>
+                </Button>
+              </Link>
+              <Link href="/users">
+                <Button size="sm" className="rounded-xl shadow-xs">
+                  <Users className="h-4 w-4" />
+                  <span>Team</span>
+                </Button>
+              </Link>
+            </div>
+          </div>
+        </div>
+
+        {/* Key Metrics Grid */}
         <section aria-label="Key figures" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {loading || !summary ? (
             Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-32 rounded-2xl" />)
@@ -221,26 +247,30 @@ export default function DashboardPage() {
               <StatCard
                 label="Total users"
                 value={summary.users.total}
-                hint={`${summary.users.active} active · ${summary.users.interns} interns`}
-                icon={<Users className="h-4 w-4" />}
+                trend={{ value: `${summary.users.active} Active`, positive: true }}
+                hint={`${summary.users.staff} staff · ${summary.users.interns} interns`}
+                icon={<Users className="h-5 w-5" />}
               />
               <StatCard
                 label="Active projects"
                 value={ws?.activeProjects ?? 2}
-                hint={`${ws?.totalProjects ?? 3} total client & internal projects`}
-                icon={<FolderKanban className="h-4 w-4" />}
+                trend={{ value: 'Portfolio Live', positive: true }}
+                hint={`${ws?.totalProjects ?? 3} total client & internal`}
+                icon={<FolderKanban className="h-5 w-5" />}
               />
               <StatCard
                 label="Open tasks"
                 value={ws?.openTasks ?? 5}
-                hint={`${ws?.completedTasks ?? 1} completed · ${ws?.openBugs ?? 2} open bugs`}
-                icon={<ListChecks className="h-4 w-4" />}
+                trend={{ value: `${ws?.completedTasks ?? 1} Done`, positive: true }}
+                hint={`${ws?.openBugs ?? 2} open bugs in backlog`}
+                icon={<ListChecks className="h-5 w-5" />}
               />
               <StatCard
                 label="Hours logged"
                 value={`${ws?.totalHoursLogged ?? 7.8}h`}
-                hint="Billable & sprint delivery hours"
-                icon={<Clock className="h-4 w-4" />}
+                trend={{ value: 'Billable', positive: true }}
+                hint="Delivery & sprint tracked"
+                icon={<Clock className="h-5 w-5" />}
               />
             </>
           )}
