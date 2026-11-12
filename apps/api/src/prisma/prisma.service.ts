@@ -216,6 +216,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         await this.$connect();
         this.logger.log('✅ Connected to PostgreSQL / Supabase database successfully.');
         await this.ensureCompanyIds();
+        await this.ensureDatabaseRls();
         return;
       } catch (error) {
         this.logger.warn(
@@ -278,6 +279,69 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       }
     } catch (err) {
       this.logger.warn(`Could not backfill companyId automatically: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Enforces PostgreSQL Row Level Security (RLS) and revokes anonymous PostgREST access
+   * across every table in the public schema so no data can leak outside the API.
+   */
+  private async ensureDatabaseRls(): Promise<void> {
+    try {
+      await this.$executeRawUnsafe(`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM anon, PUBLIC;`);
+      await this.$executeRawUnsafe(`REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM anon, PUBLIC;`);
+      await this.$executeRawUnsafe(`
+        DO $$
+        DECLARE
+          tbl RECORD;
+          has_org_id BOOLEAN;
+          has_user_id BOOLEAN;
+        BEGIN
+          FOR tbl IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
+            EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY;', tbl.tablename);
+            EXECUTE format('DROP POLICY IF EXISTS "backend_service_full_access" ON public.%I;', tbl.tablename);
+            EXECUTE format(
+              'CREATE POLICY "backend_service_full_access" ON public.%I FOR ALL TO postgres, service_role USING (true) WITH CHECK (true);',
+              tbl.tablename
+            );
+
+            SELECT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema = 'public' AND table_name = tbl.tablename AND column_name = 'organizationId'
+            ) INTO has_org_id;
+
+            SELECT EXISTS (
+              SELECT 1 FROM information_schema.columns
+              WHERE table_schema = 'public' AND table_name = tbl.tablename AND column_name = 'userId'
+            ) INTO has_user_id;
+
+            IF has_org_id THEN
+              EXECUTE format('DROP POLICY IF EXISTS "org_tenant_isolation_policy" ON public.%I;', tbl.tablename);
+              EXECUTE format(
+                'CREATE POLICY "org_tenant_isolation_policy" ON public.%I FOR SELECT TO authenticated USING ((current_setting(''request.jwt.claims'', true)::jsonb ->> ''org'') = "organizationId"::text);',
+                tbl.tablename
+              );
+            END IF;
+
+            IF tbl.tablename IN ('RefreshToken', 'UserPermission', 'TimeEntry', 'Attendance', 'LeaveRequest', 'Notification') AND has_user_id THEN
+              EXECUTE format('DROP POLICY IF EXISTS "user_self_isolation_policy" ON public.%I;', tbl.tablename);
+              EXECUTE format(
+                'CREATE POLICY "user_self_isolation_policy" ON public.%I FOR ALL TO authenticated USING ((current_setting(''request.jwt.claims'', true)::jsonb ->> ''sub'') = "userId"::text) WITH CHECK ((current_setting(''request.jwt.claims'', true)::jsonb ->> ''sub'') = "userId"::text);',
+                tbl.tablename
+              );
+            ELSIF tbl.tablename = 'User' THEN
+              EXECUTE format('DROP POLICY IF EXISTS "user_self_read_policy" ON public.%I;', tbl.tablename);
+              EXECUTE format(
+                'CREATE POLICY "user_self_read_policy" ON public.%I FOR SELECT TO authenticated USING ((current_setting(''request.jwt.claims'', true)::jsonb ->> ''sub'') = "id"::text);',
+                tbl.tablename
+              );
+            END IF;
+          END LOOP;
+        END $$;
+      `);
+      this.logger.log('🛡️ Supabase Row Level Security (RLS) verified and active across all public tables.');
+    } catch (err) {
+      this.logger.warn(`RLS verification note: ${(err as Error).message}`);
     }
   }
 

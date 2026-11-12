@@ -480,8 +480,22 @@ export class WorkspaceService implements OnModuleInit {
     return genId;
   }
 
+  private isManagerOrAdmin(actor?: AuthUser): boolean {
+    if (!actor) return true;
+    return (
+      actor.role === Role.SUPER_ADMIN ||
+      actor.role === Role.ADMIN ||
+      actor.role === Role.PROJECT_MANAGER
+    );
+  }
+
   // ─── Overview counts for Dashboard ────────────────────────────────────────
   getWorkspaceCounts(actor: AuthUser) {
+    const canSeeAllTime = this.isManagerOrAdmin(actor);
+    const visibleTimeEntries = canSeeAllTime
+      ? this.timeEntries
+      : this.timeEntries.filter((te) => te.userId === actor.id || te.userName === actor.fullName);
+
     const activeProjects = this.projects.filter((p) => p.status === 'IN_PROGRESS' || p.status === 'TESTING').length;
     const openTasks = this.tasks.filter((t) => t.status !== 'COMPLETED').length;
     const completedTasks = this.tasks.filter((t) => t.status === 'COMPLETED').length;
@@ -492,7 +506,7 @@ export class WorkspaceService implements OnModuleInit {
     const activeTimer = this.timeEntries.find((te) => te.userId === actor.id && te.endedAt === null) ?? null;
     const totalHoursLogged =
       Math.round(
-        (this.timeEntries.reduce((acc, t) => acc + t.durationMinutes, 0) / 60) * 10,
+        (visibleTimeEntries.reduce((acc, t) => acc + t.durationMinutes, 0) / 60) * 10,
       ) / 10;
 
     return {
@@ -505,17 +519,19 @@ export class WorkspaceService implements OnModuleInit {
       totalHoursLogged,
       activeTimer,
       myTasks,
-      recentProjects: this.projects.slice(0, 3),
+      recentProjects: this.listProjects(actor).slice(0, 3),
     };
   }
 
   // ─── Clients ──────────────────────────────────────────────────────────────
-  listClients() {
+  listClients(actor?: AuthUser) {
+    const showFinancials = this.isManagerOrAdmin(actor);
     return this.clients.map((c) => {
       const clientProjects = this.projects.filter((p) => p.clientId === c.id);
-      const totalBudget = clientProjects.reduce((sum, p) => sum + p.budget, 0);
+      const totalBudget = showFinancials ? clientProjects.reduce((sum, p) => sum + p.budget, 0) : 0;
       return {
         ...c,
+        notes: showFinancials ? c.notes : '',
         projectCount: clientProjects.length,
         totalBudget,
       };
@@ -579,8 +595,15 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   // ─── Projects ─────────────────────────────────────────────────────────────
-  listProjects() {
-    return this.projects;
+  listProjects(actor?: AuthUser) {
+    if (this.isManagerOrAdmin(actor)) {
+      return this.projects;
+    }
+    // Redact confidential contract budgets for Staff & Interns
+    return this.projects.map((p) => ({
+      ...p,
+      budget: 0,
+    }));
   }
 
   async createProject(actor: AuthUser, body: Record<string, unknown>) {
@@ -993,8 +1016,13 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   // ─── Documents ────────────────────────────────────────────────────────────
-  listDocuments() {
-    return this.documents;
+  listDocuments(actor?: AuthUser) {
+    if (this.isManagerOrAdmin(actor)) {
+      return this.documents;
+    }
+    return this.documents.filter(
+      (doc) => doc.visibility !== 'ADMIN_ONLY' && doc.visibility !== 'CONFIDENTIAL',
+    );
   }
 
   async createDocument(actor: AuthUser, body: Record<string, unknown>) {
@@ -1052,9 +1080,12 @@ export class WorkspaceService implements OnModuleInit {
   // ─── Time Tracker ─────────────────────────────────────────────────────────
   listTimeEntries(actor: AuthUser) {
     const activeTimer = this.timeEntries.find((t) => t.userId === actor.id && t.endedAt === null) ?? null;
+    const entries = this.isManagerOrAdmin(actor)
+      ? this.timeEntries
+      : this.timeEntries.filter((t) => t.userId === actor.id || t.userName === actor.fullName);
     return {
       activeTimer,
-      entries: this.timeEntries,
+      entries,
     };
   }
 
@@ -1184,9 +1215,12 @@ export class WorkspaceService implements OnModuleInit {
       this.attendance.find((a) => a.userId === actor.id && a.workDate === today) ??
       this.attendance.find((a) => a.userName === actor.fullName && a.workDate === '2026-11-08') ??
       null;
+    const records = this.isManagerOrAdmin(actor)
+      ? this.attendance
+      : this.attendance.filter((a) => a.userId === actor.id || a.userName === actor.fullName);
     return {
       todayRecord: myToday,
-      records: this.attendance,
+      records,
     };
   }
 
@@ -1279,8 +1313,13 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   // ─── Leave ────────────────────────────────────────────────────────────────
-  listLeave() {
-    return this.leaveRequests;
+  listLeave(actor?: AuthUser) {
+    if (!actor || this.isManagerOrAdmin(actor)) {
+      return this.leaveRequests;
+    }
+    return this.leaveRequests.filter(
+      (l) => l.userId === actor.id || l.userName === actor.fullName,
+    );
   }
 
   async createLeave(actor: AuthUser, body: Record<string, unknown>) {
@@ -1362,7 +1401,7 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   // ─── Interns ──────────────────────────────────────────────────────────────
-  async listInterns() {
+  async listInterns(actor?: AuthUser) {
     try {
       const internUsers = await this.prisma.user.findMany({
         where: { role: Role.INTERN, deletedAt: null },
@@ -1414,12 +1453,27 @@ export class WorkspaceService implements OnModuleInit {
     } catch {
       // Fallback to in-memory interns
     }
+    if (actor && actor.role === Role.INTERN) {
+      return this.interns.filter(
+        (i) => i.userId === actor.id || i.email.toLowerCase() === actor.email.toLowerCase(),
+      );
+    }
     return this.interns;
   }
 
-  toggleInternTask(internId: string, taskId: string) {
+  toggleInternTask(actor: AuthUser | string, internIdOrTaskId: string, maybeTaskId?: string) {
+    const internId = typeof actor === 'string' ? actor : internIdOrTaskId;
+    const taskId = typeof actor === 'string' ? internIdOrTaskId : (maybeTaskId ?? '');
     const intern = this.interns.find((i) => i.id === internId);
     if (!intern) throw new NotFoundException('Intern profile not found.');
+    if (
+      typeof actor !== 'string' &&
+      actor.role === Role.INTERN &&
+      intern.userId !== actor.id &&
+      intern.email.toLowerCase() !== actor.email.toLowerCase()
+    ) {
+      throw new ForbiddenException('Interns can only update their own training tasks.');
+    }
     const task = intern.trainingTasks.find((t) => t.id === taskId);
     if (!task) throw new NotFoundException('Training task not found.');
     task.completed = !task.completed;
@@ -1434,6 +1488,9 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   addInternEvaluation(actor: AuthUser, internId: string, body: Record<string, unknown>) {
+    if (actor.role === Role.INTERN) {
+      throw new ForbiddenException('Interns cannot submit evaluations.');
+    }
     const intern = this.interns.find((i) => i.id === internId);
     if (!intern) throw new NotFoundException('Intern profile not found.');
     const evalItem = {
@@ -1712,7 +1769,8 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   // ─── Reports ──────────────────────────────────────────────────────────────
-  getReportsSummary() {
+  getReportsSummary(actor?: AuthUser) {
+    const canSeeFinancials = this.isManagerOrAdmin(actor);
     const projectProgress = this.projects.map((p) => {
       const pTasks = this.tasks.filter((t) => t.projectId === p.id);
       const pHours = this.timeEntries
@@ -1724,7 +1782,7 @@ export class WorkspaceService implements OnModuleInit {
         name: p.name,
         clientName: p.clientName,
         status: p.status,
-        budget: p.budget,
+        budget: canSeeFinancials ? p.budget : 0,
         progressPercent: p.progressPercent,
         totalTasks: pTasks.length,
         completedTasks: pTasks.filter((t) => t.status === 'COMPLETED').length,

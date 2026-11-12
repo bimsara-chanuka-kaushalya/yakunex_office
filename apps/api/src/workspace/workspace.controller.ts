@@ -12,8 +12,8 @@ export class WorkspaceController {
   // ─── Clients ──────────────────────────────────────────────────────────────
   @Get('clients')
   @RequirePermissions(PERMISSIONS.PROJECTS_READ)
-  listClients() {
-    return this.workspace.listClients();
+  listClients(@CurrentUser() actor: AuthUser) {
+    return this.workspace.listClients(actor);
   }
 
   @Post('clients')
@@ -31,8 +31,8 @@ export class WorkspaceController {
   // ─── Projects ─────────────────────────────────────────────────────────────
   @Get('projects')
   @RequirePermissions(PERMISSIONS.PROJECTS_READ)
-  listProjects() {
-    return this.workspace.listProjects();
+  listProjects(@CurrentUser() actor: AuthUser) {
+    return this.workspace.listProjects(actor);
   }
 
   @Post('projects')
@@ -123,8 +123,8 @@ export class WorkspaceController {
   // ─── Documents ────────────────────────────────────────────────────────────
   @Get('documents')
   @RequirePermissions(PERMISSIONS.PROJECTS_READ)
-  listDocuments() {
-    return this.workspace.listDocuments();
+  listDocuments(@CurrentUser() actor: AuthUser) {
+    return this.workspace.listDocuments(actor);
   }
 
   @Post('documents')
@@ -177,8 +177,8 @@ export class WorkspaceController {
 
   // ─── Leave ────────────────────────────────────────────────────────────────
   @Get('leave')
-  listLeave() {
-    return this.workspace.listLeave();
+  listLeave(@CurrentUser() actor: AuthUser) {
+    return this.workspace.listLeave(actor);
   }
 
   @Post('leave')
@@ -198,13 +198,17 @@ export class WorkspaceController {
 
   // ─── Interns ──────────────────────────────────────────────────────────────
   @Get('interns')
-  listInterns() {
-    return this.workspace.listInterns();
+  listInterns(@CurrentUser() actor: AuthUser) {
+    return this.workspace.listInterns(actor);
   }
 
   @Patch('interns/:id/tasks/:taskId')
-  toggleInternTask(@Param('id') id: string, @Param('taskId') taskId: string) {
-    return this.workspace.toggleInternTask(id, taskId);
+  toggleInternTask(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Param('taskId') taskId: string,
+  ) {
+    return this.workspace.toggleInternTask(actor, id, taskId);
   }
 
   @Post('interns/:id/evaluations')
@@ -304,8 +308,8 @@ export class WorkspaceController {
 
   // ─── Reports ──────────────────────────────────────────────────────────────
   @Get('reports/summary')
-  getReportsSummary() {
-    return this.workspace.getReportsSummary();
+  getReportsSummary(@CurrentUser() actor: AuthUser) {
+    return this.workspace.getReportsSummary(actor);
   }
 
   // ─── Audit Logs ───────────────────────────────────────────────────────────
