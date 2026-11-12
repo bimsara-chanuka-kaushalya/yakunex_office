@@ -7,13 +7,13 @@ console.log('\x1b[32m%s\x1b[0m', '⚡ Starting Yakunex Hub (API + Web Frontend) 
 
 const api = spawn('node', ['apps/api/dist/main.js'], {
   stdio: 'inherit',
-  shell: true,
+  shell: false,
   env: { ...process.env, FORCE_COLOR: '1' },
 });
 
 const web = spawn(npmCmd, ['--prefix', 'apps/web', 'run', 'start'], {
   stdio: 'inherit',
-  shell: true,
+  shell: false,
   env: { ...process.env, FORCE_COLOR: '1' },
 });
 
@@ -41,3 +41,4 @@ api.on('exit', (code) => {
 web.on('exit', (code) => {
   if (code && code !== 0) console.error(`[Web] process exited with code ${code}`);
 });
+
