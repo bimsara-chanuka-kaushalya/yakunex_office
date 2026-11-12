@@ -1,21 +1,28 @@
 import { spawn } from 'child_process';
 
 const isWin = process.platform === 'win32';
-const npmCmd = isWin ? 'npm.cmd' : 'npm';
+
+function spawnNpm(args) {
+  if (isWin) {
+    return spawn('cmd.exe', ['/c', 'npm', ...args], {
+      stdio: 'inherit',
+      env: { ...process.env, FORCE_COLOR: '1' },
+    });
+  }
+  return spawn('npm', args, {
+    stdio: 'inherit',
+    env: { ...process.env, FORCE_COLOR: '1' },
+  });
+}
 
 console.log('\x1b[32m%s\x1b[0m', '⚡ Starting Yakunex Hub (API + Web Frontend) in Production Mode...\n');
 
-const api = spawn('node', ['apps/api/dist/main.js'], {
+const api = spawn(process.execPath, ['apps/api/dist/main.js'], {
   stdio: 'inherit',
-  shell: false,
   env: { ...process.env, FORCE_COLOR: '1' },
 });
 
-const web = spawn(npmCmd, ['--prefix', 'apps/web', 'run', 'start'], {
-  stdio: 'inherit',
-  shell: false,
-  env: { ...process.env, FORCE_COLOR: '1' },
-});
+const web = spawnNpm(['--prefix', 'apps/web', 'run', 'start']);
 
 function cleanup() {
   try {
@@ -41,4 +48,3 @@ api.on('exit', (code) => {
 web.on('exit', (code) => {
   if (code && code !== 0) console.error(`[Web] process exited with code ${code}`);
 });
-
