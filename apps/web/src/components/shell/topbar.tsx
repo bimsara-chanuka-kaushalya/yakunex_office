@@ -78,12 +78,6 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
 
       {/* Right Actions */}
       <div className="ml-auto flex items-center gap-2.5">
-        {/* Supabase Live Pill */}
-        <div className="hidden items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-1 text-[11px] font-semibold text-success sm:flex">
-          <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
-          <span>Supabase Live</span>
-        </div>
-
         {/* Theme Switcher */}
         <div role="radiogroup" aria-label={t('theme')} className="hidden items-center rounded-xl border border-line bg-canvas p-0.5 sm:flex">
           {THEME_OPTIONS.map(({ value, icon: Icon, labelKey }) => (

@@ -3,7 +3,7 @@
 import { useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { CheckCircle2, KeyRound, ShieldCheck, Sparkles, Zap } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { YakunexLogo, YakunexMark } from '@/components/brand/logo';
 import { Button } from '@/components/ui/button';
@@ -25,12 +25,6 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  function fillDemo() {
-    setEmail('YNX-0001');
-    setPassword('ChangeMe!2026');
-    setError(null);
-  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -64,10 +58,6 @@ export default function LoginPage() {
               <p className="text-[11px] font-semibold uppercase tracking-wider text-gold">Enterprise Platform</p>
             </div>
           </div>
-          <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/80 backdrop-blur-sm">
-            <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
-            <span>Supabase Cloud Active</span>
-          </div>
         </div>
 
         {/* Center Pitch */}
@@ -83,24 +73,6 @@ export default function LoginPage() {
             Unify client delivery, sprint planning, Jibble-style time tracking, and built-in video
             meetings into a single lightning-fast workspace.
           </p>
-
-          {/* Feature highlights */}
-          <div className="mt-8 grid grid-cols-2 gap-3">
-            {[
-              { icon: Zap, label: 'Sub-300ms Login & Cache' },
-              { icon: ShieldCheck, label: 'Enterprise RBAC (5 Roles)' },
-              { icon: CheckCircle2, label: 'Company ID (YNX-XXXX)' },
-              { icon: KeyRound, label: 'Argon2id Encrypted' },
-            ].map((feat, i) => {
-              const Icon = feat.icon;
-              return (
-                <div key={i} className="flex items-center gap-2 rounded-xl border border-white/8 bg-white/4 p-2.5 backdrop-blur-xs">
-                  <Icon className="h-4 w-4 text-gold shrink-0" />
-                  <span className="text-xs font-medium text-white/85">{feat.label}</span>
-                </div>
-              );
-            })}
-          </div>
         </div>
 
         {/* Bottom Logo & Copyright */}
@@ -140,22 +112,7 @@ export default function LoginPage() {
             <p className="text-sm text-muted">{t('signInSubtitle')}</p>
           </div>
 
-          {/* Quick Demo Autofill Pill */}
-          <div className="mt-6 flex items-center justify-between rounded-xl border border-gold/30 bg-gold/10 p-2.5 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="font-mono font-bold text-gold">YNX-0001</span>
-              <span className="text-muted">Super Admin</span>
-            </div>
-            <button
-              type="button"
-              onClick={fillDemo}
-              className="rounded-lg bg-gold px-2.5 py-1 text-[11px] font-semibold text-gold-ink shadow-2xs transition-transform active:scale-95"
-            >
-              Autofill
-            </button>
-          </div>
-
-          <form onSubmit={onSubmit} className="mt-6 space-y-4.5" noValidate>
+          <form onSubmit={onSubmit} className="mt-8 space-y-4.5" noValidate>
             <Field label={t('companyIdOrEmail')} htmlFor="email" error={undefined}>
               <Input
                 id="email"
@@ -207,7 +164,7 @@ export default function LoginPage() {
           </form>
 
           <p className="mt-8 text-center text-xs text-muted">
-            Protected by enterprise-grade Argon2id encryption & Supabase.
+            Yakunex Hub — Enterprise Workspace & Project Delivery Platform.
           </p>
         </div>
 
