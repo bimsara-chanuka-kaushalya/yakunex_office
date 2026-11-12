@@ -239,7 +239,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Key Metrics Grid */}
-        <section aria-label="Key figures" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <section aria-label="Key figures" className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4 sm:gap-4">
           {loading || !summary ? (
             Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-32 rounded-2xl" />)
           ) : (
@@ -317,10 +317,10 @@ export default function DashboardPage() {
           </Card>
         )}
 
-        <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.3fr_1fr]">
           <Card>
             <CardHeader title="Team by role" description="Accounts in your organisation, grouped by role." />
-            <div className="p-5">
+            <div className="p-5 sm:p-6">
               {loading || !summary ? <Skeleton className="h-64" /> : <RoleDistributionChart data={roleData} />}
             </div>
           </Card>
@@ -400,7 +400,7 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      <section aria-label="My summary" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section aria-label="My summary" className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4 sm:gap-4">
         <StatCard
           label="My assigned tasks"
           value={ws?.myTasks.length ?? 0}

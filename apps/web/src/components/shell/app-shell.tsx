@@ -55,7 +55,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar onMenu={() => setDrawerOpen(true)} />
-        <main id="main" className="flex-1 px-4 py-6 md:px-8 md:py-8">
+        <main id="main" className="flex-1 px-3.5 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
           <div className="mx-auto w-full max-w-7xl animate-fade-in">{children}</div>
         </main>
       </div>

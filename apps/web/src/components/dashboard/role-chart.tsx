@@ -13,7 +13,7 @@ export function RoleDistributionChart({ data }: { data: RoleDatum[] }) {
       {data.map((entry) => {
         const pct = Math.round((entry.value / max) * 100);
         return (
-          <div key={entry.label} className="grid grid-cols-[140px_1fr_36px] items-center gap-3 text-xs">
+          <div key={entry.label} className="grid grid-cols-[105px_1fr_32px] sm:grid-cols-[140px_1fr_36px] items-center gap-2 sm:gap-3 text-xs">
             <span className="truncate font-medium text-muted" title={entry.label}>
               {entry.label}
             </span>
