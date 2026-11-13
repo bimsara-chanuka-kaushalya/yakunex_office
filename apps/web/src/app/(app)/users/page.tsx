@@ -568,7 +568,8 @@ function CreateUserDialog({
   onCreated: (fullName: string) => Promise<void>;
 }) {
   const { t, lang } = useLang();
-  const [fullName, setFullName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [companyId, setCompanyId] = useState('');
   const [role, setRole] = useState<Role>('STAFF');
@@ -595,11 +596,12 @@ function CreateUserDialog({
   }
 
   const previewLast =
-    fullName.trim().split(/\s+/).filter(Boolean).pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'lastname';
+    lastName.trim().split(/\s+/).filter(Boolean).pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'lastname';
   const suggestedEmail = `${previewLast}@${roleCode.toLowerCase()}.yakunx.com`;
 
   function reset() {
-    setFullName('');
+    setFirstName('');
+    setLastName('');
     setEmail('');
     setCompanyId('');
     setRole('STAFF');
@@ -619,10 +621,15 @@ function CreateUserDialog({
     event.preventDefault();
     setBusy(true);
     setError(null);
+    const trimmedFirst = firstName.trim();
+    const trimmedLast = lastName.trim();
+    const fullName = [trimmedFirst, trimmedLast].filter(Boolean).join(' ');
     try {
       const result = await post<{ user: { fullName: string; companyId: string | null; email: string }; temporaryPassword: string }>(
         '/users',
         {
+          firstName: trimmedFirst,
+          lastName: trimmedLast,
           fullName,
           email: email.trim() || undefined,
           companyId: companyId.trim() || undefined,
@@ -710,26 +717,38 @@ function CreateUserDialog({
       ) : (
         <form onSubmit={onSubmit} className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Full name" htmlFor="new-name">
+            <Field label="First name" htmlFor="new-first-name">
               <Input
-                id="new-name"
+                id="new-first-name"
                 required
-                minLength={2}
-                maxLength={120}
-                value={fullName}
-                onChange={(e) => setFullName(e.target.value)}
+                minLength={1}
+                maxLength={60}
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                placeholder="e.g. Chanuka"
               />
             </Field>
-            <Field label="Company ID (Auto if blank)" htmlFor="new-company-id">
+            <Field label="Last name" htmlFor="new-last-name">
               <Input
-                id="new-company-id"
-                maxLength={32}
-                value={companyId}
-                onChange={(e) => setCompanyId(e.target.value.toUpperCase())}
-                placeholder={`Auto (e.g. YNX-${roleCode}-0001)`}
+                id="new-last-name"
+                required
+                minLength={1}
+                maxLength={60}
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                placeholder="e.g. Silva"
               />
             </Field>
           </div>
+          <Field label="Company ID (Auto if blank)" htmlFor="new-company-id">
+            <Input
+              id="new-company-id"
+              maxLength={32}
+              value={companyId}
+              onChange={(e) => setCompanyId(e.target.value.toUpperCase())}
+              placeholder={`Auto (e.g. YNX-${roleCode}-0001)`}
+            />
+          </Field>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Department / Role Code" htmlFor="new-role-code">
               <Select

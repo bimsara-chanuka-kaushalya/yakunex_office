@@ -138,10 +138,15 @@ export class UsersService {
   async create(actor: AuthUser, dto: CreateUserDto, meta: { ipAddress?: string; userAgent?: string }) {
     assertCanAssignRole(actor.role, dto.role);
 
-    const fullName = dto.fullName.trim();
+    const firstName = dto.firstName?.trim() ?? '';
+    const lastNameInput = dto.lastName?.trim() ?? '';
+    const composedName = [firstName, lastNameInput].filter(Boolean).join(' ');
+    const fullName = composedName.length >= 2 ? composedName : (dto.fullName?.trim() ?? '');
     if (fullName.length < 2) {
-      throw new BadRequestException('Full name must be at least 2 characters.');
+      throw new BadRequestException('First and last name (or full name) must be at least 2 characters.');
     }
+    const effectiveLastName =
+      lastNameInput || fullName.split(/\s+/).filter(Boolean).slice(-1)[0] || '';
 
     const roleCode = resolveCompanyRoleCode(dto.role, dto.title, dto.roleCode);
 
@@ -152,7 +157,7 @@ export class UsersService {
         throw new ConflictException('A user with this email already exists.');
       }
     } else {
-      email = await this.generateUniqueCompanyEmail(fullName, roleCode);
+      email = await this.generateUniqueCompanyEmail(fullName, roleCode, effectiveLastName);
     }
 
     if (dto.departmentId) {
@@ -180,7 +185,7 @@ export class UsersService {
         organizationId: actor.organizationId,
         companyId,
         email,
-        fullName: dto.fullName.trim(),
+        fullName,
         title: dto.title,
         role: dto.role,
         departmentId: dto.departmentId ?? null,
@@ -242,13 +247,17 @@ export class UsersService {
     return formatCompanyId(roleCode, next);
   }
 
-  private async generateUniqueCompanyEmail(fullName: string, roleCode: CompanyRoleCode): Promise<string> {
+  private async generateUniqueCompanyEmail(
+    fullName: string,
+    roleCode: CompanyRoleCode,
+    lastName?: string,
+  ): Promise<string> {
     for (let suffix = 1; suffix <= 99; suffix += 1) {
-      const candidate = buildCompanyEmail(fullName, roleCode, suffix);
+      const candidate = buildCompanyEmail(fullName, roleCode, suffix, lastName);
       const exists = await this.prisma.user.findUnique({ where: { email: candidate }, select: { id: true } });
       if (!exists) return candidate;
     }
-    return buildCompanyEmail(fullName, roleCode, Date.now() % 10000);
+    return buildCompanyEmail(fullName, roleCode, Date.now() % 10000, lastName);
   }
 
   async changeRole(actor: AuthUser, targetId: string, dto: ChangeRoleDto, meta: { ipAddress?: string; userAgent?: string }) {

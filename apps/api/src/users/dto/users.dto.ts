@@ -44,9 +44,20 @@ export class ListUsersQuery {
 }
 
 export class CreateUserDto {
+  @IsOptional()
+  @IsString()
+  @Length(1, 60)
+  firstName?: string;
+
+  @IsOptional()
+  @IsString()
+  @Length(1, 60)
+  lastName?: string;
+
+  @IsOptional()
   @IsString()
   @Length(2, 120)
-  fullName!: string;
+  fullName?: string;
 
   @IsOptional()
   @IsEmail()

@@ -54,9 +54,14 @@ export function formatCompanyId(roleCode: CompanyRoleCode, sequence: number): st
   return `YNX-${roleCode}-${String(sequence).padStart(4, '0')}`;
 }
 
-export function buildCompanyEmail(fullName: string, roleCode: CompanyRoleCode, suffix?: number): string {
+export function buildCompanyEmail(
+  fullName: string,
+  roleCode: CompanyRoleCode,
+  suffix?: number,
+  lastName?: string,
+): string {
   const parts = fullName.trim().split(/\s+/).filter(Boolean);
-  const rawLast = parts[parts.length - 1] ?? 'user';
+  const rawLast = (lastName?.trim() ? lastName.trim().split(/\s+/).pop() : undefined) ?? parts[parts.length - 1] ?? 'user';
   const cleanLast = rawLast.toLowerCase().replace(/[^a-z0-9]/g, '') || 'user';
   const localPart = suffix && suffix > 1 ? `${cleanLast}${suffix}` : cleanLast;
   return `${localPart}@${roleCode.toLowerCase()}.yakunx.com`;

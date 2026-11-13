@@ -32,8 +32,6 @@ import {
   Video,
   Volume2,
   VolumeX,
-  Wifi,
-  WifiOff,
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -103,9 +101,7 @@ interface CurrentUserInfo {
   role: string;
 }
 
-type QualityMode = 'auto' | 'hd' | 'low-signal';
 type QualityTier = 'hd' | 'balanced' | 'low-signal';
-type NetworkHealth = 'good' | 'fair' | 'weak' | 'offline';
 
 const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
@@ -122,8 +118,8 @@ const ICE_SERVERS: RTCConfiguration = {
 
 const QUICK_REACTIONS = ['👍', '👏', '❤️', '🎉', '😂', '🔥'];
 
-function detectInitialQualityMode(): QualityMode {
-  if (typeof navigator === 'undefined') return 'auto';
+function detectInitialQualityTier(): QualityTier {
+  if (typeof navigator === 'undefined') return 'hd';
   const nav = navigator as Navigator & {
     connection?: { effectiveType?: string; saveData?: boolean };
   };
@@ -131,7 +127,7 @@ function detectInitialQualityMode(): QualityMode {
   if (conn?.saveData || conn?.effectiveType === '2g' || conn?.effectiveType === 'slow-2g') {
     return 'low-signal';
   }
-  return 'auto';
+  return 'hd';
 }
 
 function getInitials(name: string): string {
@@ -151,7 +147,7 @@ function formatDuration(seconds: number): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
-/** Tunes WebRTC RTCRtpSender bitrates, resolution scaling & priority across HD and Low-Signal tiers. */
+/** Tunes WebRTC RTCRtpSender bitrates, resolution scaling & priority without stalling frames. */
 async function tuneSenderQuality(
   sender: RTCRtpSender,
   profile: 'cam-video' | 'screen-video' | 'mic-audio' | 'screen-audio',
@@ -165,21 +161,22 @@ async function tuneSenderQuality(
     const enc = params.encodings[0] as RTCRtpEncodingParameters & { priority?: string };
 
     if (profile === 'screen-video') {
-      enc.maxBitrate = tier === 'low-signal' ? 450_000 : tier === 'balanced' ? 1_500_000 : 4_500_000;
-      enc.maxFramerate = tier === 'low-signal' ? 6 : tier === 'balanced' ? 15 : 60;
-      enc.scaleResolutionDownBy = tier === 'low-signal' ? 1.5 : 1;
-      params.degradationPreference = 'maintain-resolution';
+      // Cap at smooth 30fps (15fps on weak links) so encoder queue never lags behind audio
+      enc.maxBitrate = tier === 'low-signal' ? 750_000 : tier === 'balanced' ? 1_500_000 : 2_800_000;
+      enc.maxFramerate = tier === 'low-signal' ? 15 : tier === 'balanced' ? 24 : 30;
+      enc.scaleResolutionDownBy = tier === 'low-signal' ? 1.25 : 1;
+      params.degradationPreference = tier === 'low-signal' ? 'maintain-framerate' : 'balanced';
     } else if (profile === 'cam-video') {
-      enc.maxBitrate = tier === 'low-signal' ? 160_000 : tier === 'balanced' ? 650_000 : 2_000_000;
-      enc.maxFramerate = tier === 'low-signal' ? 12 : tier === 'balanced' ? 20 : 30;
-      enc.scaleResolutionDownBy = tier === 'low-signal' ? 3 : tier === 'balanced' ? 1.5 : 1;
+      enc.maxBitrate = tier === 'low-signal' ? 240_000 : tier === 'balanced' ? 650_000 : 1_500_000;
+      enc.maxFramerate = tier === 'low-signal' ? 15 : tier === 'balanced' ? 24 : 30;
+      enc.scaleResolutionDownBy = tier === 'low-signal' ? 2 : tier === 'balanced' ? 1.5 : 1;
       params.degradationPreference = tier === 'hd' ? 'balanced' : 'maintain-framerate';
     } else if (profile === 'screen-audio') {
-      enc.maxBitrate = tier === 'low-signal' ? 48_000 : tier === 'balanced' ? 96_000 : 192_000;
+      enc.maxBitrate = tier === 'low-signal' ? 64_000 : tier === 'balanced' ? 96_000 : 128_000;
       enc.priority = 'high';
     } else {
-      // Prioritize voice packets even when video drops on weak signal
-      enc.maxBitrate = tier === 'low-signal' ? 32_000 : tier === 'balanced' ? 64_000 : 96_000;
+      // Prioritize voice packets even when video adapts on weak signal
+      enc.maxBitrate = tier === 'low-signal' ? 32_000 : tier === 'balanced' ? 48_000 : 64_000;
       enc.priority = 'high';
     }
 
@@ -189,7 +186,7 @@ async function tuneSenderQuality(
   }
 }
 
-/** Dedicated hidden audio playback component per peer/screen so voice & screen sound stay clear across layout changes. */
+/** Dedicated hidden audio playback component per peer/screen so voice & screen sound stay glitch-free across renders. */
 function RemoteAudioPlayer({
   stream,
   muted = false,
@@ -202,6 +199,9 @@ function RemoteAudioPlayer({
   onAutoplayBlocked: () => void;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const blockedCbRef = useRef(onAutoplayBlocked);
+  blockedCbRef.current = onAutoplayBlocked;
+  const boundTrackSigRef = useRef<string>('');
   const trackSig = stream?.getAudioTracks().map((t) => `${t.id}:${t.readyState}`).join(',') ?? '';
 
   useEffect(() => {
@@ -213,21 +213,32 @@ function RemoteAudioPlayer({
 
   useEffect(() => {
     const el = audioRef.current;
-    if (!el || !stream) return;
+    if (!el) return;
+    if (!stream || !trackSig) {
+      boundTrackSigRef.current = '';
+      if (el.srcObject) el.srcObject = null;
+      return;
+    }
+    if (boundTrackSigRef.current === trackSig && el.srcObject) {
+      return;
+    }
     const audioTracks = stream.getAudioTracks();
     if (audioTracks.length === 0) {
+      boundTrackSigRef.current = '';
       el.srcObject = null;
       return;
     }
 
-    const audioOnly = new MediaStream(audioTracks);
-    el.srcObject = audioOnly;
+    boundTrackSigRef.current = trackSig;
+    el.srcObject = new MediaStream(audioTracks);
     el.muted = muted;
     el.volume = Math.max(0, Math.min(1, volume));
     el.play().catch(() => {
-      onAutoplayBlocked();
+      blockedCbRef.current();
     });
-  }, [muted, onAutoplayBlocked, stream, trackSig, volume]);
+    // Rebind audio pipeline ONLY when underlying track IDs/state change (never on UI state renders)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackSig]);
 
   return <audio ref={audioRef} autoPlay playsInline className="hidden" />;
 }
@@ -243,19 +254,24 @@ function VideoCanvas({
   className?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const boundTrackSigRef = useRef<string>('');
+  const trackSig = stream?.getTracks().map((t) => `${t.id}:${t.readyState}`).join(',') ?? '';
 
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    if (!stream) {
-      el.srcObject = null;
+    if (!stream || !trackSig) {
+      boundTrackSigRef.current = '';
+      if (el.srcObject) el.srcObject = null;
       return;
     }
-    if (el.srcObject !== stream) {
-      el.srcObject = stream;
+    if (boundTrackSigRef.current === trackSig && el.srcObject) {
+      return;
     }
+    boundTrackSigRef.current = trackSig;
+    el.srcObject = stream;
     el.play().catch(() => undefined);
-  }, [stream]);
+  }, [stream, trackSig]);
 
   return (
     <video
@@ -428,9 +444,6 @@ export function MeetingStudio({
   const [recording, setRecording] = useState(false);
   const [recordingSec, setRecordingSec] = useState(0);
   const [screenAudioMuted, setScreenAudioMuted] = useState(false);
-  const [qualityMode, setQualityMode] = useState<QualityMode>(() => detectInitialQualityMode());
-  const [networkHealth, setNetworkHealth] = useState<NetworkHealth>('good');
-  const [rttMs, setRttMs] = useState<number | null>(null);
   const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
 
@@ -454,9 +467,9 @@ export function MeetingStudio({
   const disconnectTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const makingOfferRef = useRef<Map<string, boolean>>(new Map());
   const seenSignalIdsRef = useRef<Set<string>>(new Set());
-  const activeTierRef = useRef<QualityTier>(
-    detectInitialQualityMode() === 'low-signal' ? 'low-signal' : 'hd',
-  );
+  const activeTierRef = useRef<QualityTier>(detectInitialQualityTier());
+  const speakingRef = useRef<Record<string, boolean>>({});
+  const roomSigRef = useRef<string>('');
   const iceBatchRef = useRef<
     Map<string, { timer: ReturnType<typeof setTimeout> | null; candidates: RTCIceCandidateInit[] }>
   >(new Map());
@@ -711,7 +724,7 @@ export function MeetingStudio({
       if (!entry.timer) {
         entry.timer = setTimeout(() => {
           void flushIceBatch(peerId);
-        }, 120);
+        }, 50);
       }
     },
     [flushIceBatch],
@@ -816,6 +829,15 @@ export function MeetingStudio({
       };
 
       pc.ontrack = (event) => {
+        // Minimize Chromium jitter buffer buildup so screen video & screen audio stay tightly synced
+        const rx = event.receiver as RTCRtpReceiver & { playoutDelayHint?: number };
+        if (rx && 'playoutDelayHint' in rx) {
+          try {
+            rx.playoutDelayHint = 0.05;
+          } catch {
+            // Ignore unsupported hint
+          }
+        }
         const incomingStream = event.streams[0] ?? new MediaStream([event.track]);
         const peerMeta = participantsRef.current.find((p) => p.userId === peerId);
         const declaredScreenId =
@@ -958,19 +980,41 @@ export function MeetingStudio({
     }
   }, [closePeer, currentUser.id, getOrCreatePeer, renegotiatePeer, room.participants, sendSignal]);
 
-  // Poll meeting room state continuously bypassing client cache
+  // Poll meeting room state continuously bypassing client cache (skip React updates when identical)
   useEffect(() => {
+    let active = true;
     const pollRoom = async () => {
       try {
         const fresh = await liveGet<MeetingRow>(`/meetings/${room.id}/room`);
-        setRoom(fresh);
-        onMeetingUpdated?.(fresh);
+        if (!active) return;
+        const sig = JSON.stringify([
+          fresh.status,
+          fresh.notes,
+          fresh.chatMessages.length,
+          fresh.participants.map((p) => [
+            p.userId,
+            p.micOn,
+            p.camOn,
+            p.screenSharing,
+            p.screenStreamId,
+            p.handRaised,
+          ]),
+        ]);
+        if (sig !== roomSigRef.current) {
+          roomSigRef.current = sig;
+          setRoom(fresh);
+          onMeetingUpdated?.(fresh);
+        }
       } catch {
         // Retry on next tick
       }
     };
-    const timer = setInterval(() => void pollRoom(), 1800);
-    return () => clearInterval(timer);
+    void pollRoom();
+    const timer = setInterval(() => void pollRoom(), 1600);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
   }, [onMeetingUpdated, room.id]);
 
   // Poll WebRTC signals sequentially (zero overlapping polls, deduplicated by signal id)
@@ -1144,8 +1188,7 @@ export function MeetingStudio({
       let hadError = false;
       while (!cancelled) {
         if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-          setNetworkHealth('offline');
-          await new Promise((r) => setTimeout(r, 1500));
+          await new Promise((r) => setTimeout(r, 1200));
           continue;
         }
         try {
@@ -1165,8 +1208,8 @@ export function MeetingStudio({
           hadError = true;
         }
         if (cancelled) break;
-        // Back off gently on weak connections instead of flooding requests
-        await new Promise((r) => setTimeout(r, hadError ? 1500 : 550));
+        // Fast signaling cadence (250ms) eliminates join/screen-share idle delay while backing off on errors
+        await new Promise((r) => setTimeout(r, hadError ? 1200 : 250));
       }
     };
 
@@ -1185,12 +1228,15 @@ export function MeetingStudio({
     showToast,
   ]);
 
-  // Web Audio active speaker detector across local + remote streams
+  // Web Audio active speaker detector across local + remote streams (renders ONLY when status changes)
   useEffect(() => {
     if (typeof window === 'undefined' || !('AudioContext' in window)) return;
     let ctx: AudioContext | null = null;
     try {
-      ctx = new window.AudioContext();
+      ctx = new window.AudioContext({ latencyHint: 'interactive' });
+      if (ctx.state === 'suspended') {
+        void ctx.resume().catch(() => undefined);
+      }
     } catch {
       return;
     }
@@ -1216,16 +1262,35 @@ export function MeetingStudio({
 
     const buf = new Uint8Array(128);
     const interval = setInterval(() => {
+      if (ctx?.state === 'suspended') {
+        void ctx.resume().catch(() => undefined);
+      }
       const next: Record<string, boolean> = {};
+      let changed = false;
+      const prev = speakingRef.current;
       for (const [uid, { analyser }] of analysers.entries()) {
         analyser.getByteFrequencyData(buf);
         let sum = 0;
         for (let i = 0; i < buf.length; i += 1) sum += buf[i] ?? 0;
-        const avg = sum / buf.length;
-        next[uid] = avg > 14;
+        const speaking = sum / buf.length > 14;
+        next[uid] = speaking;
+        if (Boolean(prev[uid]) !== speaking) {
+          changed = true;
+        }
       }
-      setSpeakingUsers(next);
-    }, 220);
+      if (!changed) {
+        for (const k of Object.keys(prev)) {
+          if (prev[k] && !(k in next)) {
+            changed = true;
+            break;
+          }
+        }
+      }
+      if (changed) {
+        speakingRef.current = next;
+        setSpeakingUsers(next);
+      }
+    }, 240);
 
     return () => {
       clearInterval(interval);
@@ -1240,25 +1305,15 @@ export function MeetingStudio({
     };
   }, [currentUser.id, localStream, micOn, remoteCamStreams]);
 
-  // Monitor WebRTC network stats + browser online/offline state to auto-adapt on low-signal connections
+  // Silent background WebRTC network adaptation & auto-reconnect on weak/dropped connections
   useEffect(() => {
-    const computeTargetTier = (health: NetworkHealth, mode: QualityMode): QualityTier => {
-      if (mode === 'hd') return 'hd';
-      if (mode === 'low-signal') return 'low-signal';
-      if (health === 'weak' || health === 'offline') return 'low-signal';
-      if (health === 'fair') return 'balanced';
-      return 'hd';
-    };
-
     const handleOnline = () => {
-      setNetworkHealth('fair');
       showToast('Connection restored — reconnecting video & audio...');
       for (const peerId of Array.from(pcsRef.current.keys())) {
         void renegotiatePeer(peerId, true);
       }
     };
     const handleOffline = () => {
-      setNetworkHealth('offline');
       void applyQualityTierToAllPeers('low-signal');
     };
     window.addEventListener('online', handleOnline);
@@ -1266,14 +1321,14 @@ export function MeetingStudio({
 
     const checkStats = async () => {
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-        setNetworkHealth('offline');
-        setRttMs(null);
+        if (activeTierRef.current !== 'low-signal') {
+          await applyQualityTierToAllPeers('low-signal');
+        }
         return;
       }
 
       let maxRtt = 0;
       let maxLoss = 0;
-      let minAvailBitrate = Number.POSITIVE_INFINITY;
       let anyDisconnected = false;
 
       for (const pc of pcsRef.current.values()) {
@@ -1286,9 +1341,6 @@ export function MeetingStudio({
             if (stat.type === 'candidate-pair' && stat.state === 'succeeded') {
               if (typeof stat.currentRoundTripTime === 'number') {
                 maxRtt = Math.max(maxRtt, stat.currentRoundTripTime);
-              }
-              if (typeof stat.availableOutgoingBitrate === 'number') {
-                minAvailBitrate = Math.min(minAvailBitrate, stat.availableOutgoingBitrate);
               }
             }
             if (stat.type === 'remote-inbound-rtp') {
@@ -1305,59 +1357,25 @@ export function MeetingStudio({
         }
       }
 
-      setRttMs(maxRtt > 0 ? Math.round(maxRtt * 1000) : null);
-
-      let nextHealth: NetworkHealth = 'good';
-      if (
-        anyDisconnected ||
-        maxRtt > 0.38 ||
-        maxLoss > 0.05 ||
-        (minAvailBitrate < 450_000 && Number.isFinite(minAvailBitrate))
-      ) {
-        nextHealth = 'weak';
-      } else if (
-        maxRtt > 0.18 ||
-        maxLoss > 0.02 ||
-        (minAvailBitrate < 1_200_000 && Number.isFinite(minAvailBitrate))
-      ) {
-        nextHealth = 'fair';
+      let targetTier: QualityTier = 'hd';
+      if (anyDisconnected || maxRtt > 0.5 || maxLoss > 0.08) {
+        targetTier = 'low-signal';
+      } else if (maxRtt > 0.25 || maxLoss > 0.03) {
+        targetTier = 'balanced';
       }
 
-      setNetworkHealth(nextHealth);
-      const nextTier = computeTargetTier(nextHealth, qualityMode);
-      if (nextTier !== activeTierRef.current) {
-        await applyQualityTierToAllPeers(nextTier);
+      if (targetTier !== activeTierRef.current) {
+        await applyQualityTierToAllPeers(targetTier);
       }
     };
 
-    const immediateTier = computeTargetTier(networkHealth, qualityMode);
-    if (immediateTier !== activeTierRef.current) {
-      void applyQualityTierToAllPeers(immediateTier);
-    }
-
-    const timer = setInterval(() => void checkStats(), 3000);
+    const timer = setInterval(() => void checkStats(), 3500);
     return () => {
       clearInterval(timer);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [applyQualityTierToAllPeers, networkHealth, qualityMode, renegotiatePeer, showToast]);
-
-  const cycleQualityMode = () => {
-    const order: QualityMode[] = ['auto', 'hd', 'low-signal'];
-    const next = order[(order.indexOf(qualityMode) + 1) % order.length] ?? 'auto';
-    setQualityMode(next);
-    const tier: QualityTier =
-      next === 'hd' ? 'hd' : next === 'low-signal' ? 'low-signal' : networkHealth === 'weak' ? 'low-signal' : 'hd';
-    void applyQualityTierToAllPeers(tier);
-    showToast(
-      next === 'auto'
-        ? 'Quality: Auto Adaptive (scales smoothly with signal)'
-        : next === 'hd'
-          ? 'Quality: HD Max (1080p / 4.5 Mbps screen)'
-          : 'Quality: Low Signal Saver (voice priority, low data)',
-    );
-  };
+  }, [applyQualityTierToAllPeers, renegotiatePeer, showToast]);
 
   // Helper to replace or add a single track across localStream & all active RTCPeerConnections
   const replaceOrAddLocalTrack = useCallback(
@@ -1370,7 +1388,7 @@ export function MeetingStudio({
       base.addTrack(newTrack);
       commitLocalStream(base);
 
-      let needsRenegotiate = false;
+      const renegotiateIds: string[] = [];
       const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
       for (const [peerId, pc] of pcsRef.current.entries()) {
         const sender = pc
@@ -1390,11 +1408,11 @@ export function MeetingStudio({
             kind === 'video' ? 'cam-video' : 'mic-audio',
             activeTierRef.current,
           );
-          needsRenegotiate = true;
+          renegotiateIds.push(peerId);
         }
-        if (needsRenegotiate) {
-          await renegotiatePeer(peerId);
-        }
+      }
+      if (renegotiateIds.length > 0) {
+        await Promise.all(renegotiateIds.map((id) => renegotiatePeer(id)));
       }
     },
     [commitLocalStream, renegotiatePeer],
@@ -1538,14 +1556,16 @@ export function MeetingStudio({
           .then((updated) => setRoom(updated))
           .catch(() => undefined),
       ]);
+      const peerRenegotiations: Promise<void>[] = [];
       for (const [peerId, pc] of pcsRef.current.entries()) {
         for (const sender of pc.getSenders()) {
           if (sender.track && tracks.some((t) => t.id === sender.track?.id)) {
             pc.removeTrack(sender);
           }
         }
-        await renegotiatePeer(peerId);
+        peerRenegotiations.push(renegotiatePeer(peerId));
       }
+      await Promise.all(peerRenegotiations);
       tracks.forEach((t) => t.stop());
     }
   }, [renegotiatePeer, room.id, sendSignal]);
@@ -1561,12 +1581,12 @@ export function MeetingStudio({
     }
     let scr: MediaStream | null = null;
     try {
-      // Request 1080p60 crisp video + uncompressed stereo tab/system audio
+      // Request crisp 1080p@30fps (avoids 4K/60fps encoder lag) + uncompressed 48kHz stereo system/tab audio
       scr = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          width: { ideal: 1920, max: 3840 },
-          height: { ideal: 1080, max: 2160 },
-          frameRate: { ideal: 60, max: 60 },
+          width: { ideal: 1920, max: 1920 },
+          height: { ideal: 1080, max: 1080 },
+          frameRate: { ideal: 30, max: 30 },
         },
         audio: {
           echoCancellation: false,
@@ -1575,7 +1595,11 @@ export function MeetingStudio({
           channelCount: 2,
           sampleRate: 48000,
         },
-        ...({ systemAudio: 'include', selfBrowserSurface: 'exclude' } as Record<string, unknown>),
+        ...({
+          systemAudio: 'include',
+          selfBrowserSurface: 'exclude',
+          monitorTypeSurfaces: 'include',
+        } as Record<string, unknown>),
       });
     } catch (err) {
       const name = err instanceof Error ? err.name : '';
@@ -1586,7 +1610,7 @@ export function MeetingStudio({
       // Fallback 1: standard video + audio
       try {
         scr = await navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: { ideal: 30 } },
+          video: { frameRate: { ideal: 30, max: 30 } },
           audio: true,
         });
       } catch {
@@ -1603,7 +1627,7 @@ export function MeetingStudio({
     if (!scr) return;
     const scrVideoTrack = scr.getVideoTracks()[0];
     const scrAudioTrack = scr.getAudioTracks()[0];
-    if (scrVideoTrack) scrVideoTrack.contentHint = 'detail';
+    if (scrVideoTrack) scrVideoTrack.contentHint = 'motion';
     if (scrAudioTrack) scrAudioTrack.contentHint = 'music';
 
     screenStreamRef.current = scr;
@@ -1618,22 +1642,7 @@ export function MeetingStudio({
       void stopScreenShare();
     });
 
-    // Attach screen video & audio tracks with adaptive bitrate tuning and renegotiate immediately
-    for (const [peerId, pc] of pcsRef.current.entries()) {
-      for (const track of scr.getTracks()) {
-        const already = pc.getSenders().some((s) => s.track?.id === track.id);
-        if (!already) {
-          const sender = pc.addTrack(track, scr);
-          void tuneSenderQuality(
-            sender,
-            track.kind === 'video' ? 'screen-video' : 'screen-audio',
-            activeTierRef.current,
-          );
-        }
-      }
-      void renegotiatePeer(peerId);
-    }
-
+    // Send screen-meta + room state first, then renegotiate all peers in parallel so tracks bind without delay
     await Promise.all([
       sendSignal('*', 'screen-meta', {
         active: true,
@@ -1648,6 +1657,23 @@ export function MeetingStudio({
         .then((updated) => setRoom(updated))
         .catch(() => undefined),
     ]);
+
+    const peerOffers: Promise<void>[] = [];
+    for (const [peerId, pc] of pcsRef.current.entries()) {
+      for (const track of scr.getTracks()) {
+        const already = pc.getSenders().some((s) => s.track?.id === track.id);
+        if (!already) {
+          const sender = pc.addTrack(track, scr);
+          void tuneSenderQuality(
+            sender,
+            track.kind === 'video' ? 'screen-video' : 'screen-audio',
+            activeTierRef.current,
+          );
+        }
+      }
+      peerOffers.push(renegotiatePeer(peerId));
+    }
+    await Promise.all(peerOffers);
   };
 
   const toggleHandRaise = async () => {
@@ -1672,6 +1698,10 @@ export function MeetingStudio({
     }, 2800);
     await sendSignal('*', 'reaction', { emoji });
   };
+
+  const handleAudioBlocked = useCallback(() => {
+    setAudioBlocked(true);
+  }, []);
 
   const unlockRoomAudio = () => {
     setAudioBlocked(false);
@@ -1711,7 +1741,10 @@ export function MeetingStudio({
 
       let mixCtx: AudioContext | null = null;
       if (allAudioStreams.length > 0 && typeof window !== 'undefined' && 'AudioContext' in window) {
-        mixCtx = new window.AudioContext();
+        mixCtx = new window.AudioContext({ latencyHint: 'interactive' });
+        if (mixCtx.state === 'suspended') {
+          void mixCtx.resume().catch(() => undefined);
+        }
         const dest = mixCtx.createMediaStreamDestination();
         for (const s of allAudioStreams) {
           try {
@@ -1866,14 +1899,14 @@ export function MeetingStudio({
             <RemoteAudioPlayer
               key={`audio-cam-${p.userId}`}
               stream={remoteCamStreams[p.userId]}
-              onAutoplayBlocked={() => setAudioBlocked(true)}
+              onAutoplayBlocked={handleAudioBlocked}
             />
             <RemoteAudioPlayer
               key={`audio-scr-${p.userId}`}
               stream={remoteScreenStreams[p.userId]}
               muted={screenAudioMuted}
               volume={screenAudioMuted ? 0 : 1}
-              onAutoplayBlocked={() => setAudioBlocked(true)}
+              onAutoplayBlocked={handleAudioBlocked}
             />
           </div>
         ))}
@@ -1919,40 +1952,6 @@ export function MeetingStudio({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={cycleQualityMode}
-            title={`Click to switch stream quality mode${rttMs ? ` (Latency: ${rttMs}ms)` : ''}`}
-            className={cn(
-              'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition',
-              networkHealth === 'offline'
-                ? 'border-rose-500/40 bg-rose-500/20 text-rose-200'
-                : networkHealth === 'weak' || qualityMode === 'low-signal'
-                  ? 'border-amber-400/40 bg-amber-400/15 text-amber-200 hover:bg-amber-400/25'
-                  : 'border-emerald-400/30 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25',
-            )}
-          >
-            {networkHealth === 'offline' ? (
-              <>
-                <WifiOff className="h-3.5 w-3.5" /> Reconnecting...
-              </>
-            ) : (
-              <>
-                <Wifi className="h-3.5 w-3.5" />
-                {qualityMode === 'low-signal'
-                  ? 'Low Signal Mode'
-                  : qualityMode === 'hd'
-                    ? 'HD Max'
-                    : networkHealth === 'weak'
-                      ? 'Auto · Low Signal'
-                      : networkHealth === 'fair'
-                        ? 'Auto · Balanced'
-                        : 'Auto · HD'}
-                {rttMs ? <span className="opacity-70">{rttMs}ms</span> : null}
-              </>
-            )}
-          </button>
-
           {audioBlocked && (
             <button
               type="button"

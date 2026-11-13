@@ -1997,12 +1997,18 @@ export class WorkspaceService implements OnModuleInit {
     const now = Date.now();
     let items: MeetingSignalItem[] = [];
 
+    const floor = after > 0 ? Math.max(0, after - 4000) : 0;
+
     try {
       const orgId = await this.resolveOrgId(actor.organizationId);
       if (orgId && this.prisma.systemSetting?.findMany) {
         const prefix = `msig:${id}:`;
+        const keyFilter: Prisma.StringFilter =
+          floor > 0
+            ? { startsWith: prefix, gte: `${prefix}${String(floor).padStart(14, '0')}` }
+            : { startsWith: prefix };
         const rows = await this.prisma.systemSetting.findMany({
-          where: { organizationId: orgId, key: { startsWith: prefix } },
+          where: { organizationId: orgId, key: keyFilter },
           orderBy: { key: 'asc' },
           take: 300,
         });
@@ -2031,7 +2037,6 @@ export class WorkspaceService implements OnModuleInit {
 
     // 4-second overlap window ensures signals arriving near boundary timestamps across Lambdas are never missed;
     // client deduplicates cleanly via signal id.
-    const floor = after > 0 ? Math.max(0, after - 4000) : 0;
     const signals = items.filter(
       (item) =>
         item.createdAt >= floor &&
