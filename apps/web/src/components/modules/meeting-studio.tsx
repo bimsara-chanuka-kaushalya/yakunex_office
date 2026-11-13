@@ -31,6 +31,7 @@ import {
   Users,
   Video,
   Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -128,32 +129,75 @@ function formatDuration(seconds: number): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
-/** Dedicated hidden audio playback component per peer so voice stays audible across layout changes. */
+/** Tunes WebRTC RTCRtpSender bitrates & degradation preference for crisp HD video and studio audio. */
+async function tuneSenderQuality(
+  sender: RTCRtpSender,
+  profile: 'cam-video' | 'screen-video' | 'mic-audio' | 'screen-audio',
+): Promise<void> {
+  try {
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) {
+      params.encodings = [{}];
+    }
+    const maxBitrate =
+      profile === 'screen-video'
+        ? 4_500_000
+        : profile === 'cam-video'
+          ? 2_000_000
+          : profile === 'screen-audio'
+            ? 192_000
+            : 96_000;
+    params.encodings[0].maxBitrate = maxBitrate;
+    if (profile === 'screen-video') {
+      params.degradationPreference = 'maintain-resolution';
+    } else if (profile === 'cam-video') {
+      params.degradationPreference = 'balanced';
+    }
+    await sender.setParameters(params);
+  } catch {
+    // Some browsers disallow tuning before negotiation settles
+  }
+}
+
+/** Dedicated hidden audio playback component per peer/screen so voice & screen sound stay clear across layout changes. */
 function RemoteAudioPlayer({
   stream,
+  muted = false,
+  volume = 1,
   onAutoplayBlocked,
 }: {
   stream: MediaStream | undefined;
+  muted?: boolean;
+  volume?: number;
   onAutoplayBlocked: () => void;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const trackSig = stream?.getAudioTracks().map((t) => `${t.id}:${t.readyState}`).join(',') ?? '';
+
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    el.muted = muted;
+    el.volume = Math.max(0, Math.min(1, volume));
+  }, [muted, volume]);
 
   useEffect(() => {
     const el = audioRef.current;
     if (!el || !stream) return;
     const audioTracks = stream.getAudioTracks();
-    if (audioTracks.length === 0) return;
+    if (audioTracks.length === 0) {
+      el.srcObject = null;
+      return;
+    }
 
     const audioOnly = new MediaStream(audioTracks);
-    if (el.srcObject !== audioOnly) {
-      el.srcObject = audioOnly;
-    }
-    el.muted = false;
-    el.volume = 1;
+    el.srcObject = audioOnly;
+    el.muted = muted;
+    el.volume = Math.max(0, Math.min(1, volume));
     el.play().catch(() => {
       onAutoplayBlocked();
     });
-  }, [stream, onAutoplayBlocked]);
+  }, [muted, onAutoplayBlocked, stream, trackSig, volume]);
 
   return <audio ref={audioRef} autoPlay playsInline className="hidden" />;
 }
@@ -353,6 +397,7 @@ export function MeetingStudio({
   const [selectedCamId, setSelectedCamId] = useState<string>('');
   const [recording, setRecording] = useState(false);
   const [recordingSec, setRecordingSec] = useState(0);
+  const [screenAudioMuted, setScreenAudioMuted] = useState(false);
   const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
 
@@ -368,6 +413,7 @@ export function MeetingStudio({
   const remoteScreenStreamsRef = useRef<Record<string, MediaStream>>({});
   const remoteScreenStreamIdsRef = useRef<Record<string, string>>({});
   const remoteScreenTrackIdsRef = useRef<Record<string, string>>({});
+  const remoteScreenAudioTrackIdsRef = useRef<Record<string, string>>({});
   const participantsRef = useRef<MeetingParticipant[]>(initialRoom.participants);
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
@@ -488,16 +534,28 @@ export function MeetingStudio({
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: initialMicOn
-            ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+            ? {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                sampleRate: 48000,
+              }
             : false,
-          video: initialCamOn ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+          video: initialCamOn
+            ? { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }
+            : false,
         });
       } catch {
         // Fallback: try audio-only if camera failed/unavailable
         if (initialMicOn) {
           try {
             stream = await navigator.mediaDevices.getUserMedia({
-              audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+              audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                sampleRate: 48000,
+              },
               video: false,
             });
             if (active && initialCamOn) {
@@ -525,6 +583,9 @@ export function MeetingStudio({
       }
 
       if (stream) {
+        stream.getVideoTracks().forEach((t) => {
+          t.contentHint = 'motion';
+        });
         commitLocalStream(stream);
         const aTrack = stream.getAudioTracks()[0];
         const vTrack = stream.getVideoTracks()[0];
@@ -545,20 +606,26 @@ export function MeetingStudio({
     };
   }, [commitLocalStream, initialCamOn, initialMicOn, initialRoom.id, refreshDevices, showToast]);
 
-  // Attach local camera/mic + screen tracks into a peer connection
+  // Attach local camera/mic + screen tracks into a peer connection and apply HD bitrate tuning
   const attachOutgoingTracks = useCallback((pc: RTCPeerConnection) => {
     const camStream = localStreamRef.current;
     if (camStream) {
       for (const track of camStream.getTracks()) {
         const already = pc.getSenders().some((s) => s.track?.id === track.id);
-        if (!already) pc.addTrack(track, camStream);
+        if (!already) {
+          const sender = pc.addTrack(track, camStream);
+          void tuneSenderQuality(sender, track.kind === 'video' ? 'cam-video' : 'mic-audio');
+        }
       }
     }
     const scrStream = screenStreamRef.current;
     if (scrStream) {
       for (const track of scrStream.getTracks()) {
         const already = pc.getSenders().some((s) => s.track?.id === track.id);
-        if (!already) pc.addTrack(track, scrStream);
+        if (!already) {
+          const sender = pc.addTrack(track, scrStream);
+          void tuneSenderQuality(sender, track.kind === 'video' ? 'screen-video' : 'screen-audio');
+        }
       }
     }
   }, []);
@@ -614,6 +681,7 @@ export function MeetingStudio({
             sdp: pc.localDescription.toJSON(),
             screenStreamId: screenStreamRef.current?.id ?? null,
             screenTrackId: screenStreamRef.current?.getVideoTracks()[0]?.id ?? null,
+            screenAudioTrackId: screenStreamRef.current?.getAudioTracks()[0]?.id ?? null,
           });
         }
       } catch {
@@ -646,6 +714,7 @@ export function MeetingStudio({
     delete remoteScreenStreamsRef.current[peerId];
     delete remoteScreenStreamIdsRef.current[peerId];
     delete remoteScreenTrackIdsRef.current[peerId];
+    delete remoteScreenAudioTrackIdsRef.current[peerId];
     setRemoteCamStreams((prev) => {
       if (!(peerId in prev)) return prev;
       const next = { ...prev };
@@ -688,12 +757,14 @@ export function MeetingStudio({
         const declaredScreenId =
           remoteScreenStreamIdsRef.current[peerId] ?? peerMeta?.screenStreamId ?? undefined;
         const declaredTrackId = remoteScreenTrackIdsRef.current[peerId];
+        const declaredAudioTrackId = remoteScreenAudioTrackIdsRef.current[peerId];
         const existingCam = remoteCamStreamsRef.current[peerId];
         const existingScr = remoteScreenStreamsRef.current[peerId];
 
         const isScreenTrack =
           Boolean(declaredScreenId && incomingStream.id === declaredScreenId) ||
           Boolean(declaredTrackId && event.track.id === declaredTrackId) ||
+          Boolean(declaredAudioTrackId && event.track.id === declaredAudioTrackId) ||
           Boolean(existingScr && existingScr.id === incomingStream.id) ||
           (event.track.kind === 'video' && Boolean(peerMeta?.screenSharing) && !peerMeta?.camOn) ||
           (event.track.kind === 'video' &&
@@ -765,6 +836,7 @@ export function MeetingStudio({
         delete remoteScreenStreamsRef.current[p.userId];
         delete remoteScreenStreamIdsRef.current[p.userId];
         delete remoteScreenTrackIdsRef.current[p.userId];
+        delete remoteScreenAudioTrackIdsRef.current[p.userId];
         setRemoteScreenStreams((prev) => {
           if (!(p.userId in prev)) return prev;
           const next = { ...prev };
@@ -782,6 +854,7 @@ export function MeetingStudio({
             active: true,
             streamId: activeScr.id,
             trackId: activeScr.getVideoTracks()[0]?.id ?? '',
+            audioTrackId: activeScr.getAudioTracks()[0]?.id ?? '',
           });
         }
         // Deterministic offerer avoids glare on initial join: lexicographically smaller ID initiates
@@ -860,12 +933,15 @@ export function MeetingStudio({
         const active = Boolean(payload.active);
         const streamId = String(payload.streamId ?? '');
         const trackId = String(payload.trackId ?? '');
+        const audioTrackId = String(payload.audioTrackId ?? '');
         if (active && streamId) {
           remoteScreenStreamIdsRef.current[fromId] = streamId;
           if (trackId) remoteScreenTrackIdsRef.current[fromId] = trackId;
+          if (audioTrackId) remoteScreenAudioTrackIdsRef.current[fromId] = audioTrackId;
         } else {
           delete remoteScreenStreamIdsRef.current[fromId];
           delete remoteScreenTrackIdsRef.current[fromId];
+          delete remoteScreenAudioTrackIdsRef.current[fromId];
           delete remoteScreenStreamsRef.current[fromId];
           setRemoteScreenStreams((prev) => {
             if (!(fromId in prev)) return prev;
@@ -883,6 +959,9 @@ export function MeetingStudio({
         }
         if (payload.screenTrackId) {
           remoteScreenTrackIdsRef.current[fromId] = String(payload.screenTrackId);
+        }
+        if (payload.screenAudioTrackId) {
+          remoteScreenAudioTrackIdsRef.current[fromId] = String(payload.screenAudioTrackId);
         }
         const sdp = payload.sdp as RTCSessionDescriptionInit | undefined;
         if (!sdp) return;
@@ -907,6 +986,7 @@ export function MeetingStudio({
               sdp: pc.localDescription.toJSON(),
               screenStreamId: screenStreamRef.current?.id ?? null,
               screenTrackId: screenStreamRef.current?.getVideoTracks()[0]?.id ?? null,
+              screenAudioTrackId: screenStreamRef.current?.getAudioTracks()[0]?.id ?? null,
             });
           }
           const queued = pendingIceRef.current.get(fromId) ?? [];
@@ -926,6 +1006,9 @@ export function MeetingStudio({
         }
         if (payload.screenTrackId) {
           remoteScreenTrackIdsRef.current[fromId] = String(payload.screenTrackId);
+        }
+        if (payload.screenAudioTrackId) {
+          remoteScreenAudioTrackIdsRef.current[fromId] = String(payload.screenAudioTrackId);
         }
         const sdp = payload.sdp as RTCSessionDescriptionInit | undefined;
         const pc = pcsRef.current.get(fromId);
@@ -1068,14 +1151,17 @@ export function MeetingStudio({
       commitLocalStream(base);
 
       let needsRenegotiate = false;
+      const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
       for (const [peerId, pc] of pcsRef.current.entries()) {
         const sender = pc
           .getSenders()
-          .find((s) => s.track?.kind === kind && s.track?.id !== screenStreamRef.current?.getVideoTracks()[0]?.id);
+          .find((s) => s.track?.kind === kind && s.track?.id && !scrTrackIds.has(s.track.id));
         if (sender) {
           await sender.replaceTrack(newTrack).catch(() => undefined);
+          void tuneSenderQuality(sender, kind === 'video' ? 'cam-video' : 'mic-audio');
         } else {
-          pc.addTrack(newTrack, base);
+          const added = pc.addTrack(newTrack, base);
+          void tuneSenderQuality(added, kind === 'video' ? 'cam-video' : 'mic-audio');
           needsRenegotiate = true;
         }
         if (needsRenegotiate) {
@@ -1133,12 +1219,14 @@ export function MeetingStudio({
           const captured = await navigator.mediaDevices.getUserMedia({
             video: {
               deviceId: selectedCamId ? { exact: selectedCamId } : undefined,
-              width: { ideal: 1280 },
-              height: { ideal: 720 },
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
+              frameRate: { ideal: 30 },
             },
           });
           track = captured.getVideoTracks()[0];
           if (track) {
+            track.contentHint = 'motion';
             await replaceOrAddLocalTrack('video', track);
             await refreshDevices();
           }
@@ -1172,13 +1260,15 @@ export function MeetingStudio({
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
+                sampleRate: 48000,
               },
             }
           : {
               video: {
                 deviceId: { exact: deviceId },
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+                frameRate: { ideal: 30 },
               },
             },
       );
@@ -1188,6 +1278,7 @@ export function MeetingStudio({
         setSelectedMicId(deviceId);
         track.enabled = micOnRef.current;
       } else {
+        track.contentHint = 'motion';
         setSelectedCamId(deviceId);
         track.enabled = camOnRef.current;
       }
@@ -1206,7 +1297,12 @@ export function MeetingStudio({
     if (scr) {
       const tracks = scr.getTracks();
       await Promise.all([
-        sendSignal('*', 'screen-meta', { active: false, streamId: '', trackId: '' }),
+        sendSignal('*', 'screen-meta', {
+          active: false,
+          streamId: '',
+          trackId: '',
+          audioTrackId: '',
+        }),
         patch<MeetingRow>(`/meetings/${room.id}/participant`, {
           screenSharing: false,
           screenStreamId: null,
@@ -1237,9 +1333,21 @@ export function MeetingStudio({
     }
     let scr: MediaStream | null = null;
     try {
+      // Request 1080p60 crisp video + uncompressed stereo tab/system audio
       scr = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 30 } },
-        audio: true,
+        video: {
+          width: { ideal: 1920, max: 3840 },
+          height: { ideal: 1080, max: 2160 },
+          frameRate: { ideal: 60, max: 60 },
+        },
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 2,
+          sampleRate: 48000,
+        },
+        ...({ systemAudio: 'include', selfBrowserSurface: 'exclude' } as Record<string, unknown>),
       });
     } catch (err) {
       const name = err instanceof Error ? err.name : '';
@@ -1247,30 +1355,49 @@ export function MeetingStudio({
         showToast('Screen share selection cancelled or permission denied.');
         return;
       }
-      // Retry without system audio constraint on browsers/OS that reject audio: true
+      // Fallback 1: standard video + audio
       try {
-        scr = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+        scr = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: { ideal: 30 } },
+          audio: true,
+        });
       } catch {
-        showToast('Could not start screen sharing. Check browser permissions.');
-        return;
+        // Fallback 2: video only (OS/window does not support audio capture)
+        try {
+          scr = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+        } catch {
+          showToast('Could not start screen sharing. Check browser permissions.');
+          return;
+        }
       }
     }
 
     if (!scr) return;
     const scrVideoTrack = scr.getVideoTracks()[0];
+    const scrAudioTrack = scr.getAudioTracks()[0];
+    if (scrVideoTrack) scrVideoTrack.contentHint = 'detail';
+    if (scrAudioTrack) scrAudioTrack.contentHint = 'music';
+
     screenStreamRef.current = scr;
     setScreenStream(scr);
     setScreenOn(true);
+
+    if (!scrAudioTrack) {
+      showToast('Screen shared without audio — tick "Share audio" in the picker to share sound.');
+    }
 
     scrVideoTrack?.addEventListener('ended', () => {
       void stopScreenShare();
     });
 
-    // Attach screen tracks and renegotiate immediately while persisting state in parallel
+    // Attach screen video & audio tracks with HD bitrate tuning and renegotiate immediately
     for (const [peerId, pc] of pcsRef.current.entries()) {
       for (const track of scr.getTracks()) {
         const already = pc.getSenders().some((s) => s.track?.id === track.id);
-        if (!already) pc.addTrack(track, scr);
+        if (!already) {
+          const sender = pc.addTrack(track, scr);
+          void tuneSenderQuality(sender, track.kind === 'video' ? 'screen-video' : 'screen-audio');
+        }
       }
       void renegotiatePeer(peerId);
     }
@@ -1280,6 +1407,7 @@ export function MeetingStudio({
         active: true,
         streamId: scr.id,
         trackId: scrVideoTrack?.id ?? '',
+        audioTrackId: scrAudioTrack?.id ?? '',
       }),
       patch<MeetingRow>(`/meetings/${room.id}/participant`, {
         screenSharing: true,
@@ -1327,21 +1455,59 @@ export function MeetingStudio({
       setRecording(false);
       return;
     }
-    const targetStream = screenStreamRef.current ?? localStreamRef.current;
-    if (!targetStream) {
+
+    const remoteScreenFirst = Object.values(remoteScreenStreamsRef.current)[0] ?? null;
+    const primaryVideoStream = screenStreamRef.current ?? remoteScreenFirst ?? localStreamRef.current;
+    const videoTracks = primaryVideoStream?.getVideoTracks().filter((t) => t.readyState === 'live') ?? [];
+
+    // Collect all live audio sources across local mic, screen audio, and remote participants
+    const allAudioStreams = [
+      localStreamRef.current,
+      screenStreamRef.current,
+      ...Object.values(remoteCamStreamsRef.current),
+      ...Object.values(remoteScreenStreamsRef.current),
+    ].filter((s): s is MediaStream => Boolean(s && s.getAudioTracks().some((t) => t.readyState === 'live')));
+
+    if (videoTracks.length === 0 && allAudioStreams.length === 0) {
       showToast('Turn on mic/cam or screen share before starting recording.');
       return;
     }
+
     try {
-      const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-        ? 'video/webm;codecs=vp9'
-        : 'video/webm';
-      const rec = new MediaRecorder(targetStream, { mimeType: mime });
+      const combined = new MediaStream();
+      videoTracks.forEach((t) => combined.addTrack(t));
+
+      let mixCtx: AudioContext | null = null;
+      if (allAudioStreams.length > 0 && typeof window !== 'undefined' && 'AudioContext' in window) {
+        mixCtx = new window.AudioContext();
+        const dest = mixCtx.createMediaStreamDestination();
+        for (const s of allAudioStreams) {
+          try {
+            const src = mixCtx.createMediaStreamSource(new MediaStream(s.getAudioTracks()));
+            src.connect(dest);
+          } catch {
+            // Skip stream if source creation fails
+          }
+        }
+        dest.stream.getAudioTracks().forEach((t) => combined.addTrack(t));
+      }
+
+      const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+        ? 'video/webm;codecs=vp9,opus'
+        : MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+          ? 'video/webm;codecs=vp9'
+          : 'video/webm';
+      const rec = new MediaRecorder(combined, {
+        mimeType: mime,
+        videoBitsPerSecond: 4_000_000,
+        audioBitsPerSecond: 192_000,
+      });
       recordedChunksRef.current = [];
       rec.ondataavailable = (e) => {
         if (e.data.size > 0) recordedChunksRef.current.push(e.data);
       };
       rec.onstop = () => {
+        void mixCtx?.close().catch(() => undefined);
         const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -1460,15 +1626,24 @@ export function MeetingStudio({
 
   return (
     <div className="relative flex h-[calc(100vh-110px)] min-h-[640px] flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#0B0F17] text-white shadow-2xl">
-      {/* Hidden audio playback element for every remote participant so audio works even if camera is off */}
+      {/* Hidden audio playback elements for remote mics AND shared screen audio */}
       {room.participants
         .filter((p) => p.userId !== currentUser.id)
         .map((p) => (
-          <RemoteAudioPlayer
-            key={`audio-${p.userId}`}
-            stream={remoteCamStreams[p.userId]}
-            onAutoplayBlocked={() => setAudioBlocked(true)}
-          />
+          <div key={`audio-wrap-${p.userId}`} className="hidden">
+            <RemoteAudioPlayer
+              key={`audio-cam-${p.userId}`}
+              stream={remoteCamStreams[p.userId]}
+              onAutoplayBlocked={() => setAudioBlocked(true)}
+            />
+            <RemoteAudioPlayer
+              key={`audio-scr-${p.userId}`}
+              stream={remoteScreenStreams[p.userId]}
+              muted={screenAudioMuted}
+              volume={screenAudioMuted ? 0 : 1}
+              onAutoplayBlocked={() => setAudioBlocked(true)}
+            />
+          </div>
         ))}
 
       {/* ─── TOP ZOOM HEADER ─────────────────────────────────────────────── */}
@@ -1568,10 +1743,44 @@ export function MeetingStudio({
                   stream={activeScreenShare.stream}
                   className="h-full max-h-[76vh] w-full object-contain"
                 />
-                <div className="absolute left-3 top-3 flex items-center gap-2">
+                <div className="absolute left-3 top-3 flex flex-wrap items-center gap-2">
                   <div className="inline-flex items-center gap-2 rounded-full bg-emerald-600/95 px-3 py-1 text-xs font-semibold text-white shadow">
                     <MonitorUp className="h-3.5 w-3.5" /> {activeScreenShare.presenterName} is sharing screen
                   </div>
+                  {activeScreenShare.stream.getAudioTracks().some((t) => t.readyState === 'live') ? (
+                    activeScreenShare.userId === currentUser.id ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/90 px-2.5 py-1 text-[11px] font-semibold text-white shadow">
+                        <Volume2 className="h-3.5 w-3.5" /> Audio Shared
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setScreenAudioMuted((m) => !m)}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold text-white shadow transition',
+                          screenAudioMuted
+                            ? 'bg-slate-700/90 hover:bg-slate-600'
+                            : 'bg-sky-600/95 hover:bg-sky-500',
+                        )}
+                      >
+                        {screenAudioMuted ? (
+                          <>
+                            <VolumeX className="h-3.5 w-3.5" /> Screen Sound Off
+                          </>
+                        ) : (
+                          <>
+                            <Volume2 className="h-3.5 w-3.5" /> Screen Sound On
+                          </>
+                        )}
+                      </button>
+                    )
+                  ) : (
+                    activeScreenShare.userId === currentUser.id && (
+                      <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-900/80 px-2.5 py-1 text-[11px] font-medium text-white/80 backdrop-blur">
+                        <VolumeX className="h-3 w-3" /> Video Only
+                      </span>
+                    )
+                  )}
                   {activeScreenShare.userId === currentUser.id && (
                     <button
                       type="button"
@@ -2168,6 +2377,7 @@ export function PreJoinGreenRoom({
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
+  const [micLevel, setMicLevel] = useState(0);
   const [deviceWarn, setDeviceWarn] = useState<string | null>(null);
 
   useEffect(() => {
@@ -2177,10 +2387,26 @@ export function PreJoinGreenRoom({
     async function setupPreview() {
       if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
       try {
-        current = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        current = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            sampleRate: 48000,
+          },
+        });
       } catch {
         try {
-          current = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
+          current = await navigator.mediaDevices.getUserMedia({
+            video: false,
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+              sampleRate: 48000,
+            },
+          });
           if (active) {
             setCamOn(false);
             setDeviceWarn('Camera not found — you can join with audio or turn video on later.');
@@ -2207,6 +2433,43 @@ export function PreJoinGreenRoom({
       current?.getTracks().forEach((t) => t.stop());
     };
   }, []);
+
+  // Live microphone level bar in pre-join green room
+  useEffect(() => {
+    if (!previewStream || !micOn || previewStream.getAudioTracks().length === 0) {
+      setMicLevel(0);
+      return;
+    }
+    if (typeof window === 'undefined' || !('AudioContext' in window)) return;
+    let ctx: AudioContext | null = null;
+    let src: MediaStreamAudioSourceNode | null = null;
+    try {
+      ctx = new window.AudioContext();
+      src = ctx.createMediaStreamSource(previewStream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      src.connect(analyser);
+      const buf = new Uint8Array(128);
+      const t = setInterval(() => {
+        analyser.getByteFrequencyData(buf);
+        let sum = 0;
+        for (let i = 0; i < buf.length; i += 1) sum += buf[i] ?? 0;
+        const pct = Math.min(100, Math.round((sum / buf.length) * 1.9));
+        setMicLevel(pct);
+      }, 120);
+      return () => {
+        clearInterval(t);
+        try {
+          src?.disconnect();
+        } catch {
+          // Ignore
+        }
+        void ctx?.close().catch(() => undefined);
+      };
+    } catch {
+      return;
+    }
+  }, [micOn, previewStream]);
 
   const togglePreviewCam = () => {
     const next = !camOn;
@@ -2290,7 +2553,15 @@ export function PreJoinGreenRoom({
                 {micOn ? 'Ready (On)' : 'Muted'}
               </span>
             </div>
-            <div className="mt-1.5 flex items-center justify-between">
+            {micOn && (
+              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-emerald-400 transition-all duration-100"
+                  style={{ width: `${micLevel}%` }}
+                />
+              </div>
+            )}
+            <div className="mt-2.5 flex items-center justify-between">
               <span>Camera</span>
               <span className={camOn ? 'font-semibold text-emerald-400' : 'font-semibold text-rose-400'}>
                 {camOn ? 'Ready (On)' : 'Off'}
