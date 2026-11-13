@@ -232,6 +232,7 @@ export interface MeetingParticipant {
 
 export interface MeetingChatMessage {
   id: string;
+  senderId?: string;
   senderName: string;
   body: string;
   createdAt: string;
@@ -254,6 +255,16 @@ export interface MeetingItem {
   chatMessages: MeetingChatMessage[];
 }
 
+export interface MeetingSignalItem {
+  seq: number;
+  fromUserId: string;
+  fromUserName: string;
+  toUserId: string; // '*' for broadcast (reactions/screen-meta), or specific userId for SDP/ICE
+  type: string;
+  payload: unknown;
+  createdAt: number;
+}
+
 export interface OrganizationSettings {
   name: string;
   slug: string;
@@ -271,6 +282,8 @@ export class WorkspaceService implements OnModuleInit {
   private defaultOrgId: string | null = null;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private auditLogsCache = new Map<string, { data: unknown; expiresAt: number }>();
+  private lastMeetingsSyncAt = 0;
+  private meetingSignals = new Map<string, { seq: number; items: MeetingSignalItem[] }>();
 
   private clients: ClientItem[] = [];
 
@@ -428,41 +441,47 @@ export class WorkspaceService implements OnModuleInit {
     }
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
-      void (async () => {
-        try {
-          const orgId = await this.resolveOrgId(organizationId);
-          if (!orgId || !this.prisma.systemSetting?.upsert) return;
-          const payload = {
-            clients: this.clients,
-            projects: this.projects,
-            sprints: this.sprints,
-            tasks: this.tasks,
-            bugs: this.bugs,
-            documents: this.documents,
-            timeEntries: this.timeEntries,
-            attendance: this.attendance,
-            leaveRequests: this.leaveRequests,
-            interns: this.interns,
-            channels: this.channels,
-            messages: this.messages,
-            meetings: this.meetings,
-            settings: this.settings,
-          } as unknown as Prisma.InputJsonValue;
-
-          await this.prisma.systemSetting.upsert({
-            where: { organizationId_key: { organizationId: orgId, key: 'workspace_state' } },
-            update: { value: payload },
-            create: {
-              organizationId: orgId,
-              key: 'workspace_state',
-              value: payload,
-            },
-          });
-        } catch (err) {
-          this.logger.warn(`Failed to persist workspace_state to Supabase: ${(err as Error).message}`);
-        }
-      })();
+      void this.persistStateNow(organizationId);
     }, 400);
+  }
+
+  private async persistStateNow(organizationId?: string): Promise<void> {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    try {
+      const orgId = await this.resolveOrgId(organizationId);
+      if (!orgId || !this.prisma.systemSetting?.upsert) return;
+      const payload = {
+        clients: this.clients,
+        projects: this.projects,
+        sprints: this.sprints,
+        tasks: this.tasks,
+        bugs: this.bugs,
+        documents: this.documents,
+        timeEntries: this.timeEntries,
+        attendance: this.attendance,
+        leaveRequests: this.leaveRequests,
+        interns: this.interns,
+        channels: this.channels,
+        messages: this.messages,
+        meetings: this.meetings,
+        settings: this.settings,
+      } as unknown as Prisma.InputJsonValue;
+
+      await this.prisma.systemSetting.upsert({
+        where: { organizationId_key: { organizationId: orgId, key: 'workspace_state' } },
+        update: { value: payload },
+        create: {
+          organizationId: orgId,
+          key: 'workspace_state',
+          value: payload,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`Failed to persist workspace_state to Supabase: ${(err as Error).message}`);
+    }
   }
 
   /** Ensures a valid Project row exists in PostgreSQL when tasks/sprints/bugs use 'gen' or a projectId. */
@@ -1617,26 +1636,119 @@ export class WorkspaceService implements OnModuleInit {
     return created;
   }
 
-  // ─── Meetings (Built-in Yakunex Hub Meet Engine) ──────────────────────────
-  listMeetings() {
+  // ─── Meetings (Built-in Yakunex Hub Meet Engine + WebRTC Signaling) ──────
+  private async syncMeetingsFromDb(organizationId?: string, force = false): Promise<void> {
+    if (!force && Date.now() - this.lastMeetingsSyncAt < 800) {
+      return;
+    }
+    try {
+      const orgId = await this.resolveOrgId(organizationId);
+      if (!orgId || !this.prisma.systemSetting?.findUnique) return;
+      const setting = await this.prisma.systemSetting.findUnique({
+        where: { organizationId_key: { organizationId: orgId, key: 'workspace_state' } },
+      });
+      const val = (setting?.value ?? null) as Record<string, unknown> | null;
+      if (val && Array.isArray(val.meetings)) {
+        this.meetings = val.meetings as MeetingItem[];
+      }
+      this.lastMeetingsSyncAt = Date.now();
+    } catch {
+      // Fallback to in-memory state if DB is temporarily unreachable
+    }
+  }
+
+  private async loadSignalBucket(
+    meetingId: string,
+    organizationId?: string,
+  ): Promise<{ seq: number; items: MeetingSignalItem[] }> {
+    const cached = this.meetingSignals.get(meetingId) ?? { seq: 0, items: [] };
+    try {
+      const orgId = await this.resolveOrgId(organizationId);
+      if (!orgId || !this.prisma.systemSetting?.findUnique) return cached;
+      const row = await this.prisma.systemSetting.findUnique({
+        where: { organizationId_key: { organizationId: orgId, key: `meeting_signals_${meetingId}` } },
+      });
+      const val = (row?.value ?? null) as { seq?: number; items?: MeetingSignalItem[] } | null;
+      if (val && typeof val.seq === 'number' && Array.isArray(val.items)) {
+        const merged = { seq: val.seq, items: val.items };
+        this.meetingSignals.set(meetingId, merged);
+        return merged;
+      }
+    } catch {
+      // Ignore and use in-memory bucket
+    }
+    return cached;
+  }
+
+  private async saveSignalBucket(
+    meetingId: string,
+    bucket: { seq: number; items: MeetingSignalItem[] },
+    organizationId?: string,
+  ): Promise<void> {
+    this.meetingSignals.set(meetingId, bucket);
+    try {
+      const orgId = await this.resolveOrgId(organizationId);
+      if (!orgId || !this.prisma.systemSetting?.upsert) return;
+      await this.prisma.systemSetting.upsert({
+        where: { organizationId_key: { organizationId: orgId, key: `meeting_signals_${meetingId}` } },
+        update: { value: bucket as unknown as Prisma.InputJsonValue },
+        create: {
+          organizationId: orgId,
+          key: `meeting_signals_${meetingId}`,
+          value: bucket as unknown as Prisma.InputJsonValue,
+        },
+      });
+    } catch {
+      // Non-fatal in single-instance / unit test mode
+    }
+  }
+
+  private async appendMeetingSignal(
+    meetingId: string,
+    signal: Omit<MeetingSignalItem, 'seq' | 'createdAt'>,
+    organizationId?: string,
+  ): Promise<number> {
+    const now = Date.now();
+    const bucket = await this.loadSignalBucket(meetingId, organizationId);
+    const recent = bucket.items.filter((item) => now - item.createdAt < 120_000).slice(-199);
+    const nextSeq = bucket.seq + 1;
+    recent.push({
+      ...signal,
+      seq: nextSeq,
+      createdAt: now,
+    });
+    const updated = { seq: nextSeq, items: recent };
+    await this.saveSignalBucket(meetingId, updated, organizationId);
+    return nextSeq;
+  }
+
+  async listMeetings(organizationId?: string) {
+    await this.syncMeetingsFromDb(organizationId);
     return this.meetings;
   }
 
-  getMeetingRoom(id: string) {
+  async getMeetingRoom(id: string, organizationId?: string) {
+    await this.syncMeetingsFromDb(organizationId);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting room not found.');
     return mtg;
   }
 
-  scheduleMeeting(actor: AuthUser, body: Record<string, unknown>) {
+  async scheduleMeeting(actor: AuthUser, body: Record<string, unknown>) {
+    await this.syncMeetingsFromDb(actor.organizationId, true);
     const title = String(body.title ?? '').trim();
     if (title.length < 2) throw new BadRequestException('Meeting title is required.');
     const project = this.projects.find((p) => p.id === body.projectId) ?? null;
-    const roomNum = Math.floor(100 + Math.random() * 900);
+    let roomCode = `YH-ROOM-${Math.floor(100 + Math.random() * 900)}`;
+    while (this.meetings.some((m) => m.roomCode === roomCode)) {
+      roomCode = `YH-ROOM-${Math.floor(100 + Math.random() * 900)}`;
+    }
     const instant = Boolean(body.instant);
+    const micOn = body.micOn !== undefined ? Boolean(body.micOn) : true;
+    const camOn = body.camOn !== undefined ? Boolean(body.camOn) : true;
     const created: MeetingItem = {
       id: `mtg_${randomUUID().slice(0, 8)}`,
-      roomCode: `YH-ROOM-${roomNum}`,
+      roomCode,
       projectId: project?.id ?? null,
       projectName: project?.name ?? 'General / All-Hands',
       organizerName: actor.fullName,
@@ -1645,7 +1757,7 @@ export class WorkspaceService implements OnModuleInit {
       startsAt: String(body.startsAt || new Date().toISOString()),
       endsAt: String(body.endsAt || new Date(Date.now() + 3600000).toISOString()),
       status: instant ? 'LIVE' : 'SCHEDULED',
-      attendeeCount: 1,
+      attendeeCount: instant ? 1 : 0,
       notes: String(body.notes ?? '').trim(),
       participants: instant
         ? [
@@ -1653,8 +1765,8 @@ export class WorkspaceService implements OnModuleInit {
               userId: actor.id,
               fullName: actor.fullName,
               role: actor.role,
-              micOn: true,
-              camOn: true,
+              micOn,
+              camOn,
               screenSharing: false,
               handRaised: false,
               joinedAt: new Date().toISOString(),
@@ -1664,7 +1776,7 @@ export class WorkspaceService implements OnModuleInit {
       chatMessages: [],
     };
     this.meetings.unshift(created);
-    this.persistState(actor.organizationId);
+    await this.persistStateNow(actor.organizationId);
 
     void this.prisma.meeting?.upsert?.({
       where: { id: created.id },
@@ -1686,12 +1798,35 @@ export class WorkspaceService implements OnModuleInit {
     return created;
   }
 
-  updateMeeting(id: string, body: Record<string, unknown>) {
+  async updateMeeting(id: string, body: Record<string, unknown>, organizationId?: string) {
+    await this.syncMeetingsFromDb(organizationId, true);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
-    if (body.status) mtg.status = body.status as MeetingItem['status'];
+    if (body.status) {
+      mtg.status = body.status as MeetingItem['status'];
+      if (mtg.status === 'COMPLETED' || mtg.status === 'CANCELLED') {
+        mtg.participants = [];
+      }
+    }
+    if (body.title !== undefined && String(body.title).trim().length >= 2) {
+      mtg.title = String(body.title).trim();
+    }
+    if (body.agenda !== undefined) mtg.agenda = String(body.agenda).trim();
     if (body.notes !== undefined) mtg.notes = String(body.notes);
-    this.persistState();
+    await this.persistStateNow(organizationId);
+    if (mtg.status === 'COMPLETED' || mtg.status === 'CANCELLED') {
+      await this.appendMeetingSignal(
+        mtg.id,
+        {
+          fromUserId: 'system',
+          fromUserName: 'Yakunex Meet Host',
+          toUserId: '*',
+          type: 'meeting-ended',
+          payload: { status: mtg.status },
+        },
+        organizationId,
+      );
+    }
     void this.prisma.meeting?.updateMany?.({
       where: { id: mtg.id },
       data: {
@@ -1706,37 +1841,77 @@ export class WorkspaceService implements OnModuleInit {
     return mtg;
   }
 
-  joinMeetingRoom(actor: AuthUser, id: string) {
+  async joinMeetingRoom(
+    actor: AuthUser,
+    id: string,
+    body?: { micOn?: boolean; camOn?: boolean },
+  ) {
+    await this.syncMeetingsFromDb(actor.organizationId, true);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
-    if (mtg.status === 'SCHEDULED') mtg.status = 'LIVE';
+    if (mtg.status === 'SCHEDULED' || mtg.status === 'COMPLETED') {
+      mtg.status = 'LIVE';
+    }
+    const micOn = body?.micOn !== undefined ? Boolean(body.micOn) : true;
+    const camOn = body?.camOn !== undefined ? Boolean(body.camOn) : true;
     const existing = mtg.participants.find((p) => p.userId === actor.id);
-    if (!existing) {
+    if (existing) {
+      if (body?.micOn !== undefined) existing.micOn = micOn;
+      if (body?.camOn !== undefined) existing.camOn = camOn;
+    } else {
       mtg.participants.push({
         userId: actor.id,
         fullName: actor.fullName,
         role: actor.role,
-        micOn: true,
-        camOn: true,
+        micOn,
+        camOn,
         screenSharing: false,
         handRaised: false,
         joinedAt: new Date().toISOString(),
       });
     }
     mtg.attendeeCount = Math.max(mtg.attendeeCount, mtg.participants.length);
-    this.persistState(actor.organizationId);
+    await this.persistStateNow(actor.organizationId);
     return mtg;
   }
 
-  leaveMeetingRoom(actor: AuthUser, id: string) {
+  async joinMeetingByCode(
+    actor: AuthUser,
+    roomCode: string,
+    body?: { micOn?: boolean; camOn?: boolean },
+  ) {
+    const normalized = String(roomCode ?? '').trim().toUpperCase();
+    if (!normalized) throw new BadRequestException('Room code is required.');
+    await this.syncMeetingsFromDb(actor.organizationId, true);
+    const mtg = this.meetings.find(
+      (m) => m.roomCode.toUpperCase() === normalized || m.id.toUpperCase() === normalized,
+    );
+    if (!mtg) throw new NotFoundException(`No meeting room found for code "${normalized}".`);
+    return this.joinMeetingRoom(actor, mtg.id, body);
+  }
+
+  async leaveMeetingRoom(actor: AuthUser, id: string) {
+    await this.syncMeetingsFromDb(actor.organizationId, true);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
     mtg.participants = mtg.participants.filter((p) => p.userId !== actor.id);
-    this.persistState(actor.organizationId);
+    await this.persistStateNow(actor.organizationId);
+    await this.appendMeetingSignal(
+      id,
+      {
+        fromUserId: actor.id,
+        fromUserName: actor.fullName,
+        toUserId: '*',
+        type: 'peer-left',
+        payload: { userId: actor.id },
+      },
+      actor.organizationId,
+    );
     return mtg;
   }
 
-  updateParticipantState(actor: AuthUser, id: string, body: Record<string, unknown>) {
+  async updateParticipantState(actor: AuthUser, id: string, body: Record<string, unknown>) {
+    await this.syncMeetingsFromDb(actor.organizationId, true);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
     let participant = mtg.participants.find((p) => p.userId === actor.id);
@@ -1757,22 +1932,112 @@ export class WorkspaceService implements OnModuleInit {
     if (body.camOn !== undefined) participant.camOn = Boolean(body.camOn);
     if (body.screenSharing !== undefined) participant.screenSharing = Boolean(body.screenSharing);
     if (body.handRaised !== undefined) participant.handRaised = Boolean(body.handRaised);
-    this.persistState(actor.organizationId);
+    await this.persistStateNow(actor.organizationId);
     return mtg;
   }
 
-  postMeetingChat(actor: AuthUser, id: string, body: Record<string, unknown>) {
+  async hostMeetingAction(
+    actor: AuthUser,
+    id: string,
+    body: { action: 'mute' | 'mute-all'; targetUserId?: string },
+  ) {
+    await this.syncMeetingsFromDb(actor.organizationId, true);
+    const mtg = this.meetings.find((m) => m.id === id);
+    if (!mtg) throw new NotFoundException('Meeting not found.');
+    const canHost = this.isManagerOrAdmin(actor) || mtg.organizerName === actor.fullName;
+    if (!canHost) {
+      throw new BadRequestException('Only the host or a manager/admin can run host controls.');
+    }
+
+    if (body.action === 'mute') {
+      if (!body.targetUserId) throw new BadRequestException('targetUserId is required.');
+      const target = mtg.participants.find((p) => p.userId === body.targetUserId);
+      if (target) target.micOn = false;
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: body.targetUserId,
+          type: 'host-mute',
+          payload: { by: actor.fullName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'mute-all') {
+      for (const participant of mtg.participants) {
+        if (participant.userId !== actor.id) {
+          participant.micOn = false;
+        }
+      }
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'host-mute',
+          payload: { by: actor.fullName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    throw new BadRequestException('Unsupported host action.');
+  }
+
+  async sendMeetingSignal(
+    actor: AuthUser,
+    id: string,
+    body: { toUserId?: string; type: string; payload: unknown },
+  ) {
+    const type = String(body?.type ?? '').trim();
+    if (!type) throw new BadRequestException('Signal type is required.');
+    const seq = await this.appendMeetingSignal(
+      id,
+      {
+        fromUserId: actor.id,
+        fromUserName: actor.fullName,
+        toUserId: String(body?.toUserId || '*'),
+        type,
+        payload: body?.payload ?? null,
+      },
+      actor.organizationId,
+    );
+    return { ok: true, seq };
+  }
+
+  async pollMeetingSignals(actor: AuthUser, id: string, after: number) {
+    const bucket = await this.loadSignalBucket(id, actor.organizationId);
+    const signals = bucket.items.filter(
+      (item) =>
+        item.seq > after &&
+        item.fromUserId !== actor.id &&
+        (item.toUserId === '*' || item.toUserId === actor.id),
+    );
+    return { seq: bucket.seq, signals };
+  }
+
+  async postMeetingChat(actor: AuthUser, id: string, body: Record<string, unknown>) {
+    await this.syncMeetingsFromDb(actor.organizationId, true);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
     const text = String(body.body ?? '').trim();
     if (!text) throw new BadRequestException('Message cannot be empty.');
     mtg.chatMessages.push({
       id: `mc_${randomUUID().slice(0, 8)}`,
+      senderId: actor.id,
       senderName: actor.fullName,
       body: text,
       createdAt: new Date().toISOString(),
     });
-    this.persistState(actor.organizationId);
+    await this.persistStateNow(actor.organizationId);
     return mtg;
   }
 

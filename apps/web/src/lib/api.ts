@@ -82,6 +82,11 @@ export async function api<T>(path: string, init: RequestInit = {}, allowRetry = 
   return executeRequest<T>(path, init, allowRetry);
 }
 
+/** Real-time GET request that bypasses the in-memory GET cache (used for live meeting rooms & WebRTC signaling). */
+export function liveGet<T>(path: string): Promise<T> {
+  return executeRequest<T>(path, { method: 'GET' }, true);
+}
+
 async function executeRequest<T>(path: string, init: RequestInit, allowRetry: boolean): Promise<T> {
   const response = await rawFetch(path, init);
 

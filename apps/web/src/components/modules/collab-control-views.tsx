@@ -3,28 +3,26 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   BarChart3,
-  Camera,
-  CameraOff,
   Check,
   Clock,
+  Copy,
   Download,
   FolderKanban,
-  Hand,
   Hash,
+  KeyRound,
   MessagesSquare,
-  Mic,
-  MicOff,
-  MonitorUp,
-  PhoneOff,
   Plus,
-  Radio,
   Search,
   Send,
   Settings,
-  ShieldCheck,
   Users,
   Video,
 } from 'lucide-react';
+import {
+  MeetingStudio,
+  PreJoinGreenRoom,
+  type MeetingRow,
+} from '@/components/modules/meeting-studio';
 import { useAuth, useLang } from '@/components/providers';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -237,44 +235,7 @@ export function ChatView() {
   );
 }
 
-// ─── 2. MEETINGS PAGE (/meetings) — BUILT-IN YAKUNEX HUB MEET ───────────────
-
-interface MeetingParticipant {
-  userId: string;
-  fullName: string;
-  role: string;
-  micOn: boolean;
-  camOn: boolean;
-  screenSharing: boolean;
-  handRaised: boolean;
-  joinedAt: string;
-}
-
-interface MeetingChatMessage {
-  id: string;
-  senderId: string;
-  senderName: string;
-  senderRole: string;
-  body: string;
-  createdAt: string;
-}
-
-interface MeetingRow {
-  id: string;
-  projectId: string;
-  projectName: string;
-  organizerName: string;
-  title: string;
-  agenda: string;
-  startsAt: string;
-  endsAt: string;
-  status: 'SCHEDULED' | 'LIVE' | 'COMPLETED' | 'CANCELLED';
-  roomCode: string;
-  attendeeCount: number;
-  notes: string;
-  participants: MeetingParticipant[];
-  chatMessages: MeetingChatMessage[];
-}
+// ─── 2. MEETINGS PAGE (/meetings) — ZOOM-GRADE WEBRTC STUDIO ───────────────
 
 export function MeetingsView() {
   const { user } = useAuth();
@@ -282,33 +243,28 @@ export function MeetingsView() {
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
 
-  // Schedule/Instant form state
+  // Schedule form state
   const [title, setTitle] = useState('');
   const [agenda, setAgenda] = useState('');
-  const [startsAt, setStartsAt] = useState('2026-11-12T10:00');
+  const [startsAt, setStartsAt] = useState(() => new Date(Date.now() + 3600000).toISOString().slice(0, 16));
   const [notes, setNotes] = useState('');
 
-  // Built-in Live Studio state
-  const [activeRoom, setActiveRoom] = useState<MeetingRow | null>(null);
-  const [sideTab, setSideTab] = useState<'chat' | 'participants' | 'notes'>('chat');
-  const [micOn, setMicOn] = useState(true);
-  const [camOn, setCamOn] = useState(true);
-  const [screenSharing, setScreenSharing] = useState(false);
-  const [handRaised, setHandRaised] = useState(false);
-  const [hasCameraStream, setHasCameraStream] = useState(false);
-  const [mediaNotice, setMediaNotice] = useState<string | null>(null);
-  const [callSeconds, setCallSeconds] = useState(0);
-  const [recording, setRecording] = useState(false);
-  const [roomChatText, setRoomChatText] = useState('');
-  const [liveNotes, setLiveNotes] = useState('');
-  const [notesSaved, setNotesSaved] = useState(false);
-
-  const localVideoRef = useRef<HTMLVideoElement | null>(null);
-  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const screenStreamRef = useRef<MediaStream | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const recordedChunksRef = useRef<Blob[]>([]);
+  // Join by room code & pre-join green room state
+  const [roomCodeInput, setRoomCodeInput] = useState('');
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [joining, setJoining] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [preJoin, setPreJoin] = useState<
+    | { mode: 'existing'; meeting: MeetingRow }
+    | { mode: 'instant'; title: string; agenda: string }
+    | null
+  >(null);
+  const [activeSession, setActiveSession] = useState<{
+    room: MeetingRow;
+    micOn: boolean;
+    camOn: boolean;
+  } | null>(null);
+  const handledUrlParamRef = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -323,292 +279,92 @@ export function MeetingsView() {
     void load();
   }, [load]);
 
-  // Poll active room every 3 seconds for live participants & in-call chat
+  // Periodically refresh meeting lobby list while not inside a call
   useEffect(() => {
-    if (!activeRoom) return;
-    const roomId = activeRoom.id;
-    const timer = setInterval(async () => {
-      try {
-        const updated = await api<MeetingRow>(`/meetings/${roomId}/room`);
-        setActiveRoom(updated);
-      } catch {
-        // ignore transient poll error
-      }
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [activeRoom?.id]);
+    if (activeSession || preJoin) return;
+    const t = setInterval(() => {
+      void api<MeetingRow[]>('/meetings').then(setMeetings).catch(() => undefined);
+    }, 6000);
+    return () => clearInterval(t);
+  }, [activeSession, preJoin]);
 
-  // Call duration timer
+  // Auto-open Pre-Join Green Room if user navigated via ?room=YH-ROOM-XXX invite link
   useEffect(() => {
-    if (!activeRoom) {
-      setCallSeconds(0);
-      return;
+    if (handledUrlParamRef.current || loading || typeof window === 'undefined') return;
+    const code = new URLSearchParams(window.location.search).get('room')?.trim().toUpperCase();
+    if (!code) return;
+    handledUrlParamRef.current = true;
+    const match = meetings.find((m) => m.roomCode.toUpperCase() === code || m.id.toUpperCase() === code);
+    if (match) {
+      setPreJoin({ mode: 'existing', meeting: match });
+    } else {
+      setRoomCodeInput(code);
     }
-    const timer = setInterval(() => setCallSeconds((s) => s + 1), 1000);
-    return () => clearInterval(timer);
-  }, [activeRoom?.id]);
+  }, [loading, meetings]);
 
-  // Attach camera stream whenever video element renders
-  useEffect(() => {
-    if (localVideoRef.current && localStreamRef.current) {
-      localVideoRef.current.srcObject = localStreamRef.current;
-    }
-  }, [activeRoom, hasCameraStream, camOn]);
-
-  // Attach screen share stream whenever screen element renders
-  useEffect(() => {
-    if (screenVideoRef.current && screenStreamRef.current) {
-      screenVideoRef.current.srcObject = screenStreamRef.current;
-    }
-  }, [activeRoom, screenSharing]);
-
-  const stopAllMedia = useCallback(() => {
-    if (recorderRef.current && recorderRef.current.state !== 'inactive') {
-      recorderRef.current.stop();
-    }
-    recorderRef.current = null;
-    setRecording(false);
-
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((t) => t.stop());
-      localStreamRef.current = null;
-    }
-    if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach((t) => t.stop());
-      screenStreamRef.current = null;
-    }
-    setHasCameraStream(false);
-    setScreenSharing(false);
-  }, []);
-
-  useEffect(() => {
-    return () => stopAllMedia();
-  }, [stopAllMedia]);
-
-  async function startCameraAndMic() {
-    setMediaNotice(null);
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      setHasCameraStream(false);
-      setMediaNotice('Browser media devices unavailable — joined in studio avatar mode.');
-      return;
-    }
+  const confirmPreJoin = async ({ micOn, camOn }: { micOn: boolean; camOn: boolean }) => {
+    if (!preJoin) return;
+    setJoining(true);
+    setJoinError(null);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: true,
-      });
-      localStreamRef.current = stream;
-      setHasCameraStream(true);
-      setCamOn(true);
-      setMicOn(true);
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
-    } catch {
-      // Fallback: try audio-only, otherwise avatar mode
-      try {
-        const audioStream = await navigator.mediaDevices.getUserMedia({
-          video: false,
-          audio: true,
+      let joined: MeetingRow;
+      if (preJoin.mode === 'instant') {
+        joined = await post<MeetingRow>('/meetings', {
+          title: preJoin.title,
+          agenda: preJoin.agenda,
+          instant: true,
+          micOn,
+          camOn,
         });
-        localStreamRef.current = audioStream;
-        setHasCameraStream(false);
-        setCamOn(false);
-        setMicOn(true);
-        setMediaNotice('Camera not detected — joined with live microphone & HD avatar.');
-      } catch {
-        setHasCameraStream(false);
-        setMediaNotice(
-          'Joined in Yakunex Hub Virtual Studio mode (camera/mic hardware not connected).',
-        );
+      } else {
+        joined = await post<MeetingRow>(`/meetings/${preJoin.meeting.id}/join`, {
+          micOn,
+          camOn,
+        });
       }
+      setPreJoin(null);
+      setActiveSession({ room: joined, micOn, camOn });
+      void load();
+    } catch (err) {
+      setJoinError(err instanceof Error ? err.message : 'Unable to enter meeting room.');
+    } finally {
+      setJoining(false);
     }
-  }
+  };
 
-  async function joinRoom(mtg: MeetingRow) {
-    const joined = await post<MeetingRow>(`/meetings/${mtg.id}/join`, {});
-    setActiveRoom(joined);
-    setLiveNotes(joined.notes ?? '');
-    setMicOn(true);
-    setCamOn(true);
-    setHandRaised(false);
-    await startCameraAndMic();
-    await load();
-  }
-
-  async function startInstantMeeting() {
-    const created = await post<MeetingRow>('/meetings', {
-      title: `Instant Team Sync (${user?.fullName ?? 'Host'})`,
-      agenda: 'Ad-hoc Yakunex Hub live video, screen-share & architecture sync',
-      instant: true,
-      notes: '',
-    });
-    await joinRoom(created);
-  }
-
-  async function leaveRoom() {
-    if (!activeRoom) return;
-    stopAllMedia();
-    await post(`/meetings/${activeRoom.id}/leave`, {});
-    setActiveRoom(null);
-    await load();
-  }
-
-  async function endMeetingForAll() {
-    if (!activeRoom) return;
-    stopAllMedia();
-    await patch(`/meetings/${activeRoom.id}`, {
-      status: 'COMPLETED',
-      notes: liveNotes,
-    });
-    setActiveRoom(null);
-    await load();
-  }
-
-  async function toggleMic() {
-    if (!activeRoom) return;
-    const next = !micOn;
-    setMicOn(next);
-    if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach((t) => {
-        t.enabled = next;
-      });
-    }
-    const updated = await patch<MeetingRow>(`/meetings/${activeRoom.id}/participant`, {
-      micOn: next,
-    });
-    setActiveRoom(updated);
-  }
-
-  async function toggleCam() {
-    if (!activeRoom) return;
-    const next = !camOn;
-    setCamOn(next);
-    if (localStreamRef.current) {
-      localStreamRef.current.getVideoTracks().forEach((t) => {
-        t.enabled = next;
-      });
-    }
-    const updated = await patch<MeetingRow>(`/meetings/${activeRoom.id}/participant`, {
-      camOn: next,
-    });
-    setActiveRoom(updated);
-  }
-
-  async function toggleScreenShare() {
-    if (!activeRoom) return;
-    if (screenSharing) {
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach((t) => t.stop());
-        screenStreamRef.current = null;
-      }
-      setScreenSharing(false);
-      const updated = await patch<MeetingRow>(`/meetings/${activeRoom.id}/participant`, {
-        screenSharing: false,
-      });
-      setActiveRoom(updated);
+  const onJoinByCode = async (e: FormEvent) => {
+    e.preventDefault();
+    const code = roomCodeInput.trim().toUpperCase();
+    if (!code) return;
+    setJoinError(null);
+    const localMatch = meetings.find(
+      (m) => m.roomCode.toUpperCase() === code || m.id.toUpperCase() === code,
+    );
+    if (localMatch) {
+      setRoomCodeInput('');
+      setPreJoin({ mode: 'existing', meeting: localMatch });
       return;
     }
-
-    if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getDisplayMedia) {
-      try {
-        const displayStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: true,
-        });
-        screenStreamRef.current = displayStream;
-        setScreenSharing(true);
-        displayStream.getVideoTracks()[0]?.addEventListener('ended', () => {
-          setScreenSharing(false);
-          void patch<MeetingRow>(`/meetings/${activeRoom.id}/participant`, {
-            screenSharing: false,
-          }).then(setActiveRoom);
-        });
-        const updated = await patch<MeetingRow>(`/meetings/${activeRoom.id}/participant`, {
-          screenSharing: true,
-        });
-        setActiveRoom(updated);
-      } catch {
-        setMediaNotice('Screen share cancelled by user.');
-      }
-    } else {
-      setScreenSharing(true);
-      const updated = await patch<MeetingRow>(`/meetings/${activeRoom.id}/participant`, {
-        screenSharing: true,
+    setJoining(true);
+    try {
+      const joined = await post<MeetingRow>('/meetings/join-by-code', {
+        roomCode: code,
+        micOn: true,
+        camOn: true,
       });
-      setActiveRoom(updated);
+      setRoomCodeInput('');
+      setActiveSession({ room: joined, micOn: true, camOn: true });
+      void load();
+    } catch (err) {
+      setJoinError(err instanceof Error ? err.message : 'Invalid meeting room code.');
+    } finally {
+      setJoining(false);
     }
-  }
+  };
 
-  async function toggleHandRaise() {
-    if (!activeRoom) return;
-    const next = !handRaised;
-    setHandRaised(next);
-    const updated = await patch<MeetingRow>(`/meetings/${activeRoom.id}/participant`, {
-      handRaised: next,
-    });
-    setActiveRoom(updated);
-  }
-
-  function toggleRecording() {
-    if (recording) {
-      if (recorderRef.current && recorderRef.current.state !== 'inactive') {
-        recorderRef.current.stop();
-      }
-      setRecording(false);
-      return;
-    }
-
-    const activeStream = screenStreamRef.current ?? localStreamRef.current;
-    if (activeStream && typeof MediaRecorder !== 'undefined') {
-      try {
-        recordedChunksRef.current = [];
-        const recorder = new MediaRecorder(activeStream);
-        recorder.ondataavailable = (ev) => {
-          if (ev.data.size > 0) recordedChunksRef.current.push(ev.data);
-        };
-        recorder.onstop = () => {
-          const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `${activeRoom?.roomCode ?? 'yakunex-hub-meet'}-recording.webm`;
-          a.click();
-          URL.revokeObjectURL(url);
-        };
-        recorder.start();
-        recorderRef.current = recorder;
-        setRecording(true);
-        setMediaNotice('Live local WebM recording started — stopping will download the file.');
-      } catch {
-        setRecording(true);
-        setMediaNotice('Cloud session recording marker enabled for this room.');
-      }
-    } else {
-      setRecording(true);
-      setMediaNotice('Session recording active for this Yakunex Hub Meet room.');
-    }
-  }
-
-  async function onSendRoomChat(e: FormEvent) {
+  const onSchedule = async (e: FormEvent) => {
     e.preventDefault();
-    if (!activeRoom || !roomChatText.trim()) return;
-    await post(`/meetings/${activeRoom.id}/chat`, { body: roomChatText });
-    setRoomChatText('');
-    const updated = await api<MeetingRow>(`/meetings/${activeRoom.id}/room`);
-    setActiveRoom(updated);
-  }
-
-  async function onSaveRoomNotes() {
-    if (!activeRoom) return;
-    await patch(`/meetings/${activeRoom.id}`, { notes: liveNotes });
-    setNotesSaved(true);
-    setTimeout(() => setNotesSaved(false), 2000);
-  }
-
-  async function onCreate(e: FormEvent) {
-    e.preventDefault();
-    await post('/meetings', {
+    await post<MeetingRow>('/meetings', {
       title,
       agenda,
       startsAt: new Date(startsAt).toISOString(),
@@ -619,473 +375,175 @@ export function MeetingsView() {
     setAgenda('');
     setNotes('');
     await load();
-  }
-
-  async function markCompleted(id: string) {
-    await patch(`/meetings/${id}`, { status: 'COMPLETED' });
-    await load();
-  }
-
-  const formatCallTimer = (secs: number) => {
-    const mins = Math.floor(secs / 60)
-      .toString()
-      .padStart(2, '0');
-    const rem = (secs % 60).toString().padStart(2, '0');
-    return `${mins}:${rem}`;
   };
 
-  // ─── IN-APP LIVE VIDEO & AUDIO STUDIO VIEW ─────────────────────────────────
-  if (activeRoom) {
-    const otherParticipants = (activeRoom.participants ?? []).filter(
-      (p) => p.userId !== user?.id,
+  const markCompleted = async (id: string) => {
+    await patch(`/meetings/${id}`, { status: 'COMPLETED' });
+    await load();
+  };
+
+  const copyInvite = async (mtg: MeetingRow) => {
+    const url = `${window.location.origin}/meetings?room=${mtg.roomCode}`;
+    await navigator.clipboard.writeText(url).catch(() => undefined);
+    setCopiedId(mtg.id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  if (activeSession) {
+    return (
+      <MeetingStudio
+        initialRoom={activeSession.room}
+        initialMicOn={activeSession.micOn}
+        initialCamOn={activeSession.camOn}
+        currentUser={{
+          id: user?.id ?? '',
+          fullName: user?.fullName ?? 'You',
+          role: user?.role ?? 'STAFF',
+        }}
+        onExited={() => {
+          setActiveSession(null);
+          void load();
+        }}
+        onMeetingUpdated={(updated) => {
+          setMeetings((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+        }}
+      />
     );
+  }
+
+  if (preJoin) {
+    const meetingTitle =
+      preJoin.mode === 'instant' ? preJoin.title : preJoin.meeting.title;
+    const roomCode =
+      preJoin.mode === 'instant' ? 'NEW ROOM' : preJoin.meeting.roomCode;
+    const organizerName =
+      preJoin.mode === 'instant'
+        ? user?.fullName ?? 'You'
+        : preJoin.meeting.organizerName;
 
     return (
       <div className="space-y-4">
-        {/* Top Live Studio Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-line bg-surface px-5 py-3.5 shadow-soft">
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-danger/15 px-3 py-1 text-xs font-semibold text-danger">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-danger" />
-              LIVE ROOM · {activeRoom.roomCode}
-            </span>
-            <div>
-              <h2 className="font-display text-lg font-semibold leading-tight">
-                {activeRoom.title}
-              </h2>
-              <p className="text-xs text-muted">
-                {activeRoom.projectName} · Built-in Yakunex Hub Meet Engine (No 3rd-party software)
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {recording && (
-              <span className="inline-flex items-center gap-1.5 rounded-lg bg-danger px-2.5 py-1 text-xs font-semibold text-white">
-                <Radio className="h-3.5 w-3.5 animate-pulse" /> REC
-              </span>
-            )}
-            <span className="rounded-lg bg-canvas px-3 py-1.5 font-mono text-xs font-medium text-ink">
-              {formatCallTimer(callSeconds)}
-            </span>
-            <span className="inline-flex items-center gap-1.5 rounded-lg bg-canvas px-3 py-1.5 text-xs font-medium text-ink">
-              <Users className="h-3.5 w-3.5 text-gold-ink" />
-              {activeRoom.participants?.length ?? 1} in room
-            </span>
-          </div>
-        </div>
-
-        {mediaNotice && (
-          <div className="flex items-center justify-between rounded-xl border border-gold/40 bg-gold-soft/40 px-4 py-2 text-xs text-ink">
-            <span>{mediaNotice}</span>
-            <button
-              type="button"
-              onClick={() => setMediaNotice(null)}
-              className="font-semibold underline"
-            >
-              Dismiss
-            </button>
+        {joinError && (
+          <div className="mx-auto max-w-4xl rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-500">
+            {joinError}
           </div>
         )}
-
-        {/* Main Studio Grid + Side Collaboration Drawer */}
-        <div className="grid gap-4 lg:grid-cols-12">
-          {/* Left: Video & Screen Stage */}
-          <div className=" flex flex-col justify-between rounded-2xl border border-line bg-ink p-4 text-canvas lg:col-span-8">
-            {/* Screen Share Stage (if active) */}
-            {screenSharing && (
-              <div className="relative mb-4 overflow-hidden rounded-xl border border-gold/40 bg-black">
-                <video
-                  ref={screenVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="h-72 w-full object-contain"
-                />
-                <div className="absolute left-3 top-3 rounded-lg bg-gold px-2.5 py-1 text-xs font-semibold text-gold-ink">
-                  You are presenting your screen
-                </div>
-              </div>
-            )}
-
-            {/* Participant Video Tiles */}
-            <div
-              className={cn(
-                'grid min-h-[380px] gap-4',
-                otherParticipants.length === 0
-                  ? 'grid-cols-1'
-                  : otherParticipants.length === 1
-                    ? ' sm:grid-cols-2'
-                    : 'sm:grid-cols-2 xl:grid-cols-3',
-              )}
-            >
-              {/* Local User Video Tile */}
-              <div className="relative flex flex-col items-center justify-center overflow-hidden rounded-2xl border border-white/15 bg-neutral-900 p-4">
-                {hasCameraStream && camOn ? (
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="absolute inset-0 h-full w-full object-cover"
-                  />
-                ) : (
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gold text-2xl font-bold text-gold-ink shadow-lg">
-                      {(user?.fullName ?? 'You')
-                        .split(' ')
-                        .map((n) => n[0])
-                        .join('')
-                        .slice(0, 2)}
-                    </div>
-                    <span className="text-xs text-neutral-400">
-                      {camOn ? 'Virtual Studio Avatar' : 'Camera turned off'}
-                    </span>
-                  </div>
-                )}
-
-                {/* Overlay badges */}
-                <div className="absolute left-3 top-3 flex items-center gap-1.5">
-                  {handRaised && (
-                    <span className="rounded-lg bg-gold px-2 py-1 text-xs font-bold text-gold-ink">
-                      ✋ Hand Raised
-                    </span>
-                  )}
-                </div>
-
-                <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between rounded-xl bg-black/65 px-3 py-1.5 backdrop-blur-sm">
-                  <div className="truncate text-xs font-medium text-white">
-                    {user?.fullName ?? 'You'} (You)
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {micOn ? (
-                      <Mic className="h-3.5 w-3.5 text-emerald-400" />
-                    ) : (
-                      <MicOff className="h-3.5 w-3.5 text-red-400" />
-                    )}
-                    {camOn ? (
-                      <Camera className="h-3.5 w-3.5 text-emerald-400" />
-                    ) : (
-                      <CameraOff className="h-3.5 w-3.5 text-red-400" />
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Remote / Room Participant Tiles */}
-              {otherParticipants.map((p) => (
-                <div
-                  key={p.userId}
-                  className="relative flex flex-col items-center justify-center overflow-hidden rounded-2xl border border-white/15 bg-neutral-900 p-4"
-                >
-                  <div className="flex flex-col items-center gap-2">
-                    <div className="relative flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500/20 text-2xl font-bold text-emerald-300 ring-2 ring-emerald-400/50">
-                      {p.fullName
-                        .split(' ')
-                        .map((n) => n[0])
-                        .join('')
-                        .slice(0, 2)}
-                      {p.micOn && (
-                        <span className="absolute -bottom-1 -right-1 h-3.5 w-3.5 animate-ping rounded-full bg-emerald-400" />
-                      )}
-                    </div>
-                    <span className="text-sm font-medium text-white">{p.fullName}</span>
-                    <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-[11px] text-neutral-300">
-                      {ROLE_LABELS[p.role as Role]?.en ?? p.role}
-                    </span>
-                  </div>
-
-                  {p.handRaised && (
-                    <div className="absolute left-3 top-3 rounded-lg bg-gold px-2 py-1 text-xs font-bold text-gold-ink">
-                      ✋ Hand Raised
-                    </div>
-                  )}
-
-                  {p.screenSharing && (
-                    <div className="absolute right-3 top-3 rounded-lg bg-emerald-500 px-2 py-1 text-[11px] font-bold text-black">
-                      Sharing Screen
-                    </div>
-                  )}
-
-                  <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between rounded-xl bg-black/65 px-3 py-1.5 backdrop-blur-sm">
-                    <span className="truncate text-xs font-medium text-white">{p.fullName}</span>
-                    <div className="flex items-center gap-1.5">
-                      {p.micOn ? (
-                        <Mic className="h-3.5 w-3.5 text-emerald-400" />
-                      ) : (
-                        <MicOff className="h-3.5 w-3.5 text-red-400" />
-                      )}
-                      {p.camOn ? (
-                        <Camera className="h-3.5 w-3.5 text-emerald-400" />
-                      ) : (
-                        <CameraOff className="h-3.5 w-3.5 text-red-400" />
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Bottom Studio Control Dock */}
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white/10 px-4 py-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={toggleMic}
-                  className={cn(
-                    'inline-flex h-10 items-center gap-2 rounded-xl px-3.5 text-xs font-semibold transition-colors',
-                    micOn
-                      ? 'bg-white/15 text-white hover:bg-white/25'
-                      : 'bg-danger text-white hover:bg-danger/90',
-                  )}
-                >
-                  {micOn ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
-                  {micOn ? 'Mute Mic' : 'Unmute Mic'}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={toggleCam}
-                  className={cn(
-                    'inline-flex h-10 items-center gap-2 rounded-xl px-3.5 text-xs font-semibold transition-colors',
-                    camOn
-                      ? 'bg-white/15 text-white hover:bg-white/25'
-                      : 'bg-danger text-white hover:bg-danger/90',
-                  )}
-                >
-                  {camOn ? <Camera className="h-4 w-4" /> : <CameraOff className="h-4 w-4" />}
-                  {camOn ? 'Stop Video' : 'Start Video'}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={toggleScreenShare}
-                  className={cn(
-                    'inline-flex h-10 items-center gap-2 rounded-xl px-3.5 text-xs font-semibold transition-colors',
-                    screenSharing
-                      ? 'bg-gold text-gold-ink'
-                      : 'bg-white/15 text-white hover:bg-white/25',
-                  )}
-                >
-                  <MonitorUp className="h-4 w-4" />
-                  {screenSharing ? 'Stop Sharing' : 'Share Screen'}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={toggleHandRaise}
-                  className={cn(
-                    'inline-flex h-10 items-center gap-2 rounded-xl px-3.5 text-xs font-semibold transition-colors',
-                    handRaised
-                      ? 'bg-gold text-gold-ink'
-                      : 'bg-white/15 text-white hover:bg-white/25',
-                  )}
-                >
-                  <Hand className="h-4 w-4" />
-                  {handRaised ? 'Lower Hand' : 'Raise Hand'}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={toggleRecording}
-                  className={cn(
-                    'inline-flex h-10 items-center gap-2 rounded-xl px-3.5 text-xs font-semibold transition-colors',
-                    recording
-                      ? 'bg-danger text-white'
-                      : 'bg-white/15 text-white hover:bg-white/25',
-                  )}
-                >
-                  <Radio className="h-4 w-4" />
-                  {recording ? 'Stop Recording' : 'Record'}
-                </button>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={leaveRoom}
-                  className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-white/15 px-3.5 text-xs font-semibold text-white hover:bg-white/25"
-                >
-                  <PhoneOff className="h-4 w-4" /> Leave Room
-                </button>
-                <button
-                  type="button"
-                  onClick={endMeetingForAll}
-                  className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-danger px-3.5 text-xs font-semibold text-white hover:bg-danger/90"
-                >
-                  End Meeting
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Right: In-Call Chat, Participants & Live Action Notes */}
-          <Card className="flex h-[540px] flex-col overflow-hidden p-0 lg:col-span-4">
-            <div className="grid grid-cols-3 border-b border-line bg-canvas p-1.5 text-xs font-medium">
-              <button
-                type="button"
-                onClick={() => setSideTab('chat')}
-                className={cn(
-                  'rounded-lg py-2 transition-colors',
-                  sideTab === 'chat' ? 'bg-surface font-semibold text-ink shadow-2xs' : 'text-muted',
-                )}
-              >
-                Live Chat ({activeRoom.chatMessages?.length ?? 0})
-              </button>
-              <button
-                type="button"
-                onClick={() => setSideTab('participants')}
-                className={cn(
-                  'rounded-lg py-2 transition-colors',
-                  sideTab === 'participants'
-                    ? 'bg-surface font-semibold text-ink shadow-2xs'
-                    : 'text-muted',
-                )}
-              >
-                People ({activeRoom.participants?.length ?? 1})
-              </button>
-              <button
-                type="button"
-                onClick={() => setSideTab('notes')}
-                className={cn(
-                  'rounded-lg py-2 transition-colors',
-                  sideTab === 'notes'
-                    ? 'bg-surface font-semibold text-ink shadow-2xs'
-                    : 'text-muted',
-                )}
-              >
-                Action Notes
-              </button>
-            </div>
-
-            {sideTab === 'chat' && (
-              <div className="flex flex-1 flex-col overflow-hidden">
-                <div className="flex-1 space-y-2.5 overflow-y-auto p-4">
-                  {(activeRoom.chatMessages ?? []).map((msg) => (
-                    <div key={msg.id} className="rounded-xl bg-canvas p-3 text-xs">
-                      <div className="flex items-center justify-between">
-                        <span className="font-semibold text-ink">{msg.senderName}</span>
-                        <span className="text-[10px] text-muted">
-                          {new Date(msg.createdAt).toLocaleTimeString('en-LK', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-ink">{msg.body}</p>
-                    </div>
-                  ))}
-                </div>
-                <form onSubmit={onSendRoomChat} className="flex gap-2 border-t border-line p-3">
-                  <Input
-                    placeholder="Send message to room…"
-                    value={roomChatText}
-                    onChange={(e) => setRoomChatText(e.target.value)}
-                  />
-                  <Button type="submit" size="sm">
-                    <Send className="h-3.5 w-3.5" />
-                  </Button>
-                </form>
-              </div>
-            )}
-
-            {sideTab === 'participants' && (
-              <div className="flex-1 space-y-2 overflow-y-auto p-4">
-                {(activeRoom.participants ?? []).map((p) => (
-                  <div
-                    key={p.userId}
-                    className="flex items-center justify-between rounded-xl border border-line px-3 py-2.5 text-xs"
-                  >
-                    <div>
-                      <p className="font-semibold text-ink">
-                        {p.fullName} {p.userId === user?.id ? '(You)' : ''}
-                      </p>
-                      <p className="text-[11px] text-muted">
-                        {ROLE_LABELS[p.role as Role]?.en ?? p.role}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {p.handRaised && <span>✋</span>}
-                      {p.micOn ? (
-                        <Badge tone="success">Mic On</Badge>
-                      ) : (
-                        <Badge tone="neutral">Muted</Badge>
-                      )}
-                      {p.camOn ? (
-                        <Badge tone="gold">Video</Badge>
-                      ) : (
-                        <Badge tone="neutral">No Cam</Badge>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {sideTab === 'notes' && (
-              <div className="flex flex-1 flex-col justify-between p-4">
-                <div className="space-y-2">
-                  <p className="text-xs text-muted">
-                    Shared minutes and action items are saved directly to this meeting record.
-                  </p>
-                  <textarea
-                    rows={12}
-                    value={liveNotes}
-                    onChange={(e) => setLiveNotes(e.target.value)}
-                    placeholder="Type decisions, sprint action items, and follow-ups here…"
-                    className="w-full rounded-xl border border-line bg-canvas p-3 text-xs text-ink focus:border-ink focus:outline-hidden"
-                  />
-                </div>
-                <div className="flex items-center justify-between pt-3">
-                  <span className="text-xs text-success">
-                    {notesSaved ? '✓ Notes saved to room' : ''}
-                  </span>
-                  <Button size="sm" onClick={onSaveRoomNotes}>
-                    <Check className="h-3.5 w-3.5" /> Save meeting notes
-                  </Button>
-                </div>
-              </div>
-            )}
-          </Card>
-        </div>
+        <PreJoinGreenRoom
+          meetingTitle={meetingTitle}
+          roomCode={roomCode}
+          organizerName={organizerName}
+          userName={user?.fullName ?? 'You'}
+          joining={joining}
+          onCancel={() => {
+            setPreJoin(null);
+            setJoinError(null);
+          }}
+          onJoin={(opts) => void confirmPreJoin(opts)}
+        />
       </div>
     );
   }
 
-  // ─── SCHEDULED & LIVE ROOM LOBBY LIST VIEW ─────────────────────────────────
+  const liveCount = meetings.filter((m) => m.status === 'LIVE').length;
+  const activePeople = meetings.reduce((sum, m) => sum + (m.participants?.length ?? 0), 0);
+
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="font-display text-3xl font-semibold">
-            Yakunex Hub Meet — Built-in Video & Audio Rooms
+            Yakunex Hub Meet — Live Video & Screen Share
           </h2>
           <p className="mt-1 text-sm text-muted">
-            100% self-hosted in-app video, audio, screen-sharing, live room chat & action notes —
-            no Zoom or third-party tools required.
+            Zoom-grade peer-to-peer HD video, crystal clear two-way audio, screen sharing,
+            reactions & live room chat inside your browser.
           </p>
         </div>
+
         <div className="flex flex-wrap items-center gap-2.5">
-          <Button variant="primary" onClick={startInstantMeeting}>
-            <Video className="h-4 w-4" /> Start Instant Meeting
+          <form onSubmit={onJoinByCode} className="flex items-center gap-2">
+            <div className="relative">
+              <KeyRound className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+              <Input
+                value={roomCodeInput}
+                onChange={(e) => setRoomCodeInput(e.target.value)}
+                placeholder="Room code (YH-ROOM-...)"
+                className="h-10 w-48 pl-9 text-xs uppercase"
+              />
+            </div>
+            <Button type="submit" variant="secondary" disabled={joining || !roomCodeInput.trim()}>
+              Join Code
+            </Button>
+          </form>
+
+          <Button
+            variant="primary"
+            onClick={() =>
+              setPreJoin({
+                mode: 'instant',
+                title: `${user?.fullName ?? 'Team'}'s Instant Meeting`,
+                agenda: 'Live video sync & screen share huddle',
+              })
+            }
+          >
+            <Video className="h-4 w-4" /> New Meeting
           </Button>
           <Button variant="secondary" onClick={() => setModalOpen(true)}>
-            <Plus className="h-4 w-4" /> Schedule Meeting
+            <Plus className="h-4 w-4" /> Schedule
           </Button>
         </div>
       </header>
+
+      {joinError && (
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-500">
+          {joinError}
+        </div>
+      )}
+
+      {/* Quick overview strip */}
+      <div className="grid gap-4 sm:grid-cols-3">
+        <StatCard
+          label="Live Rooms"
+          value={String(liveCount)}
+          hint={liveCount > 0 ? 'Active calls happening now' : 'Start an instant call anytime'}
+          icon={<Video className="h-5 w-5" />}
+        />
+        <StatCard
+          label="People In Call"
+          value={String(activePeople)}
+          hint="Connected with live mic & camera"
+          icon={<Users className="h-5 w-5" />}
+        />
+        <StatCard
+          label="Scheduled Rooms"
+          value={String(meetings.filter((m) => m.status === 'SCHEDULED').length)}
+          hint="Upcoming team standups & reviews"
+          icon={<Clock className="h-5 w-5" />}
+        />
+      </div>
 
       {loading ? (
         <Skeleton className="h-56 rounded-2xl" />
       ) : meetings.length === 0 ? (
         <Card className="p-12 text-center text-muted">
-          <Video className="mx-auto h-10 w-10 text-muted/60 mb-3" />
-          <p className="font-semibold text-ink text-base">No active or scheduled meetings</p>
-          <p className="text-sm mt-1">
-            Host instant meetings with live video, audio and screen sharing, or schedule sprint standups.
+          <Video className="mx-auto mb-3 h-10 w-10 text-muted/60" />
+          <p className="font-display text-lg font-semibold text-ink">
+            No active or scheduled meetings yet
           </p>
-          <div className="mt-4 flex justify-center gap-3">
-            <Button variant="primary" onClick={startInstantMeeting}>
+          <p className="mx-auto mt-1 max-w-md text-sm">
+            Start a new instant video meeting with screen sharing or schedule a sprint review room.
+          </p>
+          <div className="mt-5 flex flex-wrap justify-center gap-3">
+            <Button
+              variant="primary"
+              onClick={() =>
+                setPreJoin({
+                  mode: 'instant',
+                  title: `${user?.fullName ?? 'Team'}'s Instant Meeting`,
+                  agenda: 'Live video sync & screen share huddle',
+                })
+              }
+            >
               <Video className="h-4 w-4" /> Start Instant Meeting
             </Button>
             <Button variant="secondary" onClick={() => setModalOpen(true)}>
@@ -1094,69 +552,94 @@ export function MeetingsView() {
           </div>
         </Card>
       ) : (
-        <div className="space-y-4">
-          {meetings.map((mtg) => (
-            <Card key={mtg.id} className="p-6">
-              <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="grid gap-4 lg:grid-cols-2">
+          {meetings.map((mtg) => {
+            const inCallCount = mtg.participants?.length ?? 0;
+            const isLive = mtg.status === 'LIVE';
+            return (
+              <Card key={mtg.id} className="flex flex-col justify-between p-5">
                 <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge
-                      tone={
-                        mtg.status === 'LIVE'
-                          ? 'danger'
-                          : mtg.status === 'SCHEDULED'
-                            ? 'gold'
-                            : 'success'
-                      }
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge
+                        tone={
+                          isLive
+                            ? 'danger'
+                            : mtg.status === 'SCHEDULED'
+                              ? 'gold'
+                              : 'success'
+                        }
+                      >
+                        {isLive ? '● LIVE NOW' : mtg.status}
+                      </Badge>
+                      <Badge tone="neutral">{mtg.roomCode}</Badge>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void copyInvite(mtg)}
+                      className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-muted transition hover:bg-canvas hover:text-ink"
                     >
-                      {mtg.status === 'LIVE' ? '● LIVE NOW' : mtg.status}
-                    </Badge>
-                    <Badge tone="neutral">Room {mtg.roomCode}</Badge>
-                    <span className="text-xs text-muted">{mtg.projectName}</span>
+                      {copiedId === mtg.id ? (
+                        <>
+                          <Check className="h-3.5 w-3.5 text-emerald-500" /> Copied
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3.5 w-3.5" /> Invite Link
+                        </>
+                      )}
+                    </button>
                   </div>
-                  <h3 className="mt-1.5 font-display text-xl font-semibold">{mtg.title}</h3>
-                  <p className="mt-1 text-sm text-muted">{mtg.agenda}</p>
-                  <p className="mt-2 text-xs text-muted">
-                    Organized by {mtg.organizerName} ·{' '}
-                    {new Date(mtg.startsAt).toLocaleString('en-LK', {
-                      dateStyle: 'medium',
-                      timeStyle: 'short',
-                      timeZone: 'Asia/Colombo',
-                    })}{' '}
-                    · {mtg.participants?.length ?? mtg.attendeeCount} participants in room
-                  </p>
+
+                  <h3 className="mt-2.5 font-display text-lg font-semibold text-ink">
+                    {mtg.title}
+                  </h3>
+                  <p className="mt-1 line-clamp-2 text-sm text-muted">{mtg.agenda}</p>
+
+                  <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+                    <span>Host: {mtg.organizerName}</span>
+                    <span>
+                      {new Date(mtg.startsAt).toLocaleString('en-LK', {
+                        dateStyle: 'medium',
+                        timeStyle: 'short',
+                        timeZone: 'Asia/Colombo',
+                      })}
+                    </span>
+                    <span className="inline-flex items-center gap-1 font-medium text-ink">
+                      <Users className="h-3.5 w-3.5 text-gold-600" />
+                      {inCallCount > 0 ? `${inCallCount} in call` : 'Waiting to start'}
+                    </span>
+                  </div>
+
+                  {mtg.notes && (
+                    <div className="mt-3 rounded-xl bg-canvas px-3 py-2 text-xs text-muted">
+                      <strong className="text-ink">Notes:</strong> {mtg.notes}
+                    </div>
+                  )}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3.5">
+                  <Button
+                    variant={isLive ? 'primary' : 'secondary'}
+                    size="sm"
+                    onClick={() => setPreJoin({ mode: 'existing', meeting: mtg })}
+                  >
+                    <Video className="h-3.5 w-3.5" />{' '}
+                    {mtg.status === 'COMPLETED' ? 'Reopen & Join' : 'Join Meeting'}
+                  </Button>
                   {mtg.status !== 'COMPLETED' && mtg.status !== 'CANCELLED' && (
-                    <>
-                      <Button variant="primary" size="sm" onClick={() => joinRoom(mtg)}>
-                        <Video className="h-3.5 w-3.5" /> Join Built-in Room
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => markCompleted(mtg.id)}
-                      >
-                        Mark completed
-                      </Button>
-                    </>
-                  )}
-                  {mtg.status === 'COMPLETED' && (
-                    <Button variant="secondary" size="sm" onClick={() => joinRoom(mtg)}>
-                      <Video className="h-3.5 w-3.5" /> Reopen Room
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void markCompleted(mtg.id)}
+                    >
+                      End / Complete
                     </Button>
                   )}
                 </div>
-              </div>
-
-              {mtg.notes && (
-                <div className="mt-4 rounded-xl bg-canvas p-3.5 text-xs text-muted">
-                  <strong className="text-ink">Notes & Action Items:</strong> {mtg.notes}
-                </div>
-              )}
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </div>
       )}
 
@@ -1165,7 +648,7 @@ export function MeetingsView() {
         title="Schedule Yakunex Hub Meet Room"
         onClose={() => setModalOpen(false)}
       >
-        <form onSubmit={onCreate} className="space-y-4">
+        <form onSubmit={onSchedule} className="space-y-4">
           <Field label="Meeting title" htmlFor="mt-title">
             <Input
               id="mt-title"
@@ -1190,6 +673,7 @@ export function MeetingsView() {
               required
               value={agenda}
               onChange={(e) => setAgenda(e.target.value)}
+              placeholder="Topics to cover & screen share walkthrough"
             />
           </Field>
           <Field label="Initial notes / action items" htmlFor="mt-notes">
@@ -1199,7 +683,7 @@ export function MeetingsView() {
             <Button variant="secondary" type="button" onClick={() => setModalOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit">Create Built-in Room</Button>
+            <Button type="submit">Create Meeting Room</Button>
           </div>
         </form>
       </Modal>

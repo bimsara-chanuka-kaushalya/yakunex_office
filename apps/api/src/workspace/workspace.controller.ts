@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { CurrentUser, RequirePermissions } from '../common/decorators';
 import type { AuthUser } from '../common/types';
@@ -252,14 +252,14 @@ export class WorkspaceController {
   // ─── Meetings (Built-in Yakunex Hub Meet Engine) ──────────────────────────
   @Get('meetings')
   @RequirePermissions(PERMISSIONS.CHAT_USE)
-  listMeetings() {
-    return this.workspace.listMeetings();
+  listMeetings(@CurrentUser() actor: AuthUser) {
+    return this.workspace.listMeetings(actor.organizationId);
   }
 
   @Get('meetings/:id/room')
   @RequirePermissions(PERMISSIONS.CHAT_USE)
-  getMeetingRoom(@Param('id') id: string) {
-    return this.workspace.getMeetingRoom(id);
+  getMeetingRoom(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.getMeetingRoom(id, actor.organizationId);
   }
 
   @Post('meetings')
@@ -270,14 +270,22 @@ export class WorkspaceController {
 
   @Patch('meetings/:id')
   @RequirePermissions(PERMISSIONS.CHAT_USE)
-  updateMeeting(@Param('id') id: string, @Body() body: Record<string, unknown>) {
-    return this.workspace.updateMeeting(id, body);
+  updateMeeting(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.workspace.updateMeeting(id, body, actor.organizationId);
   }
 
   @Post('meetings/:id/join')
   @RequirePermissions(PERMISSIONS.CHAT_USE)
-  joinMeetingRoom(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
-    return this.workspace.joinMeetingRoom(actor, id);
+  joinMeetingRoom(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body?: { micOn?: boolean; camOn?: boolean },
+  ) {
+    return this.workspace.joinMeetingRoom(actor, id, body);
   }
 
   @Post('meetings/:id/leave')
@@ -304,6 +312,45 @@ export class WorkspaceController {
     @Body() body: Record<string, unknown>,
   ) {
     return this.workspace.postMeetingChat(actor, id, body);
+  }
+
+  @Post('meetings/join-by-code')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  joinMeetingByCode(
+    @CurrentUser() actor: AuthUser,
+    @Body() body: { roomCode: string; micOn?: boolean; camOn?: boolean },
+  ) {
+    return this.workspace.joinMeetingByCode(actor, body.roomCode, body);
+  }
+
+  @Post('meetings/:id/signal')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  sendMeetingSignal(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: { toUserId?: string; type: string; payload: unknown },
+  ) {
+    return this.workspace.sendMeetingSignal(actor, id, body);
+  }
+
+  @Get('meetings/:id/signals')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  pollMeetingSignals(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Query('after') after?: string,
+  ) {
+    return this.workspace.pollMeetingSignals(actor, id, Number(after) || 0);
+  }
+
+  @Patch('meetings/:id/host-action')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  hostMeetingAction(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: { action: 'mute' | 'mute-all'; targetUserId?: string },
+  ) {
+    return this.workspace.hostMeetingAction(actor, id, body);
   }
 
   // ─── Reports ──────────────────────────────────────────────────────────────
