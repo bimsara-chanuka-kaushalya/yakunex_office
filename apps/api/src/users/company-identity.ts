@@ -1,6 +1,6 @@
 import { Role } from '@prisma/client';
 
-export const COMPANY_ROLE_CODES = ['DIR', 'HR', 'PM', 'DEV', 'INT', 'STF'] as const;
+export const COMPANY_ROLE_CODES = ['CEO', 'MD', 'DIR', 'HR', 'PM', 'DEV', 'INT', 'STF'] as const;
 export type CompanyRoleCode = (typeof COMPANY_ROLE_CODES)[number];
 
 export function resolveCompanyRoleCode(
@@ -14,10 +14,16 @@ export function resolveCompanyRoleCode(
   }
 
   const t = (title ?? '').toLowerCase();
+  if (/\b(ceo|chief\s*executive)\b/.test(t)) {
+    return 'CEO';
+  }
+  if (/\b(md|managing\s*director)\b/.test(t)) {
+    return 'MD';
+  }
   if (/\b(hr|human\s*resources?|people\s*ops|talent)\b/.test(t)) {
     return 'HR';
   }
-  if (/\b(director|ceo|cto|coo|cfo|founder|vp|management|head\s*of)\b/.test(t)) {
+  if (/\b(director|cto|coo|cfo|founder|vp|management|head\s*of)\b/.test(t)) {
     return 'DIR';
   }
   if (/\b(project\s*manager|scrum\s*master|delivery\s*lead|\bpm\b)\b/.test(t)) {
@@ -55,3 +61,4 @@ export function buildCompanyEmail(fullName: string, roleCode: CompanyRoleCode, s
   const localPart = suffix && suffix > 1 ? `${cleanLast}${suffix}` : cleanLast;
   return `${localPart}@${roleCode.toLowerCase()}.yakunx.com`;
 }
+

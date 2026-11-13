@@ -572,7 +572,7 @@ function CreateUserDialog({
   const [email, setEmail] = useState('');
   const [companyId, setCompanyId] = useState('');
   const [role, setRole] = useState<Role>('STAFF');
-  const [roleCode, setRoleCode] = useState<'DIR' | 'HR' | 'PM' | 'DEV' | 'INT' | 'STF'>('STF');
+  const [roleCode, setRoleCode] = useState<'CEO' | 'MD' | 'DIR' | 'HR' | 'PM' | 'DEV' | 'INT' | 'STF'>('STF');
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -580,7 +580,7 @@ function CreateUserDialog({
   const [copied, setCopied] = useState(false);
   const [showCreatedPassword, setShowCreatedPassword] = useState(true);
 
-  function defaultCodeForRole(nextRole: Role): 'DIR' | 'HR' | 'PM' | 'DEV' | 'INT' | 'STF' {
+  function defaultCodeForRole(nextRole: Role): 'CEO' | 'MD' | 'DIR' | 'HR' | 'PM' | 'DEV' | 'INT' | 'STF' {
     switch (nextRole) {
       case 'SUPER_ADMIN':
       case 'ADMIN':
@@ -735,8 +735,10 @@ function CreateUserDialog({
               <Select
                 id="new-role-code"
                 value={roleCode}
-                onChange={(e) => setRoleCode(e.target.value as 'DIR' | 'HR' | 'PM' | 'DEV' | 'INT' | 'STF')}
+                onChange={(e) => setRoleCode(e.target.value as 'CEO' | 'MD' | 'DIR' | 'HR' | 'PM' | 'DEV' | 'INT' | 'STF')}
               >
+                <option value="CEO">CEO — Chief Executive Officer</option>
+                <option value="MD">MD — Managing Director</option>
                 <option value="DIR">DIR — Director / Management</option>
                 <option value="HR">HR — Human Resources</option>
                 <option value="PM">PM — Project Manager</option>
