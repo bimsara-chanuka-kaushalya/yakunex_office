@@ -3,9 +3,80 @@ import type { ReactNode } from 'react';
 import { Providers } from '@/components/providers';
 import './globals.css';
 
+const siteUrl =
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://yakunex-hub.vercel.app');
+
 export const metadata: Metadata = {
-  title: { default: 'Yakunex Hub', template: '%s · Yakunex Hub' },
-  description: 'Yakunex Hub — Enterprise workspace, project delivery and video collaboration by Yakunex Technologies.',
+  metadataBase: new URL(siteUrl),
+  title: {
+    default: 'Yakunex Hub — Enterprise Workspace & Project Delivery Platform',
+    template: '%s · Yakunex Hub',
+  },
+  description:
+    'Yakunex Hub is an enterprise workspace, project delivery, sprint tracking, time management, and video collaboration platform by Yakunex Technologies.',
+  applicationName: 'Yakunex Hub',
+  keywords: [
+    'Yakunex Hub',
+    'Yakunex',
+    'Yakunex Technologies',
+    'Yakunex Office',
+    'Enterprise Workspace',
+    'Project Management',
+    'Sprint & Task Tracking',
+    'Team Collaboration',
+  ],
+  authors: [{ name: 'Yakunex Technologies' }],
+  creator: 'Yakunex Technologies',
+  publisher: 'Yakunex Technologies',
+  alternates: {
+    canonical: '/',
+  },
+  openGraph: {
+    type: 'website',
+    locale: 'en_US',
+    url: siteUrl,
+    siteName: 'Yakunex Hub',
+    title: 'Yakunex Hub — Enterprise Workspace & Project Delivery',
+    description:
+      'Yakunex Hub — Unified enterprise project delivery, time tracking, attendance, and team collaboration by Yakunex Technologies.',
+    images: [{ url: '/icon.png', width: 512, height: 512, alt: 'Yakunex Hub Logo' }],
+  },
+  twitter: {
+    card: 'summary',
+    title: 'Yakunex Hub',
+    description:
+      'Enterprise workspace, project delivery and video collaboration by Yakunex Technologies.',
+    images: ['/icon.png'],
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      'max-snippet': -1,
+      'max-image-preview': 'large',
+      'max-video-preview': -1,
+    },
+  },
+  verification: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION
+    ? { google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION }
+    : undefined,
+};
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'Yakunex Hub',
+  applicationCategory: 'BusinessApplication',
+  operatingSystem: 'Web',
+  description:
+    'Enterprise workspace, project delivery, sprint tracking, and team collaboration platform by Yakunex Technologies.',
+  publisher: {
+    '@type': 'Organization',
+    name: 'Yakunex Technologies',
+  },
 };
 
 export const viewport: Viewport = {
@@ -25,6 +96,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
       </head>
       <body>
         <a
