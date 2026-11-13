@@ -1832,6 +1832,7 @@ export class WorkspaceService implements OnModuleInit {
     if (existing) {
       if (body?.micOn !== undefined) existing.micOn = micOn;
       if (body?.camOn !== undefined) existing.camOn = camOn;
+      existing.joinedAt = new Date().toISOString();
     } else {
       mtg.participants.push({
         userId: actor.id,
@@ -1997,7 +1998,7 @@ export class WorkspaceService implements OnModuleInit {
     const now = Date.now();
     let items: MeetingSignalItem[] = [];
 
-    const floor = after > 0 ? Math.max(0, after - 4000) : 0;
+    const floor = after > 0 ? Math.max(0, after - 4000) : Math.max(0, now - 6000);
 
     try {
       const orgId = await this.resolveOrgId(actor.organizationId);
@@ -2043,7 +2044,8 @@ export class WorkspaceService implements OnModuleInit {
         item.fromUserId !== actor.id &&
         (item.toUserId === '*' || item.toUserId === actor.id),
     );
-    const maxTs = items.reduce((max, item) => Math.max(max, item.createdAt), after);
+    const baseSeq = after > 0 ? after : Math.max(0, now - 500);
+    const maxTs = items.reduce((max, item) => Math.max(max, item.createdAt), baseSeq);
     return { seq: maxTs, signals };
   }
 

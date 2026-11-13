@@ -637,12 +637,40 @@ export function MeetingStudio({
       }
 
       if (stream) {
+        // Retry camera capture once after a brief settle if PreJoin hardware lock was still releasing
+        if (!stream.getVideoTracks()[0] && camOnRef.current) {
+          await new Promise((r) => setTimeout(r, 280));
+          try {
+            const retryVideo = await navigator.mediaDevices.getUserMedia({
+              video: {
+                deviceId: selectedCamId ? { exact: selectedCamId } : undefined,
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                frameRate: { ideal: 30 },
+              },
+            });
+            const retryTrack = retryVideo.getVideoTracks()[0];
+            if (retryTrack) stream.addTrack(retryTrack);
+          } catch {
+            // Keep audio-only stream if camera remains unavailable
+          }
+        }
         stream.getVideoTracks().forEach((t) => {
           t.contentHint = 'motion';
+          t.enabled = camOnRef.current;
+        });
+        stream.getAudioTracks().forEach((t) => {
+          t.enabled = micOnRef.current;
         });
         commitLocalStream(stream);
         const aTrack = stream.getAudioTracks()[0];
         const vTrack = stream.getVideoTracks()[0];
+        if (!vTrack && camOnRef.current) {
+          setCamOn(false);
+          void patch<MeetingRow>(`/meetings/${room.id}/participant`, { camOn: false })
+            .then((updated) => setRoom(updated))
+            .catch(() => undefined);
+        }
         if (aTrack) setSelectedMicId(aTrack.getSettings().deviceId ?? '');
         if (vTrack) setSelectedCamId(vTrack.getSettings().deviceId ?? '');
         await refreshDevices();
@@ -685,6 +713,39 @@ export function MeetingStudio({
   const attachOutgoingTracks = useCallback((pc: RTCPeerConnection) => {
     const tier = activeTierRef.current;
     const camStream = localStreamRef.current;
+    const scrIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
+
+    // Always ensure baseline audio & video transceivers exist so SDP offers/answers
+    // include media sections even before local getUserMedia finishes or when joining cam/mic off.
+    for (const kind of ['audio', 'video'] as const) {
+      const wantedTrack =
+        (kind === 'audio' ? camStream?.getAudioTracks()[0] : camStream?.getVideoTracks()[0]) ?? null;
+      const existingTransceiver = pc.getTransceivers().find((t) => {
+        const sId = t.sender.track?.id;
+        if (sId && scrIds.has(sId)) return false;
+        return t.sender.track?.kind === kind || t.receiver.track?.kind === kind;
+      });
+
+      if (existingTransceiver) {
+        if (wantedTrack && existingTransceiver.sender.track?.id !== wantedTrack.id) {
+          void existingTransceiver.sender.replaceTrack(wantedTrack).catch(() => undefined);
+          if (existingTransceiver.direction !== 'sendrecv') {
+            existingTransceiver.direction = 'sendrecv';
+          }
+          void tuneSenderQuality(
+            existingTransceiver.sender,
+            kind === 'video' ? 'cam-video' : 'mic-audio',
+            tier,
+          );
+        }
+      } else if (wantedTrack && camStream) {
+        const sender = pc.addTrack(wantedTrack, camStream);
+        void tuneSenderQuality(sender, kind === 'video' ? 'cam-video' : 'mic-audio', tier);
+      } else {
+        pc.addTransceiver(kind, { direction: 'recvonly' });
+      }
+    }
+
     if (camStream) {
       for (const track of camStream.getTracks()) {
         const already = pc.getSenders().some((s) => s.track?.id === track.id);
@@ -902,14 +963,32 @@ export function MeetingStudio({
         }
 
         const bucket = existingCam ?? incomingStream;
+        for (const stale of bucket.getTracks()) {
+          if (stale.kind === event.track.kind && stale.id !== event.track.id) {
+            bucket.removeTrack(stale);
+          }
+        }
         if (!bucket.getTracks().some((t) => t.id === event.track.id)) {
           bucket.addTrack(event.track);
         }
         remoteCamStreamsRef.current[peerId] = bucket;
-        setRemoteCamStreams((prev) => ({
-          ...prev,
-          [peerId]: new MediaStream(bucket.getTracks()),
-        }));
+        const syncRemoteBucket = () => {
+          const cur = remoteCamStreamsRef.current[peerId];
+          if (!cur) return;
+          setRemoteCamStreams((prev) => ({
+            ...prev,
+            [peerId]: new MediaStream(cur.getTracks()),
+          }));
+        };
+        event.track.onunmute = syncRemoteBucket;
+        event.track.onended = () => {
+          const cur = remoteCamStreamsRef.current[peerId];
+          if (cur) {
+            cur.removeTrack(event.track);
+          }
+          syncRemoteBucket();
+        };
+        syncRemoteBucket();
       };
 
       const clearDiscTimer = () => {
@@ -1396,6 +1475,203 @@ export function MeetingStudio({
     };
   }, [applyQualityTierToAllPeers, renegotiatePeer, showToast]);
 
+  const peerJoinedAtRef = useRef<Map<string, string>>(new Map());
+  const peerFirstSeenAtRef = useRef<Map<string, number>>(new Map());
+
+  // Sync a single camera/mic track into an RTCPeerConnection, upgrading any baseline recvonly transceiver.
+  // Returns true when SDP renegotiation is needed (new track added or transceiver direction upgraded).
+  const syncLocalTrackToPeer = useCallback(
+    async (
+      pc: RTCPeerConnection,
+      kind: 'audio' | 'video',
+      newTrack: MediaStreamTrack,
+      baseStream: MediaStream,
+      scrTrackIds: Set<string>,
+    ): Promise<boolean> => {
+      const transceiver = pc.getTransceivers().find((t) => {
+        const sId = t.sender.track?.id;
+        if (sId && scrTrackIds.has(sId)) return false;
+        return t.sender.track?.kind === kind || t.receiver.track?.kind === kind;
+      });
+      if (transceiver) {
+        const prevTrackId = transceiver.sender.track?.id ?? null;
+        if (prevTrackId !== newTrack.id) {
+          await transceiver.sender.replaceTrack(newTrack).catch(() => undefined);
+        }
+        let needsRenegotiation = false;
+        if (transceiver.direction !== 'sendrecv') {
+          transceiver.direction = 'sendrecv';
+          needsRenegotiation = true;
+        } else if (!prevTrackId) {
+          needsRenegotiation = true;
+        }
+        void tuneSenderQuality(
+          transceiver.sender,
+          kind === 'video' ? 'cam-video' : 'mic-audio',
+          activeTierRef.current,
+        );
+        return needsRenegotiation;
+      }
+
+      const added = pc.addTrack(newTrack, baseStream);
+      void tuneSenderQuality(
+        added,
+        kind === 'video' ? 'cam-video' : 'mic-audio',
+        activeTierRef.current,
+      );
+      return true;
+    },
+    [],
+  );
+
+  // Sync newly captured localStream tracks across peers created before getUserMedia resolved
+  useEffect(() => {
+    if (!localStream || pcsRef.current.size === 0) return;
+    let cancelled = false;
+    const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
+
+    const syncAll = async () => {
+      for (const [peerId, pc] of Array.from(pcsRef.current.entries())) {
+        if (cancelled) return;
+        let needsReneg = false;
+        const audioTrack = localStream.getAudioTracks()[0];
+        const videoTrack = localStream.getVideoTracks()[0];
+        if (audioTrack) {
+          if (await syncLocalTrackToPeer(pc, 'audio', audioTrack, localStream, scrTrackIds)) {
+            needsReneg = true;
+          }
+        }
+        if (videoTrack) {
+          if (await syncLocalTrackToPeer(pc, 'video', videoTrack, localStream, scrTrackIds)) {
+            needsReneg = true;
+          }
+        }
+        if (!needsReneg) continue;
+
+        if (currentUser.id.localeCompare(peerId) < 0) {
+          void renegotiatePeer(peerId);
+        } else if (pc.remoteDescription !== null) {
+          setTimeout(() => {
+            if (cancelled) return;
+            const livePc = pcsRef.current.get(peerId);
+            if (livePc && livePc.signalingState === 'stable') {
+              void renegotiatePeer(peerId);
+            }
+          }, 320);
+        }
+      }
+    };
+
+    void syncAll();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser.id, localStream, renegotiatePeer, syncLocalTrackToPeer]);
+
+  // Detect rejoined peers (page refresh / F5 via updated joinedAt) & heal stalled handshakes
+  useEffect(() => {
+    const activeIds = new Set<string>();
+    for (const p of room.participants) {
+      if (p.userId === currentUser.id) continue;
+      activeIds.add(p.userId);
+      const prevJoinedAt = peerJoinedAtRef.current.get(p.userId);
+      if (prevJoinedAt && prevJoinedAt !== p.joinedAt) {
+        // Peer reloaded or rejoined without graceful peer-left; reset stale RTCPeerConnection
+        peerJoinedAtRef.current.set(p.userId, p.joinedAt);
+        peerFirstSeenAtRef.current.set(p.userId, Date.now());
+        closePeer(p.userId);
+        const pc = getOrCreatePeer(p.userId);
+        if (currentUser.id.localeCompare(p.userId) < 0 && pc.signalingState === 'stable') {
+          void renegotiatePeer(p.userId);
+        }
+      } else {
+        peerJoinedAtRef.current.set(p.userId, p.joinedAt);
+        if (!peerFirstSeenAtRef.current.has(p.userId)) {
+          peerFirstSeenAtRef.current.set(p.userId, Date.now());
+        }
+      }
+    }
+    for (const key of Array.from(peerJoinedAtRef.current.keys())) {
+      if (!activeIds.has(key)) {
+        peerJoinedAtRef.current.delete(key);
+        peerFirstSeenAtRef.current.delete(key);
+      }
+    }
+  }, [closePeer, currentUser.id, getOrCreatePeer, renegotiatePeer, room.participants]);
+
+  useEffect(() => {
+    let active = true;
+    const healPeers = async () => {
+      if (!active) return;
+      const now = Date.now();
+      for (const p of room.participants) {
+        if (!active || p.userId === currentUser.id) continue;
+        const pc = pcsRef.current.get(p.userId);
+        if (!pc) {
+          const fresh = getOrCreatePeer(p.userId);
+          if (currentUser.id.localeCompare(p.userId) < 0 && fresh.signalingState === 'stable') {
+            void renegotiatePeer(p.userId);
+          }
+          continue;
+        }
+
+        if (pc.connectionState === 'failed' || pc.iceConnectionState === 'failed') {
+          void renegotiatePeer(p.userId, true);
+          continue;
+        }
+
+        // Heal any peer where local video/audio captured late or transceiver stayed recvonly
+        const curLocal = localStreamRef.current;
+        if (curLocal && pc.signalingState === 'stable') {
+          const scrIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
+          const vTrack = curLocal.getVideoTracks().find((t) => t.readyState === 'live');
+          const aTrack = curLocal.getAudioTracks().find((t) => t.readyState === 'live');
+          let needSync = false;
+          if (vTrack) {
+            const vt = pc.getTransceivers().find((t) => {
+              const sId = t.sender.track?.id;
+              return !(sId && scrIds.has(sId)) && (t.sender.track?.kind === 'video' || t.receiver.track?.kind === 'video');
+            });
+            if (!vt || vt.sender.track?.id !== vTrack.id || vt.direction !== 'sendrecv') {
+              needSync = await syncLocalTrackToPeer(pc, 'video', vTrack, curLocal, scrIds);
+            }
+          }
+          if (aTrack) {
+            const at = pc.getTransceivers().find((t) => {
+              const sId = t.sender.track?.id;
+              return !(sId && scrIds.has(sId)) && (t.sender.track?.kind === 'audio' || t.receiver.track?.kind === 'audio');
+            });
+            if (!at || at.sender.track?.id !== aTrack.id || at.direction !== 'sendrecv') {
+              if (await syncLocalTrackToPeer(pc, 'audio', aTrack, curLocal, scrIds)) {
+                needSync = true;
+              }
+            }
+          }
+          if (needSync && (currentUser.id.localeCompare(p.userId) < 0 || pc.remoteDescription !== null)) {
+            void renegotiatePeer(p.userId);
+            continue;
+          }
+        }
+
+        const firstSeen = peerFirstSeenAtRef.current.get(p.userId) ?? now;
+        const ageMs = now - firstSeen;
+        if (currentUser.id.localeCompare(p.userId) < 0 && ageMs > 3200 && !pc.currentRemoteDescription) {
+          if (pc.signalingState === 'stable') {
+            void renegotiatePeer(p.userId);
+          } else if (pc.signalingState === 'have-local-offer' && ageMs > 6500) {
+            peerFirstSeenAtRef.current.set(p.userId, now);
+            void renegotiatePeer(p.userId, true);
+          }
+        }
+      }
+    };
+    const healInterval = setInterval(() => void healPeers(), 3000);
+    return () => {
+      active = false;
+      clearInterval(healInterval);
+    };
+  }, [currentUser.id, getOrCreatePeer, renegotiatePeer, room.participants, syncLocalTrackToPeer]);
+
   // Helper to replace or add a single track across localStream & all active RTCPeerConnections
   const replaceOrAddLocalTrack = useCallback(
     async (kind: 'audio' | 'video', newTrack: MediaStreamTrack) => {
@@ -1410,23 +1686,7 @@ export function MeetingStudio({
       const renegotiateIds: string[] = [];
       const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
       for (const [peerId, pc] of pcsRef.current.entries()) {
-        const sender = pc
-          .getSenders()
-          .find((s) => s.track?.kind === kind && s.track?.id && !scrTrackIds.has(s.track.id));
-        if (sender) {
-          await sender.replaceTrack(newTrack).catch(() => undefined);
-          void tuneSenderQuality(
-            sender,
-            kind === 'video' ? 'cam-video' : 'mic-audio',
-            activeTierRef.current,
-          );
-        } else {
-          const added = pc.addTrack(newTrack, base);
-          void tuneSenderQuality(
-            added,
-            kind === 'video' ? 'cam-video' : 'mic-audio',
-            activeTierRef.current,
-          );
+        if (await syncLocalTrackToPeer(pc, kind, newTrack, base, scrTrackIds)) {
           renegotiateIds.push(peerId);
         }
       }
@@ -1434,7 +1694,7 @@ export function MeetingStudio({
         await Promise.all(renegotiateIds.map((id) => renegotiatePeer(id)));
       }
     },
-    [commitLocalStream, renegotiatePeer],
+    [commitLocalStream, renegotiatePeer, syncLocalTrackToPeer],
   );
 
   const toggleMic = async () => {
@@ -1462,6 +1722,15 @@ export function MeetingStudio({
         }
       } else {
         track.enabled = true;
+        const base = localStreamRef.current;
+        if (base) {
+          const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
+          for (const [peerId, pc] of pcsRef.current.entries()) {
+            if (await syncLocalTrackToPeer(pc, 'audio', track, base, scrTrackIds)) {
+              void renegotiatePeer(peerId);
+            }
+          }
+        }
       }
     } else {
       localStreamRef.current?.getAudioTracks().forEach((t) => {
@@ -1481,17 +1750,30 @@ export function MeetingStudio({
       let track = localStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live');
       if (!track) {
         try {
-          const captured = await navigator.mediaDevices.getUserMedia({
-            video: {
-              deviceId: selectedCamId ? { exact: selectedCamId } : undefined,
-              width: { ideal: 1920 },
-              height: { ideal: 1080 },
-              frameRate: { ideal: 30 },
-            },
-          });
+          let captured: MediaStream;
+          try {
+            captured = await navigator.mediaDevices.getUserMedia({
+              video: {
+                deviceId: selectedCamId ? { exact: selectedCamId } : undefined,
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+                frameRate: { ideal: 30 },
+              },
+            });
+          } catch {
+            // Fallback to default camera device & 720p if exact deviceId/1080p was rejected
+            captured = await navigator.mediaDevices.getUserMedia({
+              video: {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                frameRate: { ideal: 30 },
+              },
+            });
+          }
           track = captured.getVideoTracks()[0];
           if (track) {
             track.contentHint = 'motion';
+            setSelectedCamId(track.getSettings().deviceId ?? '');
             await replaceOrAddLocalTrack('video', track);
             await refreshDevices();
           }
@@ -1501,6 +1783,15 @@ export function MeetingStudio({
         }
       } else {
         track.enabled = true;
+        const base = localStreamRef.current;
+        if (base) {
+          const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
+          for (const [peerId, pc] of pcsRef.current.entries()) {
+            if (await syncLocalTrackToPeer(pc, 'video', track, base, scrTrackIds)) {
+              void renegotiatePeer(peerId);
+            }
+          }
+        }
       }
     } else {
       localStreamRef.current?.getVideoTracks().forEach((t) => {
