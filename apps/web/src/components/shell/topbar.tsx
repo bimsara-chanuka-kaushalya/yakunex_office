@@ -67,10 +67,10 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
 
       {/* Center Search Simulation Pill */}
       <div className="mx-auto hidden max-w-xs flex-1 lg:block">
-        <div className="clay-input flex items-center gap-2 rounded-2xl border border-line/80 bg-canvas/80 px-3.5 py-2 text-xs text-muted transition-all hover:border-gold/40 hover:bg-surface">
+        <div className="flex items-center gap-2 rounded-xl border border-line/80 bg-canvas/70 px-3 py-1.5 text-xs text-muted transition-all hover:border-gold/40 hover:bg-surface">
           <Search className="h-3.5 w-3.5 text-muted" />
           <span className="flex-1 truncate">Search modules, tasks, projects...</span>
-          <kbd className="rounded-lg border border-line bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted shadow-2xs">
+          <kbd className="rounded border border-line bg-surface px-1.5 py-0.5 font-mono text-[10px] text-muted shadow-2xs">
             ⌘K
           </kbd>
         </div>
@@ -79,7 +79,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
       {/* Right Actions */}
       <div className="ml-auto flex items-center gap-2.5">
         {/* Theme Switcher */}
-        <div role="radiogroup" aria-label={t('theme')} className="clay-input hidden items-center rounded-2xl border border-line/80 bg-canvas/80 p-1 sm:flex">
+        <div role="radiogroup" aria-label={t('theme')} className="hidden items-center rounded-xl border border-line bg-canvas p-0.5 sm:flex">
           {THEME_OPTIONS.map(({ value, icon: Icon, labelKey }) => (
             <button
               key={value}
@@ -90,8 +90,8 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
               title={t(labelKey)}
               onClick={() => setTheme(value)}
               className={cn(
-                'rounded-xl p-1.5 transition-all',
-                theme === value ? 'clay-btn-secondary bg-surface text-gold' : 'text-muted hover:text-ink',
+                'rounded-lg p-1.5 transition-all',
+                theme === value ? 'bg-surface text-gold shadow-xs' : 'text-muted hover:text-ink',
               )}
             >
               <Icon className="h-4 w-4" />
@@ -100,7 +100,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
         </div>
 
         {/* Language Switcher */}
-        <div role="radiogroup" aria-label={t('language')} className="clay-input flex items-center rounded-2xl border border-line/80 bg-canvas/80 p-1 text-xs font-semibold">
+        <div role="radiogroup" aria-label={t('language')} className="flex items-center rounded-xl border border-line bg-canvas p-0.5 text-xs font-semibold">
           {(['en', 'si'] as const).map((code) => (
             <button
               key={code}
@@ -109,8 +109,8 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
               aria-checked={lang === code}
               onClick={() => setLang(code)}
               className={cn(
-                'rounded-xl px-2.5 py-1 transition-all',
-                lang === code ? 'clay-btn-secondary bg-surface text-gold' : 'text-muted hover:text-ink',
+                'rounded-lg px-2.5 py-1 transition-all',
+                lang === code ? 'bg-surface text-gold shadow-xs' : 'text-muted hover:text-ink',
               )}
             >
               {code === 'en' ? 'EN' : 'සිං'}
