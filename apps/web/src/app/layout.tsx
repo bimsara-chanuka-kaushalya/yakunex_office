@@ -60,9 +60,11 @@ export const metadata: Metadata = {
       'max-video-preview': -1,
     },
   },
-  verification: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION
-    ? { google: process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION }
-    : undefined,
+  verification: {
+    google:
+      process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION ??
+      '32bTbkLi5OyLFjuy4f2CZn_XYNphi8y4uVl6ldfy7b8',
+  },
 };
 
 const jsonLd = {
