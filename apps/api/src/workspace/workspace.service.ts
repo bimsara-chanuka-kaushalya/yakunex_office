@@ -226,6 +226,7 @@ export interface MeetingParticipant {
   micOn: boolean;
   camOn: boolean;
   screenSharing: boolean;
+  screenStreamId?: string | null;
   handRaised: boolean;
   joinedAt: string;
 }
@@ -256,6 +257,7 @@ export interface MeetingItem {
 }
 
 export interface MeetingSignalItem {
+  id?: string;
   seq: number;
   fromUserId: string;
   fromUserName: string;
@@ -1657,69 +1659,41 @@ export class WorkspaceService implements OnModuleInit {
     }
   }
 
-  private async loadSignalBucket(
-    meetingId: string,
-    organizationId?: string,
-  ): Promise<{ seq: number; items: MeetingSignalItem[] }> {
-    const cached = this.meetingSignals.get(meetingId) ?? { seq: 0, items: [] };
-    try {
-      const orgId = await this.resolveOrgId(organizationId);
-      if (!orgId || !this.prisma.systemSetting?.findUnique) return cached;
-      const row = await this.prisma.systemSetting.findUnique({
-        where: { organizationId_key: { organizationId: orgId, key: `meeting_signals_${meetingId}` } },
-      });
-      const val = (row?.value ?? null) as { seq?: number; items?: MeetingSignalItem[] } | null;
-      if (val && typeof val.seq === 'number' && Array.isArray(val.items)) {
-        const merged = { seq: val.seq, items: val.items };
-        this.meetingSignals.set(meetingId, merged);
-        return merged;
-      }
-    } catch {
-      // Ignore and use in-memory bucket
-    }
-    return cached;
-  }
-
-  private async saveSignalBucket(
-    meetingId: string,
-    bucket: { seq: number; items: MeetingSignalItem[] },
-    organizationId?: string,
-  ): Promise<void> {
-    this.meetingSignals.set(meetingId, bucket);
-    try {
-      const orgId = await this.resolveOrgId(organizationId);
-      if (!orgId || !this.prisma.systemSetting?.upsert) return;
-      await this.prisma.systemSetting.upsert({
-        where: { organizationId_key: { organizationId: orgId, key: `meeting_signals_${meetingId}` } },
-        update: { value: bucket as unknown as Prisma.InputJsonValue },
-        create: {
-          organizationId: orgId,
-          key: `meeting_signals_${meetingId}`,
-          value: bucket as unknown as Prisma.InputJsonValue,
-        },
-      });
-    } catch {
-      // Non-fatal in single-instance / unit test mode
-    }
-  }
-
   private async appendMeetingSignal(
     meetingId: string,
-    signal: Omit<MeetingSignalItem, 'seq' | 'createdAt'>,
+    signal: Omit<MeetingSignalItem, 'id' | 'seq' | 'createdAt'>,
     organizationId?: string,
   ): Promise<number> {
     const now = Date.now();
-    const bucket = await this.loadSignalBucket(meetingId, organizationId);
-    const recent = bucket.items.filter((item) => now - item.createdAt < 120_000).slice(-199);
-    const nextSeq = bucket.seq + 1;
-    recent.push({
+    const sigId = `sig_${now}_${randomUUID().slice(0, 6)}`;
+    const item: MeetingSignalItem = {
+      id: sigId,
       ...signal,
-      seq: nextSeq,
+      seq: now,
       createdAt: now,
-    });
-    const updated = { seq: nextSeq, items: recent };
-    await this.saveSignalBucket(meetingId, updated, organizationId);
-    return nextSeq;
+    };
+
+    const cached = this.meetingSignals.get(meetingId) ?? { seq: 0, items: [] };
+    cached.items = [...cached.items.filter((x) => now - x.createdAt < 90_000).slice(-199), item];
+    cached.seq = now;
+    this.meetingSignals.set(meetingId, cached);
+
+    try {
+      const orgId = await this.resolveOrgId(organizationId);
+      if (orgId && this.prisma.systemSetting?.create) {
+        const key = `msig:${meetingId}:${String(now).padStart(14, '0')}:${randomUUID().slice(0, 6)}`;
+        await this.prisma.systemSetting.create({
+          data: {
+            organizationId: orgId,
+            key,
+            value: item as unknown as Prisma.InputJsonValue,
+          },
+        });
+      }
+    } catch {
+      // Non-fatal fallback to in-memory cache
+    }
+    return now;
   }
 
   async listMeetings(organizationId?: string) {
@@ -1930,7 +1904,13 @@ export class WorkspaceService implements OnModuleInit {
     }
     if (body.micOn !== undefined) participant.micOn = Boolean(body.micOn);
     if (body.camOn !== undefined) participant.camOn = Boolean(body.camOn);
-    if (body.screenSharing !== undefined) participant.screenSharing = Boolean(body.screenSharing);
+    if (body.screenSharing !== undefined) {
+      participant.screenSharing = Boolean(body.screenSharing);
+      if (!participant.screenSharing) participant.screenStreamId = null;
+    }
+    if (body.screenStreamId !== undefined) {
+      participant.screenStreamId = body.screenStreamId ? String(body.screenStreamId) : null;
+    }
     if (body.handRaised !== undefined) participant.handRaised = Boolean(body.handRaised);
     await this.persistStateNow(actor.organizationId);
     return mtg;
@@ -2014,14 +1994,52 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   async pollMeetingSignals(actor: AuthUser, id: string, after: number) {
-    const bucket = await this.loadSignalBucket(id, actor.organizationId);
-    const signals = bucket.items.filter(
+    const now = Date.now();
+    let items: MeetingSignalItem[] = [];
+
+    try {
+      const orgId = await this.resolveOrgId(actor.organizationId);
+      if (orgId && this.prisma.systemSetting?.findMany) {
+        const prefix = `msig:${id}:`;
+        const rows = await this.prisma.systemSetting.findMany({
+          where: { organizationId: orgId, key: { startsWith: prefix } },
+          orderBy: { key: 'asc' },
+          take: 300,
+        });
+        items = rows
+          .map((r) => r.value as unknown as MeetingSignalItem | null)
+          .filter((v): v is MeetingSignalItem => Boolean(v && typeof v.createdAt === 'number'));
+
+        // Prune expired signal rows (>90s) in background
+        const cutoffKey = `${prefix}${String(now - 90_000).padStart(14, '0')}`;
+        void this.prisma.systemSetting
+          .deleteMany?.({
+            where: {
+              organizationId: orgId,
+              key: { startsWith: prefix, lt: cutoffKey },
+            },
+          })
+          .catch(() => undefined);
+      }
+    } catch {
+      // Fallback to in-memory bucket
+    }
+
+    if (items.length === 0) {
+      items = this.meetingSignals.get(id)?.items ?? [];
+    }
+
+    // 4-second overlap window ensures signals arriving near boundary timestamps across Lambdas are never missed;
+    // client deduplicates cleanly via signal id.
+    const floor = after > 0 ? Math.max(0, after - 4000) : 0;
+    const signals = items.filter(
       (item) =>
-        item.seq > after &&
+        item.createdAt >= floor &&
         item.fromUserId !== actor.id &&
         (item.toUserId === '*' || item.toUserId === actor.id),
     );
-    return { seq: bucket.seq, signals };
+    const maxTs = items.reduce((max, item) => Math.max(max, item.createdAt), after);
+    return { seq: maxTs, signals };
   }
 
   async postMeetingChat(actor: AuthUser, id: string, body: Record<string, unknown>) {

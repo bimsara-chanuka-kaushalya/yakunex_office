@@ -36,7 +36,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/field';
-import { api, liveGet, patch, post } from '@/lib/api';
+import { liveGet, patch, post } from '@/lib/api';
 import { cn } from '@/lib/cn';
 
 export interface MeetingParticipant {
@@ -46,6 +46,7 @@ export interface MeetingParticipant {
   micOn: boolean;
   camOn: boolean;
   screenSharing: boolean;
+  screenStreamId?: string | null;
   handRaised: boolean;
   joinedAt: string;
 }
@@ -76,6 +77,7 @@ export interface MeetingRow {
 }
 
 interface MeetingSignalItem {
+  id?: string;
   seq: number;
   fromUserId: string;
   fromUserName: string;
@@ -363,10 +365,18 @@ export function MeetingStudio({
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const remoteCamStreamsRef = useRef<Record<string, MediaStream>>({});
+  const remoteScreenStreamsRef = useRef<Record<string, MediaStream>>({});
   const remoteScreenStreamIdsRef = useRef<Record<string, string>>({});
+  const remoteScreenTrackIdsRef = useRef<Record<string, string>>({});
+  const participantsRef = useRef<MeetingParticipant[]>(initialRoom.participants);
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const pendingRenegotiateRef = useRef<Set<string>>(new Set());
   const makingOfferRef = useRef<Map<string, boolean>>(new Map());
+  const seenSignalIdsRef = useRef<Set<string>>(new Set());
+  const iceBatchRef = useRef<
+    Map<string, { timer: ReturnType<typeof setTimeout> | null; candidates: RTCIceCandidateInit[] }>
+  >(new Map());
   const lastSignalSeqRef = useRef<number>(0);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -380,6 +390,7 @@ export function MeetingStudio({
   micOnRef.current = micOn;
   camOnRef.current = camOn;
   sideTabRef.current = sideTab;
+  participantsRef.current = room.participants;
 
   const canHostControl = useMemo(() => {
     const r = currentUser.role.toUpperCase();
@@ -552,40 +563,89 @@ export function MeetingStudio({
     }
   }, []);
 
-  const renegotiatePeer = useCallback(
+  const flushIceBatch = useCallback(
     async (peerId: string) => {
-      const pc = pcsRef.current.get(peerId);
-      if (!pc) return;
-      try {
-        makingOfferRef.current.set(peerId, true);
-        const offer = await pc.createOffer();
-        if (pc.signalingState !== 'stable') return;
-        await pc.setLocalDescription(offer);
-        if (pc.localDescription) {
-          await sendSignal(peerId, 'offer', { sdp: pc.localDescription.toJSON() });
-        }
-      } catch {
-        // Ignore transient signaling race; next offer resolves it
-      } finally {
-        makingOfferRef.current.set(peerId, false);
-      }
+      const entry = iceBatchRef.current.get(peerId);
+      if (!entry || entry.candidates.length === 0) return;
+      const candidates = entry.candidates.splice(0, entry.candidates.length);
+      entry.timer = null;
+      await sendSignal(peerId, 'ice-batch', { candidates });
     },
     [sendSignal],
   );
 
+  const queueIceCandidate = useCallback(
+    (peerId: string, candidate: RTCIceCandidateInit) => {
+      let entry = iceBatchRef.current.get(peerId);
+      if (!entry) {
+        entry = { timer: null, candidates: [] };
+        iceBatchRef.current.set(peerId, entry);
+      }
+      entry.candidates.push(candidate);
+      if (!entry.timer) {
+        entry.timer = setTimeout(() => {
+          void flushIceBatch(peerId);
+        }, 120);
+      }
+    },
+    [flushIceBatch],
+  );
+
+  const renegotiatePeer = useCallback(
+    async (peerId: string) => {
+      const pc = pcsRef.current.get(peerId);
+      if (!pc || pc.connectionState === 'closed') return;
+      if (makingOfferRef.current.get(peerId) || pc.signalingState !== 'stable') {
+        pendingRenegotiateRef.current.add(peerId);
+        return;
+      }
+      pendingRenegotiateRef.current.delete(peerId);
+      try {
+        makingOfferRef.current.set(peerId, true);
+        attachOutgoingTracks(pc);
+        const offer = await pc.createOffer();
+        if (pc.signalingState !== 'stable') {
+          pendingRenegotiateRef.current.add(peerId);
+          return;
+        }
+        await pc.setLocalDescription(offer);
+        if (pc.localDescription) {
+          await sendSignal(peerId, 'offer', {
+            sdp: pc.localDescription.toJSON(),
+            screenStreamId: screenStreamRef.current?.id ?? null,
+            screenTrackId: screenStreamRef.current?.getVideoTracks()[0]?.id ?? null,
+          });
+        }
+      } catch {
+        pendingRenegotiateRef.current.add(peerId);
+      } finally {
+        makingOfferRef.current.set(peerId, false);
+      }
+    },
+    [attachOutgoingTracks, sendSignal],
+  );
+
   const closePeer = useCallback((peerId: string) => {
+    const iceEntry = iceBatchRef.current.get(peerId);
+    if (iceEntry?.timer) clearTimeout(iceEntry.timer);
+    iceBatchRef.current.delete(peerId);
+    pendingRenegotiateRef.current.delete(peerId);
+
     const pc = pcsRef.current.get(peerId);
     if (pc) {
       pc.onicecandidate = null;
       pc.ontrack = null;
       pc.onconnectionstatechange = null;
+      pc.onsignalingstatechange = null;
       pc.close();
       pcsRef.current.delete(peerId);
     }
     pendingIceRef.current.delete(peerId);
     makingOfferRef.current.delete(peerId);
     delete remoteCamStreamsRef.current[peerId];
+    delete remoteScreenStreamsRef.current[peerId];
     delete remoteScreenStreamIdsRef.current[peerId];
+    delete remoteScreenTrackIdsRef.current[peerId];
     setRemoteCamStreams((prev) => {
       if (!(peerId in prev)) return prev;
       const next = { ...prev };
@@ -611,36 +671,57 @@ export function MeetingStudio({
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
-          void sendSignal(peerId, 'ice-candidate', {
-            candidate: event.candidate.toJSON(),
-          });
+          queueIceCandidate(peerId, event.candidate.toJSON());
+        }
+      };
+
+      pc.onsignalingstatechange = () => {
+        if (pc.signalingState === 'stable' && pendingRenegotiateRef.current.has(peerId)) {
+          pendingRenegotiateRef.current.delete(peerId);
+          setTimeout(() => void renegotiatePeer(peerId), 60);
         }
       };
 
       pc.ontrack = (event) => {
         const incomingStream = event.streams[0] ?? new MediaStream([event.track]);
-        const declaredScreenId = remoteScreenStreamIdsRef.current[peerId];
+        const peerMeta = participantsRef.current.find((p) => p.userId === peerId);
+        const declaredScreenId =
+          remoteScreenStreamIdsRef.current[peerId] ?? peerMeta?.screenStreamId ?? undefined;
+        const declaredTrackId = remoteScreenTrackIdsRef.current[peerId];
         const existingCam = remoteCamStreamsRef.current[peerId];
+        const existingScr = remoteScreenStreamsRef.current[peerId];
 
         const isScreenTrack =
           Boolean(declaredScreenId && incomingStream.id === declaredScreenId) ||
+          Boolean(declaredTrackId && event.track.id === declaredTrackId) ||
+          Boolean(existingScr && existingScr.id === incomingStream.id) ||
+          (event.track.kind === 'video' && Boolean(peerMeta?.screenSharing) && !peerMeta?.camOn) ||
           (event.track.kind === 'video' &&
             existingCam !== undefined &&
             existingCam.id !== incomingStream.id &&
-            existingCam.getVideoTracks().some((t) => t.readyState === 'live'));
+            existingCam.getVideoTracks().some((t) => t.id !== event.track.id && t.readyState === 'live'));
 
         if (isScreenTrack) {
+          const scrBucket = existingScr ?? new MediaStream();
+          if (!scrBucket.getTracks().some((t) => t.id === event.track.id)) {
+            scrBucket.addTrack(event.track);
+          }
+          remoteScreenStreamsRef.current[peerId] = scrBucket;
           setRemoteScreenStreams((prev) => ({
             ...prev,
-            [peerId]: new MediaStream(incomingStream.getTracks()),
+            [peerId]: new MediaStream(scrBucket.getTracks()),
           }));
-          event.track.onended = () => {
-            setRemoteScreenStreams((prev) => {
-              const next = { ...prev };
-              delete next[peerId];
-              return next;
-            });
-          };
+          if (event.track.kind === 'video') {
+            event.track.onended = () => {
+              delete remoteScreenStreamsRef.current[peerId];
+              setRemoteScreenStreams((prev) => {
+                if (!(peerId in prev)) return prev;
+                const next = { ...prev };
+                delete next[peerId];
+                return next;
+              });
+            };
+          }
           return;
         }
 
@@ -663,10 +744,10 @@ export function MeetingStudio({
 
       return pc;
     },
-    [attachOutgoingTracks, renegotiatePeer, sendSignal],
+    [attachOutgoingTracks, queueIceCandidate, renegotiatePeer],
   );
 
-  // Sync peer connections whenever participants enter or leave
+  // Sync peer connections & screen-share state whenever participants enter, share, or leave
   useEffect(() => {
     const activeIds = new Set(room.participants.map((p) => p.userId));
     for (const peerId of Array.from(pcsRef.current.keys())) {
@@ -677,14 +758,39 @@ export function MeetingStudio({
 
     for (const p of room.participants) {
       if (p.userId === currentUser.id) continue;
+
+      if (p.screenSharing && p.screenStreamId) {
+        remoteScreenStreamIdsRef.current[p.userId] = p.screenStreamId;
+      } else if (!p.screenSharing && remoteScreenStreamsRef.current[p.userId]) {
+        delete remoteScreenStreamsRef.current[p.userId];
+        delete remoteScreenStreamIdsRef.current[p.userId];
+        delete remoteScreenTrackIdsRef.current[p.userId];
+        setRemoteScreenStreams((prev) => {
+          if (!(p.userId in prev)) return prev;
+          const next = { ...prev };
+          delete next[p.userId];
+          return next;
+        });
+      }
+
       const hadPeer = pcsRef.current.has(p.userId);
       const pc = getOrCreatePeer(p.userId);
-      // Deterministic offerer avoids glare on initial join: lexicographically smaller ID initiates
-      if (!hadPeer && currentUser.id.localeCompare(p.userId) < 0 && pc.signalingState === 'stable') {
-        void renegotiatePeer(p.userId);
+      if (!hadPeer) {
+        const activeScr = screenStreamRef.current;
+        if (activeScr) {
+          void sendSignal(p.userId, 'screen-meta', {
+            active: true,
+            streamId: activeScr.id,
+            trackId: activeScr.getVideoTracks()[0]?.id ?? '',
+          });
+        }
+        // Deterministic offerer avoids glare on initial join: lexicographically smaller ID initiates
+        if (currentUser.id.localeCompare(p.userId) < 0 && pc.signalingState === 'stable') {
+          void renegotiatePeer(p.userId);
+        }
       }
     }
-  }, [closePeer, currentUser.id, getOrCreatePeer, renegotiatePeer, room.participants]);
+  }, [closePeer, currentUser.id, getOrCreatePeer, renegotiatePeer, room.participants, sendSignal]);
 
   // Poll meeting room state continuously bypassing client cache
   useEffect(() => {
@@ -701,11 +807,19 @@ export function MeetingStudio({
     return () => clearInterval(timer);
   }, [onMeetingUpdated, room.id]);
 
-  // Poll WebRTC signals & realtime room events (host mute, screen share metadata, reactions)
+  // Poll WebRTC signals sequentially (zero overlapping polls, deduplicated by signal id)
   useEffect(() => {
     let cancelled = false;
 
     const handleSignal = async (sig: MeetingSignalItem) => {
+      const dedupeKey = sig.id ?? `${sig.seq}_${sig.fromUserId}_${sig.type}_${sig.createdAt}`;
+      if (seenSignalIdsRef.current.has(dedupeKey)) return;
+      seenSignalIdsRef.current.add(dedupeKey);
+      if (seenSignalIdsRef.current.size > 600) {
+        const keep = Array.from(seenSignalIdsRef.current).slice(-300);
+        seenSignalIdsRef.current = new Set(keep);
+      }
+
       const fromId = sig.fromUserId;
       const payload = sig.payload ?? {};
 
@@ -745,11 +859,16 @@ export function MeetingStudio({
       if (sig.type === 'screen-meta') {
         const active = Boolean(payload.active);
         const streamId = String(payload.streamId ?? '');
+        const trackId = String(payload.trackId ?? '');
         if (active && streamId) {
           remoteScreenStreamIdsRef.current[fromId] = streamId;
+          if (trackId) remoteScreenTrackIdsRef.current[fromId] = trackId;
         } else {
           delete remoteScreenStreamIdsRef.current[fromId];
+          delete remoteScreenTrackIdsRef.current[fromId];
+          delete remoteScreenStreamsRef.current[fromId];
           setRemoteScreenStreams((prev) => {
+            if (!(fromId in prev)) return prev;
             const next = { ...prev };
             delete next[fromId];
             return next;
@@ -759,6 +878,12 @@ export function MeetingStudio({
       }
 
       if (sig.type === 'offer') {
+        if (payload.screenStreamId) {
+          remoteScreenStreamIdsRef.current[fromId] = String(payload.screenStreamId);
+        }
+        if (payload.screenTrackId) {
+          remoteScreenTrackIdsRef.current[fromId] = String(payload.screenTrackId);
+        }
         const sdp = payload.sdp as RTCSessionDescriptionInit | undefined;
         if (!sdp) return;
         const pc = getOrCreatePeer(fromId);
@@ -778,7 +903,11 @@ export function MeetingStudio({
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           if (pc.localDescription) {
-            await sendSignal(fromId, 'answer', { sdp: pc.localDescription.toJSON() });
+            await sendSignal(fromId, 'answer', {
+              sdp: pc.localDescription.toJSON(),
+              screenStreamId: screenStreamRef.current?.id ?? null,
+              screenTrackId: screenStreamRef.current?.getVideoTracks()[0]?.id ?? null,
+            });
           }
           const queued = pendingIceRef.current.get(fromId) ?? [];
           pendingIceRef.current.delete(fromId);
@@ -786,12 +915,18 @@ export function MeetingStudio({
             await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => undefined);
           }
         } catch {
-          // Next renegotiation cycle recovers
+          pendingRenegotiateRef.current.add(fromId);
         }
         return;
       }
 
       if (sig.type === 'answer') {
+        if (payload.screenStreamId) {
+          remoteScreenStreamIdsRef.current[fromId] = String(payload.screenStreamId);
+        }
+        if (payload.screenTrackId) {
+          remoteScreenTrackIdsRef.current[fromId] = String(payload.screenTrackId);
+        }
         const sdp = payload.sdp as RTCSessionDescriptionInit | undefined;
         const pc = pcsRef.current.get(fromId);
         if (!sdp || !pc || pc.signalingState !== 'have-local-offer') return;
@@ -808,42 +943,52 @@ export function MeetingStudio({
         return;
       }
 
-      if (sig.type === 'ice-candidate') {
-        const candidate = payload.candidate as RTCIceCandidateInit | undefined;
-        if (!candidate) return;
+      if (sig.type === 'ice-candidate' || sig.type === 'ice-batch') {
+        const listIn: RTCIceCandidateInit[] =
+          sig.type === 'ice-batch' && Array.isArray(payload.candidates)
+            ? (payload.candidates as RTCIceCandidateInit[])
+            : payload.candidate
+              ? [payload.candidate as RTCIceCandidateInit]
+              : [];
+        if (listIn.length === 0) return;
         const pc = getOrCreatePeer(fromId);
         if (pc.remoteDescription && pc.remoteDescription.type) {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => undefined);
+          for (const c of listIn) {
+            await pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => undefined);
+          }
         } else {
-          const list = pendingIceRef.current.get(fromId) ?? [];
-          list.push(candidate);
-          pendingIceRef.current.set(fromId, list);
+          const queue = pendingIceRef.current.get(fromId) ?? [];
+          queue.push(...listIn);
+          pendingIceRef.current.set(fromId, queue);
         }
       }
     };
 
-    const pollSignals = async () => {
-      try {
-        const res = await liveGet<{ seq: number; signals: MeetingSignalItem[] }>(
-          `/meetings/${room.id}/signals?after=${lastSignalSeqRef.current}`,
-        );
-        if (cancelled) return;
-        if (typeof res.seq === 'number' && res.seq > lastSignalSeqRef.current) {
-          lastSignalSeqRef.current = res.seq;
+    const runLoop = async () => {
+      while (!cancelled) {
+        try {
+          const res = await liveGet<{ seq: number; signals: MeetingSignalItem[] }>(
+            `/meetings/${room.id}/signals?after=${lastSignalSeqRef.current}`,
+          );
+          if (cancelled) break;
+          if (typeof res.seq === 'number' && res.seq > lastSignalSeqRef.current) {
+            lastSignalSeqRef.current = res.seq;
+          }
+          for (const sig of res.signals ?? []) {
+            if (cancelled) break;
+            await handleSignal(sig);
+          }
+        } catch {
+          // Retry cleanly on next cycle
         }
-        for (const sig of res.signals ?? []) {
-          await handleSignal(sig);
-        }
-      } catch {
-        // Retry cleanly on next tick
+        if (cancelled) break;
+        await new Promise((r) => setTimeout(r, 550));
       }
     };
 
-    void pollSignals();
-    const timer = setInterval(() => void pollSignals(), 750);
+    void runLoop();
     return () => {
       cancelled = true;
-      clearInterval(timer);
     };
   }, [
     attachOutgoingTracks,
@@ -1054,8 +1199,21 @@ export function MeetingStudio({
 
   const stopScreenShare = useCallback(async () => {
     const scr = screenStreamRef.current;
+    screenStreamRef.current = null;
+    setScreenStream(null);
+    setScreenOn(false);
+
     if (scr) {
       const tracks = scr.getTracks();
+      await Promise.all([
+        sendSignal('*', 'screen-meta', { active: false, streamId: '', trackId: '' }),
+        patch<MeetingRow>(`/meetings/${room.id}/participant`, {
+          screenSharing: false,
+          screenStreamId: null,
+        })
+          .then((updated) => setRoom(updated))
+          .catch(() => undefined),
+      ]);
       for (const [peerId, pc] of pcsRef.current.entries()) {
         for (const sender of pc.getSenders()) {
           if (sender.track && tracks.some((t) => t.id === sender.track?.id)) {
@@ -1065,15 +1223,7 @@ export function MeetingStudio({
         await renegotiatePeer(peerId);
       }
       tracks.forEach((t) => t.stop());
-      screenStreamRef.current = null;
     }
-    setScreenStream(null);
-    setScreenOn(false);
-    await sendSignal('*', 'screen-meta', { active: false, streamId: '' });
-    const updated = await patch<MeetingRow>(`/meetings/${room.id}/participant`, {
-      screenSharing: false,
-    }).catch(() => null);
-    if (updated) setRoom(updated);
   }, [renegotiatePeer, room.id, sendSignal]);
 
   const toggleScreenShare = async () => {
@@ -1081,35 +1231,63 @@ export function MeetingStudio({
       await stopScreenShare();
       return;
     }
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
+      showToast('Screen sharing is not supported on this browser or device.');
+      return;
+    }
+    let scr: MediaStream | null = null;
     try {
-      const scr = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: 30 },
+      scr = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 30 } },
         audio: true,
       });
-      screenStreamRef.current = scr;
-      setScreenStream(scr);
-      setScreenOn(true);
-
-      await sendSignal('*', 'screen-meta', { active: true, streamId: scr.id });
-      const updated = await patch<MeetingRow>(`/meetings/${room.id}/participant`, {
-        screenSharing: true,
-      });
-      setRoom(updated);
-
-      // Push screen share tracks into every active peer connection & renegotiate
-      for (const [peerId, pc] of pcsRef.current.entries()) {
-        for (const track of scr.getTracks()) {
-          pc.addTrack(track, scr);
-        }
-        await renegotiatePeer(peerId);
+    } catch (err) {
+      const name = err instanceof Error ? err.name : '';
+      if (name === 'NotAllowedError' || name === 'AbortError') {
+        showToast('Screen share selection cancelled or permission denied.');
+        return;
       }
-
-      scr.getVideoTracks()[0]?.addEventListener('ended', () => {
-        void stopScreenShare();
-      });
-    } catch {
-      // User cancelled native screen share picker
+      // Retry without system audio constraint on browsers/OS that reject audio: true
+      try {
+        scr = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      } catch {
+        showToast('Could not start screen sharing. Check browser permissions.');
+        return;
+      }
     }
+
+    if (!scr) return;
+    const scrVideoTrack = scr.getVideoTracks()[0];
+    screenStreamRef.current = scr;
+    setScreenStream(scr);
+    setScreenOn(true);
+
+    scrVideoTrack?.addEventListener('ended', () => {
+      void stopScreenShare();
+    });
+
+    // Attach screen tracks and renegotiate immediately while persisting state in parallel
+    for (const [peerId, pc] of pcsRef.current.entries()) {
+      for (const track of scr.getTracks()) {
+        const already = pc.getSenders().some((s) => s.track?.id === track.id);
+        if (!already) pc.addTrack(track, scr);
+      }
+      void renegotiatePeer(peerId);
+    }
+
+    await Promise.all([
+      sendSignal('*', 'screen-meta', {
+        active: true,
+        streamId: scr.id,
+        trackId: scrVideoTrack?.id ?? '',
+      }),
+      patch<MeetingRow>(`/meetings/${room.id}/participant`, {
+        screenSharing: true,
+        screenStreamId: scr.id,
+      })
+        .then((updated) => setRoom(updated))
+        .catch(() => undefined),
+    ]);
   };
 
   const toggleHandRaise = async () => {
@@ -1385,13 +1563,24 @@ export function MeetingStudio({
           {activeScreenShare ? (
             <div className="flex h-full flex-col gap-4 lg:flex-row">
               {/* Spotlight Presented Screen */}
-              <div className="relative flex min-h-[340px] flex-1 items-center justify-center overflow-hidden rounded-2xl border border-emerald-500/40 bg-black shadow-2xl">
+              <div className="relative flex h-full min-h-[380px] flex-1 items-center justify-center overflow-hidden rounded-2xl border border-emerald-500/40 bg-black shadow-2xl">
                 <VideoCanvas
                   stream={activeScreenShare.stream}
-                  className="h-full w-full object-contain"
+                  className="h-full max-h-[76vh] w-full object-contain"
                 />
-                <div className="absolute left-3 top-3 inline-flex items-center gap-2 rounded-full bg-emerald-600/95 px-3 py-1 text-xs font-semibold text-white shadow">
-                  <MonitorUp className="h-3.5 w-3.5" /> {activeScreenShare.presenterName} is sharing screen
+                <div className="absolute left-3 top-3 flex items-center gap-2">
+                  <div className="inline-flex items-center gap-2 rounded-full bg-emerald-600/95 px-3 py-1 text-xs font-semibold text-white shadow">
+                    <MonitorUp className="h-3.5 w-3.5" /> {activeScreenShare.presenterName} is sharing screen
+                  </div>
+                  {activeScreenShare.userId === currentUser.id && (
+                    <button
+                      type="button"
+                      onClick={() => void stopScreenShare()}
+                      className="rounded-full bg-rose-600 px-3 py-1 text-xs font-bold text-white shadow transition hover:bg-rose-500"
+                    >
+                      Stop Share
+                    </button>
+                  )}
                 </div>
                 <button
                   type="button"
