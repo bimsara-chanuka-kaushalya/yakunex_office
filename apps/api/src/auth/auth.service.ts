@@ -129,25 +129,24 @@ export class AuthService {
     };
     this.prisma.upsertUserInCache?.(updatedUser);
 
-    const tokens = await this.issueTokens(updatedUser, randomUUID(), meta);
-
-    // Persist login metadata to Supabase asynchronously so login response is instant (<50ms)
-    void this.prisma.user
-      .update({
-        where: { id: user.id },
-        data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: now },
-      })
-      .catch(() => undefined);
-
-    await this.audit.log({
-      organizationId: user.organizationId,
-      actorId: user.id,
-      action: 'LOGIN_SUCCESS',
-      entityType: 'User',
-      entityId: user.id,
-      ipAddress: meta.ipAddress,
-      userAgent: meta.userAgent,
-    });
+    const [tokens] = await Promise.all([
+      this.issueTokens(updatedUser, randomUUID(), meta),
+      this.prisma.user
+        .update({
+          where: { id: user.id },
+          data: { failedLoginCount: 0, lockedUntil: null, lastLoginAt: now },
+        })
+        .catch(() => undefined),
+      this.audit.log({
+        organizationId: user.organizationId,
+        actorId: user.id,
+        action: 'LOGIN_SUCCESS',
+        entityType: 'User',
+        entityId: user.id,
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+      }),
+    ]);
 
     return { user: toAuthUser(updatedUser), tokens };
   }
@@ -166,26 +165,27 @@ export class AuthService {
     };
     this.prisma.upsertUserInCache?.(updatedUser);
 
-    void this.prisma.user
-      .update({
-        where: { id: user.id },
-        data: {
-          failedLoginCount: shouldLock ? 0 : failures,
-          lockedUntil,
-        },
-      })
-      .catch(() => undefined);
-
-    await this.audit.log({
-      organizationId: user.organizationId,
-      actorId: user.id,
-      action: shouldLock ? 'ACCOUNT_LOCKED' : 'LOGIN_FAILED',
-      entityType: 'User',
-      entityId: user.id,
-      metadata: { failures },
-      ipAddress: meta.ipAddress,
-      userAgent: meta.userAgent,
-    });
+    await Promise.all([
+      this.prisma.user
+        .update({
+          where: { id: user.id },
+          data: {
+            failedLoginCount: shouldLock ? 0 : failures,
+            lockedUntil,
+          },
+        })
+        .catch(() => undefined),
+      this.audit.log({
+        organizationId: user.organizationId,
+        actorId: user.id,
+        action: shouldLock ? 'ACCOUNT_LOCKED' : 'LOGIN_FAILED',
+        entityType: 'User',
+        entityId: user.id,
+        metadata: { failures },
+        ipAddress: meta.ipAddress,
+        userAgent: meta.userAgent,
+      }),
+    ]);
   }
 
   /** Rotates a refresh token. Presenting an already-rotated token revokes the whole family. */
@@ -237,14 +237,15 @@ export class AuthService {
     }
 
     record.revokedAt = new Date();
-    void this.prisma.refreshToken
-      .update({
-        where: { id: record.id },
-        data: { revokedAt: record.revokedAt },
-      })
-      .catch(() => undefined);
-
-    const tokens = await this.issueTokens(user, record.familyId, meta);
+    const [, tokens] = await Promise.all([
+      this.prisma.refreshToken
+        .update({
+          where: { id: record.id },
+          data: { revokedAt: record.revokedAt },
+        })
+        .catch(() => undefined),
+      this.issueTokens(user, record.familyId, meta),
+    ]);
     return { user: toAuthUser(user), tokens };
   }
 
@@ -496,7 +497,7 @@ export class AuthService {
       user,
     });
 
-    void this.prisma.refreshToken
+    await this.prisma.refreshToken
       .create({
         data: {
           id: recordId,

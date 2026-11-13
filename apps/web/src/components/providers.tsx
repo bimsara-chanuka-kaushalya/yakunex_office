@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { api, post } from '@/lib/api';
+import { api, post, refreshSession } from '@/lib/api';
 import { translate, type Lang } from '@/lib/i18n';
 
 // ─── Session ─────────────────────────────────────────────────────────────
@@ -52,6 +52,15 @@ function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // Proactive keep-alive refresh every 10 minutes so active sessions & meetings never expire mid-work
+  useEffect(() => {
+    if (status !== 'authenticated') return;
+    const timer = setInterval(() => {
+      void refreshSession();
+    }, 10 * 60_000);
+    return () => clearInterval(timer);
+  }, [status]);
 
   const login = useCallback(
     async (email: string, password: string) => {

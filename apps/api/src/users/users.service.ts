@@ -79,8 +79,20 @@ export class UsersService {
         : {}),
     };
 
-    const cachedUsers = this.prisma.getCachedUsers?.(actor.organizationId) ?? [];
-    if (cachedUsers.length > 0) {
+    try {
+      const [items, total] = await Promise.all([
+        this.prisma.user.findMany({
+          where,
+          select: publicUserSelect,
+          orderBy: [{ role: 'asc' }, { fullName: 'asc' }],
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+        }),
+        this.prisma.user.count({ where }),
+      ]);
+      return { items, total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
+    } catch {
+      const cachedUsers = this.prisma.getCachedUsers?.(actor.organizationId) ?? [];
       const roleOrder: Role[] = [
         Role.SUPER_ADMIN,
         Role.ADMIN,
@@ -122,17 +134,6 @@ export class UsersService {
       }));
       return { items, total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
     }
-
-    const items = await this.prisma.user.findMany({
-      where,
-      select: publicUserSelect,
-      orderBy: [{ role: 'asc' }, { fullName: 'asc' }],
-      skip: (page - 1) * pageSize,
-      take: pageSize,
-    });
-    const total = await this.prisma.user.count({ where });
-
-    return { items, total, page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) };
   }
 
   async create(actor: AuthUser, dto: CreateUserDto, meta: { ipAddress?: string; userAgent?: string }) {

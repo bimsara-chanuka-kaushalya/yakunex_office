@@ -559,15 +559,21 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         const found = users.find((u) => matchesUserWhere(u, where));
         return found ? { ...found } : null;
       },
-      findUnique: async ({ where }: { where: { id?: string; email?: string } }) => {
+      findUnique: async ({ where }: { where: { id?: string; email?: string; companyId?: string } }) => {
         const found = users.find(
-          (u) => (where.id && u.id === where.id) || (where.email && u.email === where.email),
+          (u) =>
+            (where.id && u.id === where.id) ||
+            (where.email && u.email.toLowerCase() === where.email.toLowerCase()) ||
+            (where.companyId && (u.companyId ?? '').toUpperCase() === where.companyId.toUpperCase()),
         );
         return found ? { ...found } : null;
       },
-      findUniqueOrThrow: async ({ where }: { where: { id?: string; email?: string } }) => {
+      findUniqueOrThrow: async ({ where }: { where: { id?: string; email?: string; companyId?: string } }) => {
         const found = users.find(
-          (u) => (where.id && u.id === where.id) || (where.email && u.email === where.email),
+          (u) =>
+            (where.id && u.id === where.id) ||
+            (where.email && u.email.toLowerCase() === where.email.toLowerCase()) ||
+            (where.companyId && (u.companyId ?? '').toUpperCase() === where.companyId.toUpperCase()),
         );
         if (!found) throw new Error('User not found');
         return { ...found };

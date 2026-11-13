@@ -464,6 +464,7 @@ export function MeetingStudio({
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const pendingRenegotiateRef = useRef<Set<string>>(new Set());
+  const pendingIceRestartRef = useRef<Set<string>>(new Set());
   const disconnectTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const makingOfferRef = useRef<Map<string, boolean>>(new Map());
   const seenSignalIdsRef = useRef<Set<string>>(new Set());
@@ -685,8 +686,12 @@ export function MeetingStudio({
       for (const track of camStream.getTracks()) {
         const already = pc.getSenders().some((s) => s.track?.id === track.id);
         if (!already) {
-          const sender = pc.addTrack(track, camStream);
-          void tuneSenderQuality(sender, track.kind === 'video' ? 'cam-video' : 'mic-audio', tier);
+          try {
+            const sender = pc.addTrack(track, camStream);
+            void tuneSenderQuality(sender, track.kind === 'video' ? 'cam-video' : 'mic-audio', tier);
+          } catch {
+            // Ignore if track already attached to another sender
+          }
         }
       }
     }
@@ -695,8 +700,12 @@ export function MeetingStudio({
       for (const track of scrStream.getTracks()) {
         const already = pc.getSenders().some((s) => s.track?.id === track.id);
         if (!already) {
-          const sender = pc.addTrack(track, scrStream);
-          void tuneSenderQuality(sender, track.kind === 'video' ? 'screen-video' : 'screen-audio', tier);
+          try {
+            const sender = pc.addTrack(track, scrStream);
+            void tuneSenderQuality(sender, track.kind === 'video' ? 'screen-video' : 'screen-audio', tier);
+          } catch {
+            // Ignore if track already attached to another sender
+          }
         }
       }
     }
@@ -734,17 +743,21 @@ export function MeetingStudio({
     async (peerId: string, iceRestart = false) => {
       const pc = pcsRef.current.get(peerId);
       if (!pc || pc.connectionState === 'closed') return;
-      if (!iceRestart && (makingOfferRef.current.get(peerId) || pc.signalingState !== 'stable')) {
+      if (makingOfferRef.current.get(peerId) || pc.signalingState !== 'stable') {
         pendingRenegotiateRef.current.add(peerId);
+        if (iceRestart) pendingIceRestartRef.current.add(peerId);
         return;
       }
       pendingRenegotiateRef.current.delete(peerId);
+      const shouldRestartIce = iceRestart || pendingIceRestartRef.current.has(peerId);
+      pendingIceRestartRef.current.delete(peerId);
       try {
         makingOfferRef.current.set(peerId, true);
         attachOutgoingTracks(pc);
-        const offer = await pc.createOffer(iceRestart ? { iceRestart: true } : undefined);
-        if (!iceRestart && pc.signalingState !== 'stable') {
+        const offer = await pc.createOffer(shouldRestartIce ? { iceRestart: true } : undefined);
+        if (pc.signalingState !== 'stable') {
           pendingRenegotiateRef.current.add(peerId);
+          if (shouldRestartIce) pendingIceRestartRef.current.add(peerId);
           return;
         }
         await pc.setLocalDescription(offer);
@@ -774,6 +787,7 @@ export function MeetingStudio({
     if (iceEntry?.timer) clearTimeout(iceEntry.timer);
     iceBatchRef.current.delete(peerId);
     pendingRenegotiateRef.current.delete(peerId);
+    pendingIceRestartRef.current.delete(peerId);
 
     const pc = pcsRef.current.get(peerId);
     if (pc) {
@@ -824,7 +838,9 @@ export function MeetingStudio({
       pc.onsignalingstatechange = () => {
         if (pc.signalingState === 'stable' && pendingRenegotiateRef.current.has(peerId)) {
           pendingRenegotiateRef.current.delete(peerId);
-          setTimeout(() => void renegotiatePeer(peerId), 60);
+          const restart = pendingIceRestartRef.current.has(peerId);
+          pendingIceRestartRef.current.delete(peerId);
+          setTimeout(() => void renegotiatePeer(peerId, restart), 50);
         }
       };
 
@@ -990,8 +1006,8 @@ export function MeetingStudio({
         const sig = JSON.stringify([
           fresh.status,
           fresh.notes,
-          fresh.chatMessages.length,
-          fresh.participants.map((p) => [
+          (fresh.chatMessages ?? []).length,
+          (fresh.participants ?? []).map((p) => [
             p.userId,
             p.micOn,
             p.camOn,
@@ -1560,7 +1576,11 @@ export function MeetingStudio({
       for (const [peerId, pc] of pcsRef.current.entries()) {
         for (const sender of pc.getSenders()) {
           if (sender.track && tracks.some((t) => t.id === sender.track?.id)) {
-            pc.removeTrack(sender);
+            try {
+              pc.removeTrack(sender);
+            } catch {
+              // Ignore closed peer sender removal
+            }
           }
         }
         peerRenegotiations.push(renegotiatePeer(peerId));
@@ -1581,19 +1601,17 @@ export function MeetingStudio({
     }
     let scr: MediaStream | null = null;
     try {
-      // Request crisp 1080p@30fps (avoids 4K/60fps encoder lag) + uncompressed 48kHz stereo system/tab audio
+      // W3C getDisplayMedia forbids min/max/exact in video constraints (throws TypeError in Chrome); use ideal only
       scr = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          width: { ideal: 1920, max: 1920 },
-          height: { ideal: 1080, max: 1080 },
-          frameRate: { ideal: 30, max: 30 },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 30 },
         },
         audio: {
           echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: false,
-          channelCount: 2,
-          sampleRate: 48000,
         },
         ...({
           systemAudio: 'include',
@@ -1607,13 +1625,22 @@ export function MeetingStudio({
         showToast('Screen share selection cancelled or permission denied.');
         return;
       }
-      // Fallback 1: standard video + audio
+      // Fallback 1: standard video + raw system/tab audio
       try {
         scr = await navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: { ideal: 30, max: 30 } },
-          audio: true,
+          video: { frameRate: { ideal: 30 } },
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
         });
-      } catch {
+      } catch (err2) {
+        const name2 = err2 instanceof Error ? err2.name : '';
+        if (name2 === 'NotAllowedError' || name2 === 'AbortError') {
+          showToast('Screen share selection cancelled or permission denied.');
+          return;
+        }
         // Fallback 2: video only (OS/window does not support audio capture)
         try {
           scr = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
@@ -1627,7 +1654,16 @@ export function MeetingStudio({
     if (!scr) return;
     const scrVideoTrack = scr.getVideoTracks()[0];
     const scrAudioTrack = scr.getAudioTracks()[0];
-    if (scrVideoTrack) scrVideoTrack.contentHint = 'motion';
+    if (scrVideoTrack) {
+      scrVideoTrack.contentHint = 'motion';
+      void scrVideoTrack
+        .applyConstraints({
+          width: { max: 1920 },
+          height: { max: 1080 },
+          frameRate: { max: 30 },
+        })
+        .catch(() => undefined);
+    }
     if (scrAudioTrack) scrAudioTrack.contentHint = 'music';
 
     screenStreamRef.current = scr;
@@ -1663,12 +1699,16 @@ export function MeetingStudio({
       for (const track of scr.getTracks()) {
         const already = pc.getSenders().some((s) => s.track?.id === track.id);
         if (!already) {
-          const sender = pc.addTrack(track, scr);
-          void tuneSenderQuality(
-            sender,
-            track.kind === 'video' ? 'screen-video' : 'screen-audio',
-            activeTierRef.current,
-          );
+          try {
+            const sender = pc.addTrack(track, scr);
+            void tuneSenderQuality(
+              sender,
+              track.kind === 'video' ? 'screen-video' : 'screen-audio',
+              activeTierRef.current,
+            );
+          } catch {
+            // Ignore duplicate sender error
+          }
         }
       }
       peerOffers.push(renegotiatePeer(peerId));
