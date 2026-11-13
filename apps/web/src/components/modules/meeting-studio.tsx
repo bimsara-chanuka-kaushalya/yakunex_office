@@ -22,6 +22,7 @@ import {
   MessagesSquare,
   Mic,
   MicOff,
+  Minimize2,
   MonitorUp,
   PhoneOff,
   Radio,
@@ -444,6 +445,7 @@ export function MeetingStudio({
   const [recording, setRecording] = useState(false);
   const [recordingSec, setRecordingSec] = useState(0);
   const [screenAudioMuted, setScreenAudioMuted] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
 
@@ -476,6 +478,7 @@ export function MeetingStudio({
   >(new Map());
   const lastSignalSeqRef = useRef<number>(0);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
+  const studioRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
@@ -1869,6 +1872,10 @@ export function MeetingStudio({
 
   const leaveCall = async (endForAll = false) => {
     setShowLeaveMenu(false);
+    if (typeof document !== 'undefined' && document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => undefined);
+    }
+    setIsFullscreen(false);
     if (recording) recorderRef.current?.stop();
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     screenStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -1884,8 +1891,71 @@ export function MeetingStudio({
     } catch {
       // Proceed cleanly out of studio
     }
-    onExited(endForAll);
+    void onExited(endForAll);
   };
+
+  // Sync fullscreen state with native browser Fullscreen API + Esc key fallback
+  useEffect(() => {
+    const syncNativeFullscreen = () => {
+      const fsDoc = document as Document & { webkitFullscreenElement?: Element | null };
+      const activeEl = fsDoc.fullscreenElement ?? fsDoc.webkitFullscreenElement ?? null;
+      setIsFullscreen(Boolean(activeEl));
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isFullscreen && !document.fullscreenElement) {
+        setIsFullscreen(false);
+      }
+    };
+    document.addEventListener('fullscreenchange', syncNativeFullscreen);
+    document.addEventListener('webkitfullscreenchange', syncNativeFullscreen as EventListener);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('fullscreenchange', syncNativeFullscreen);
+      document.removeEventListener('webkitfullscreenchange', syncNativeFullscreen as EventListener);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [isFullscreen]);
+
+  const toggleFullscreen = useCallback(async () => {
+    const el = studioRef.current as (HTMLDivElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+      msRequestFullscreen?: () => Promise<void> | void;
+    }) | null;
+    const fsDoc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+      webkitExitFullscreen?: () => Promise<void> | void;
+    };
+    const nativeEl = fsDoc.fullscreenElement ?? fsDoc.webkitFullscreenElement ?? null;
+
+    if (nativeEl || isFullscreen) {
+      try {
+        if (document.fullscreenElement && document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if (fsDoc.webkitExitFullscreen) {
+          await fsDoc.webkitExitFullscreen();
+        }
+      } catch {
+        // Fallback below clears CSS fullscreen
+      }
+      setIsFullscreen(false);
+      return;
+    }
+
+    if (!el) return;
+    try {
+      if (el.requestFullscreen) {
+        await el.requestFullscreen();
+      } else if (el.webkitRequestFullscreen) {
+        await el.webkitRequestFullscreen();
+      } else if (el.msRequestFullscreen) {
+        await el.msRequestFullscreen();
+      }
+      setIsFullscreen(true);
+    } catch {
+      // Fallback to CSS expanded viewport fullscreen when OS/iOS restricts Fullscreen API
+      setIsFullscreen(true);
+    }
+  }, [isFullscreen]);
 
   // Resolve current active presenter screen share (local OR remote)
   const activeScreenShare = useMemo(() => {
@@ -1930,7 +2000,15 @@ export function MeetingStudio({
   }, [currentUser.id, room.participants, speakingUsers]);
 
   return (
-    <div className="relative flex h-[calc(100vh-110px)] min-h-[640px] flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#0B0F17] text-white shadow-2xl">
+    <div
+      ref={studioRef}
+      className={cn(
+        'relative flex flex-col overflow-hidden bg-[#0B0F17] text-white shadow-2xl',
+        isFullscreen
+          ? 'fixed inset-0 z-50 h-screen w-screen rounded-none border-0'
+          : 'h-[calc(100vh-110px)] min-h-[640px] rounded-3xl border border-white/10',
+      )}
+    >
       {/* Hidden audio playback elements for remote mics AND shared screen audio */}
       {room.participants
         .filter((p) => p.userId !== currentUser.id)
@@ -2026,6 +2104,30 @@ export function MeetingStudio({
               </button>
             </div>
           )}
+
+          <button
+            type="button"
+            onClick={() => void toggleFullscreen()}
+            title={isFullscreen ? 'Exit Fullscreen (Esc)' : 'Enter Fullscreen'}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition',
+              isFullscreen
+                ? 'border-[#D4A843]/50 bg-[#D4A843]/20 text-[#F3D27A] hover:bg-[#D4A843]/30'
+                : 'border-white/15 bg-white/5 text-white/85 hover:bg-white/15 hover:text-white',
+            )}
+          >
+            {isFullscreen ? (
+              <>
+                <Minimize2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Exit Fullscreen</span>
+              </>
+            ) : (
+              <>
+                <Maximize2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Fullscreen</span>
+              </>
+            )}
+          </button>
         </div>
       </header>
 
@@ -2043,10 +2145,16 @@ export function MeetingStudio({
           {activeScreenShare ? (
             <div className="flex h-full flex-col gap-4 lg:flex-row">
               {/* Spotlight Presented Screen */}
-              <div className="relative flex h-full min-h-[380px] flex-1 items-center justify-center overflow-hidden rounded-2xl border border-emerald-500/40 bg-black shadow-2xl">
+              <div
+                onDoubleClick={() => void toggleFullscreen()}
+                className="relative flex h-full min-h-[380px] flex-1 items-center justify-center overflow-hidden rounded-2xl border border-emerald-500/40 bg-black shadow-2xl"
+              >
                 <VideoCanvas
                   stream={activeScreenShare.stream}
-                  className="h-full max-h-[76vh] w-full object-contain"
+                  className={cn(
+                    'h-full w-full object-contain',
+                    isFullscreen ? 'max-h-full' : 'max-h-[76vh]',
+                  )}
                 />
                 <div className="absolute left-3 top-3 flex flex-wrap items-center gap-2">
                   <div className="inline-flex items-center gap-2 rounded-full bg-emerald-600/95 px-3 py-1 text-xs font-semibold text-white shadow">
@@ -2098,11 +2206,11 @@ export function MeetingStudio({
                 </div>
                 <button
                   type="button"
-                  onClick={() => stageRef.current?.requestFullscreen?.().catch(() => undefined)}
-                  title="Fullscreen stage"
+                  onClick={() => void toggleFullscreen()}
+                  title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen meeting'}
                   className="absolute right-3 top-3 rounded-lg bg-black/60 p-2 text-white/80 backdrop-blur transition hover:bg-black/85 hover:text-white"
                 >
-                  <Maximize2 className="h-4 w-4" />
+                  {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
                 </button>
               </div>
 
