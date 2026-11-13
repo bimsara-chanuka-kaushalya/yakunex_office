@@ -269,6 +269,8 @@ export interface OrganizationSettings {
 export class WorkspaceService implements OnModuleInit {
   private readonly logger = new Logger(WorkspaceService.name);
   private defaultOrgId: string | null = null;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private auditLogsCache = new Map<string, { data: unknown; expiresAt: number }>();
 
   private clients: ClientItem[] = [];
 
@@ -421,40 +423,46 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   private persistState(organizationId?: string): void {
-    void (async () => {
-      try {
-        const orgId = await this.resolveOrgId(organizationId);
-        if (!orgId || !this.prisma.systemSetting?.upsert) return;
-        const payload = {
-          clients: this.clients,
-          projects: this.projects,
-          sprints: this.sprints,
-          tasks: this.tasks,
-          bugs: this.bugs,
-          documents: this.documents,
-          timeEntries: this.timeEntries,
-          attendance: this.attendance,
-          leaveRequests: this.leaveRequests,
-          interns: this.interns,
-          channels: this.channels,
-          messages: this.messages,
-          meetings: this.meetings,
-          settings: this.settings,
-        } as unknown as Prisma.InputJsonValue;
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+    }
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      void (async () => {
+        try {
+          const orgId = await this.resolveOrgId(organizationId);
+          if (!orgId || !this.prisma.systemSetting?.upsert) return;
+          const payload = {
+            clients: this.clients,
+            projects: this.projects,
+            sprints: this.sprints,
+            tasks: this.tasks,
+            bugs: this.bugs,
+            documents: this.documents,
+            timeEntries: this.timeEntries,
+            attendance: this.attendance,
+            leaveRequests: this.leaveRequests,
+            interns: this.interns,
+            channels: this.channels,
+            messages: this.messages,
+            meetings: this.meetings,
+            settings: this.settings,
+          } as unknown as Prisma.InputJsonValue;
 
-        await this.prisma.systemSetting.upsert({
-          where: { organizationId_key: { organizationId: orgId, key: 'workspace_state' } },
-          update: { value: payload },
-          create: {
-            organizationId: orgId,
-            key: 'workspace_state',
-            value: payload,
-          },
-        });
-      } catch (err) {
-        this.logger.warn(`Failed to persist workspace_state to Supabase: ${(err as Error).message}`);
-      }
-    })();
+          await this.prisma.systemSetting.upsert({
+            where: { organizationId_key: { organizationId: orgId, key: 'workspace_state' } },
+            update: { value: payload },
+            create: {
+              organizationId: orgId,
+              key: 'workspace_state',
+              value: payload,
+            },
+          });
+        } catch (err) {
+          this.logger.warn(`Failed to persist workspace_state to Supabase: ${(err as Error).message}`);
+        }
+      })();
+    }, 400);
   }
 
   /** Ensures a valid Project row exists in PostgreSQL when tasks/sprints/bugs use 'gen' or a projectId. */
@@ -1811,6 +1819,11 @@ export class WorkspaceService implements OnModuleInit {
 
   // ─── Audit Logs ───────────────────────────────────────────────────────────
   async listAuditLogs(actor: AuthUser) {
+    const now = Date.now();
+    const cached = this.auditLogsCache.get(actor.organizationId);
+    if (cached && cached.expiresAt > now) {
+      return cached.data;
+    }
     const dbLogs = await this.prisma.auditLog.findMany({
       where: { organizationId: actor.organizationId },
       orderBy: { createdAt: 'desc' },
@@ -1827,6 +1840,7 @@ export class WorkspaceService implements OnModuleInit {
         actor: { select: { fullName: true } },
       },
     });
+    this.auditLogsCache.set(actor.organizationId, { data: dbLogs, expiresAt: now + 10_000 });
     return dbLogs;
   }
 

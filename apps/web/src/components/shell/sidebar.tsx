@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Lock, Sparkles, UserCheck } from 'lucide-react';
+import { Lock } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { YakunexMark } from '@/components/brand/logo';
 import { NAV_SECTIONS } from '@/lib/nav';

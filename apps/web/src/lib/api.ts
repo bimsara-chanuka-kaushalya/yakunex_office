@@ -17,7 +17,7 @@ export class ApiError extends Error {
 }
 
 let refreshInFlight: Promise<boolean> | null = null;
-const GET_CACHE_TTL_MS = 15_000;
+const GET_CACHE_TTL_MS = 30_000;
 const getCache = new Map<string, { data: unknown; expiresAt: number }>();
 const inflightGets = new Map<string, Promise<unknown>>();
 
