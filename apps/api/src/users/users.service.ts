@@ -15,6 +15,12 @@ import { RbacService } from '../rbac/rbac.service';
 import { isPermissionKey, PERMISSIONS } from '../rbac/permissions';
 import { assertCanAssignRole, assertCanManageTarget } from './role-rules';
 import { ChangeRoleDto, CreateUserDto, ListUsersQuery, SetPermissionsDto } from './dto/users.dto';
+import {
+  buildCompanyEmail,
+  CompanyRoleCode,
+  formatCompanyId,
+  resolveCompanyRoleCode,
+} from './company-identity';
 
 const publicUserSelect = {
   id: true,
@@ -137,10 +143,16 @@ export class UsersService {
       throw new BadRequestException('Full name must be at least 2 characters.');
     }
 
-    const email = dto.email.trim().toLowerCase();
-    const existing = await this.prisma.user.findUnique({ where: { email } });
-    if (existing) {
-      throw new ConflictException('A user with this email already exists.');
+    const roleCode = resolveCompanyRoleCode(dto.role, dto.title, dto.roleCode);
+
+    let email = dto.email?.trim().toLowerCase() ?? '';
+    if (email) {
+      const existing = await this.prisma.user.findUnique({ where: { email } });
+      if (existing) {
+        throw new ConflictException('A user with this email already exists.');
+      }
+    } else {
+      email = await this.generateUniqueCompanyEmail(fullName, roleCode);
     }
 
     if (dto.departmentId) {
@@ -157,7 +169,7 @@ export class UsersService {
         throw new ConflictException(`Company ID ${companyId} is already assigned to another user.`);
       }
     } else {
-      companyId = await this.generateNextCompanyId(actor.organizationId);
+      companyId = await this.generateNextCompanyId(actor.organizationId, roleCode);
     }
 
     const temporaryPassword = generateTemporaryPassword();
@@ -206,20 +218,37 @@ export class UsersService {
     return { user, temporaryPassword };
   }
 
-  private async generateNextCompanyId(organizationId: string): Promise<string> {
+  private async generateNextCompanyId(organizationId: string, roleCode: CompanyRoleCode): Promise<string> {
     const rows = await this.prisma.user.findMany({
       where: { organizationId },
       select: { companyId: true },
     });
+    const used = new Set<string>();
     let maxNum = 0;
+    const prefixRegex = new RegExp(`^YNX-${roleCode}-(\\d+)$`, 'i');
     for (const row of rows) {
-      const match = row.companyId?.match(/^YNX-(\d+)$/i);
+      if (!row.companyId) continue;
+      used.add(row.companyId.toUpperCase());
+      const match = row.companyId.match(prefixRegex);
       if (match) {
         const num = parseInt(match[1], 10);
         if (num > maxNum) maxNum = num;
       }
     }
-    return `YNX-${String(maxNum + 1).padStart(4, '0')}`;
+    let next = maxNum + 1;
+    while (used.has(formatCompanyId(roleCode, next))) {
+      next += 1;
+    }
+    return formatCompanyId(roleCode, next);
+  }
+
+  private async generateUniqueCompanyEmail(fullName: string, roleCode: CompanyRoleCode): Promise<string> {
+    for (let suffix = 1; suffix <= 99; suffix += 1) {
+      const candidate = buildCompanyEmail(fullName, roleCode, suffix);
+      const exists = await this.prisma.user.findUnique({ where: { email: candidate }, select: { id: true } });
+      if (!exists) return candidate;
+    }
+    return buildCompanyEmail(fullName, roleCode, Date.now() % 10000);
   }
 
   async changeRole(actor: AuthUser, targetId: string, dto: ChangeRoleDto, meta: { ipAddress?: string; userAgent?: string }) {

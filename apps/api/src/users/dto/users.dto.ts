@@ -1,4 +1,5 @@
 import { Role, UserStatus } from '@prisma/client';
+import { COMPANY_ROLE_CODES, type CompanyRoleCode } from '../company-identity';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -47,13 +48,18 @@ export class CreateUserDto {
   @Length(2, 120)
   fullName!: string;
 
+  @IsOptional()
   @IsEmail()
-  email!: string;
+  email?: string;
 
   @IsOptional()
   @IsString()
   @Length(0, 32)
   companyId?: string;
+
+  @IsOptional()
+  @IsIn([...COMPANY_ROLE_CODES])
+  roleCode?: CompanyRoleCode;
 
   @IsEnum(Role)
   role!: Role;

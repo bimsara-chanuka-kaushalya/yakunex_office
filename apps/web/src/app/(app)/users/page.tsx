@@ -572,6 +572,7 @@ function CreateUserDialog({
   const [email, setEmail] = useState('');
   const [companyId, setCompanyId] = useState('');
   const [role, setRole] = useState<Role>('STAFF');
+  const [roleCode, setRoleCode] = useState<'DIR' | 'HR' | 'PM' | 'DEV' | 'INT' | 'STF'>('STF');
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -579,11 +580,30 @@ function CreateUserDialog({
   const [copied, setCopied] = useState(false);
   const [showCreatedPassword, setShowCreatedPassword] = useState(true);
 
+  function defaultCodeForRole(nextRole: Role): 'DIR' | 'HR' | 'PM' | 'DEV' | 'INT' | 'STF' {
+    switch (nextRole) {
+      case 'SUPER_ADMIN':
+      case 'ADMIN':
+        return 'DIR';
+      case 'PROJECT_MANAGER':
+        return 'PM';
+      case 'INTERN':
+        return 'INT';
+      default:
+        return 'STF';
+    }
+  }
+
+  const previewLast =
+    fullName.trim().split(/\s+/).filter(Boolean).pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'lastname';
+  const suggestedEmail = `${previewLast}@${roleCode.toLowerCase()}.yakunx.com`;
+
   function reset() {
     setFullName('');
     setEmail('');
     setCompanyId('');
     setRole('STAFF');
+    setRoleCode('STF');
     setTitle('');
     setError(null);
     setCreated(null);
@@ -604,9 +624,10 @@ function CreateUserDialog({
         '/users',
         {
           fullName,
-          email,
+          email: email.trim() || undefined,
           companyId: companyId.trim() || undefined,
           role,
+          roleCode,
           title: title || undefined,
         },
       );
@@ -705,25 +726,45 @@ function CreateUserDialog({
                 maxLength={32}
                 value={companyId}
                 onChange={(e) => setCompanyId(e.target.value.toUpperCase())}
-                placeholder="Auto (e.g. YNX-0002)"
+                placeholder={`Auto (e.g. YNX-${roleCode}-0001)`}
               />
             </Field>
           </div>
-          <Field label={t('email')} htmlFor="new-email">
-            <Input
-              id="new-email"
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Department / Role Code" htmlFor="new-role-code">
+              <Select
+                id="new-role-code"
+                value={roleCode}
+                onChange={(e) => setRoleCode(e.target.value as 'DIR' | 'HR' | 'PM' | 'DEV' | 'INT' | 'STF')}
+              >
+                <option value="DIR">DIR — Director / Management</option>
+                <option value="HR">HR — Human Resources</option>
+                <option value="PM">PM — Project Manager</option>
+                <option value="DEV">DEV — Developer / Software Engineer</option>
+                <option value="INT">INT — Intern / Technical Intern</option>
+                <option value="STF">STF — Staff / General Employee</option>
+              </Select>
+            </Field>
+            <Field label="Company Mail (Auto if blank)" htmlFor="new-email">
+              <Input
+                id="new-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder={suggestedEmail}
+              />
+            </Field>
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={t('role')} htmlFor="new-role">
               <Select
                 id="new-role"
                 value={role}
-                onChange={(e) => setRole(e.target.value as Role)}
+                onChange={(e) => {
+                  const next = e.target.value as Role;
+                  setRole(next);
+                  setRoleCode(defaultCodeForRole(next));
+                }}
               >
                 {roles.map((r) => (
                   <option key={r} value={r}>

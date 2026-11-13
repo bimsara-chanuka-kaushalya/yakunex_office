@@ -80,8 +80,10 @@ export class AuthService {
     const normalizedEmail = raw.toLowerCase();
     const normalizedCompanyId = raw.toUpperCase();
     const emailCandidates =
-      normalizedEmail === 'admin@projectflow.local'
-        ? ['admin@projectflow.local', 'admin@yakunexhub.local']
+      normalizedEmail === 'admin@projectflow.local' ||
+      normalizedEmail === 'admin@yakunexhub.local' ||
+      normalizedEmail === 'administrator@dir.yakunx.com'
+        ? ['administrator@dir.yakunx.com', 'admin@yakunexhub.local', 'admin@projectflow.local']
         : [normalizedEmail];
 
     const user = this.prisma.findUserByIdentifierCached
@@ -337,8 +339,10 @@ export class AuthService {
     const normalizedEmail = raw.toLowerCase();
     const normalizedCompanyId = raw.toUpperCase();
     const emailCandidates =
-      normalizedEmail === 'admin@projectflow.local'
-        ? ['admin@projectflow.local', 'admin@yakunexhub.local']
+      normalizedEmail === 'admin@projectflow.local' ||
+      normalizedEmail === 'admin@yakunexhub.local' ||
+      normalizedEmail === 'administrator@dir.yakunx.com'
+        ? ['administrator@dir.yakunx.com', 'admin@yakunexhub.local', 'admin@projectflow.local']
         : [normalizedEmail];
 
     const user = this.prisma.findUserByIdentifierCached

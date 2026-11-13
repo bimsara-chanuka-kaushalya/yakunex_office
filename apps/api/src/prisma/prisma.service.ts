@@ -16,6 +16,7 @@ import {
 import * as argon2 from 'argon2';
 import { randomUUID } from 'crypto';
 import { DEFAULT_ROLE_PERMISSIONS, PermissionKey } from '../rbac/permissions';
+import { formatCompanyId, resolveCompanyRoleCode } from '../users/company-identity';
 
 function buildPooledDatabaseUrl(rawUrl?: string): string | undefined {
   if (!rawUrl) return undefined;
@@ -241,32 +242,28 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         orderBy: { createdAt: 'asc' },
       });
       const used = new Set<string>();
-      let maxNum = 0;
+      const maxByCode = new Map<string, number>();
       for (const u of allUsers) {
         if (u.companyId) {
-          used.add(u.companyId.toUpperCase());
-          const match = u.companyId.match(/^YNX-(\d+)$/i);
+          const upper = u.companyId.toUpperCase();
+          used.add(upper);
+          const match = upper.match(/^YNX-([A-Z]+)-(\d+)$/);
           if (match) {
-            const n = parseInt(match[1], 10);
-            if (n > maxNum) maxNum = n;
+            const n = parseInt(match[2], 10);
+            maxByCode.set(match[1], Math.max(maxByCode.get(match[1]) ?? 0, n));
           }
         }
       }
       for (const u of allUsers) {
         if (!u.companyId) {
-          let assigned = '';
-          if (
-            (u.email === 'admin@yakunexhub.local' || u.email === 'admin@projectflow.local') &&
-            !used.has('YNX-0001')
-          ) {
-            assigned = 'YNX-0001';
-            if (maxNum < 1) maxNum = 1;
-          } else {
-            do {
-              maxNum += 1;
-              assigned = `YNX-${String(maxNum).padStart(4, '0')}`;
-            } while (used.has(assigned));
+          const code = resolveCompanyRoleCode(u.role, u.title);
+          let nextNum = (maxByCode.get(code) ?? 0) + 1;
+          let assigned = formatCompanyId(code, nextNum);
+          while (used.has(assigned)) {
+            nextNum += 1;
+            assigned = formatCompanyId(code, nextNum);
           }
+          maxByCode.set(code, nextNum);
           used.add(assigned);
           const updated = await this.user.update({
             where: { id: u.id },
