@@ -6,22 +6,22 @@ type Size = 'sm' | 'md' | 'lg' | 'icon';
 
 const variants: Record<Variant, string> = {
   primary:
-    'bg-gradient-to-b from-gold to-gold-strong text-gold-ink font-semibold shadow-sm hover:brightness-105 active:scale-[0.98] border border-gold/40',
+    'clay-btn-primary text-gold-ink font-semibold hover:brightness-105 active:translate-y-[1px] active:scale-[0.97] border border-gold/40',
   secondary:
-    'bg-surface text-ink border border-line hover:border-gold/40 hover:bg-canvas shadow-xs active:scale-[0.98]',
+    'clay-btn-secondary bg-surface text-ink border border-white/80 dark:border-white/[0.08] hover:border-gold/40 active:translate-y-[1px] active:scale-[0.97]',
   ghost:
-    'text-muted hover:text-ink hover:bg-canvas/80 active:scale-[0.98]',
+    'text-muted hover:text-ink hover:bg-surface/70 active:scale-[0.97]',
   danger:
-    'bg-danger text-white hover:bg-danger/90 shadow-xs active:scale-[0.98]',
+    'clay-btn-danger bg-danger text-white hover:brightness-105 active:translate-y-[1px] active:scale-[0.97]',
   'gold-outline':
-    'border border-gold/50 bg-gold/10 text-gold hover:bg-gold/20 font-medium active:scale-[0.98]',
+    'clay-btn-secondary border border-gold/45 bg-gold/15 text-gold-strong dark:text-gold hover:bg-gold/25 font-medium active:translate-y-[1px] active:scale-[0.97]',
 };
 
 const sizes: Record<Size, string> = {
-  sm: 'h-8 px-3 text-xs rounded-lg gap-1.5',
-  md: 'h-9.5 px-4 text-sm rounded-xl gap-2',
-  lg: 'h-11 px-5 text-base rounded-xl gap-2.5',
-  icon: 'h-9 w-9 p-0 rounded-lg justify-center',
+  sm: 'h-8.5 px-3.5 text-xs rounded-xl gap-1.5',
+  md: 'h-10 px-4.5 text-sm rounded-2xl gap-2',
+  lg: 'h-11.5 px-6 text-base rounded-2xl gap-2.5',
+  icon: 'h-9.5 w-9.5 p-0 rounded-2xl justify-center',
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size }>(

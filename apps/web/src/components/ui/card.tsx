@@ -13,8 +13,8 @@ export function Card({
   return (
     <section
       className={cn(
-        'rounded-2xl border border-line bg-surface shadow-card transition-all duration-200',
-        hoverable && 'hover:-translate-y-0.5 hover:border-gold/30 hover:shadow-md',
+        'clay-card',
+        hoverable && 'clay-card-hover hover:border-gold/35',
         className,
       )}
     >
@@ -67,7 +67,7 @@ export function StatCard({
       <div className="pointer-events-none absolute -right-6 -top-6 h-24 w-24 rounded-full bg-gold/5 blur-2xl transition-all duration-300 group-hover:bg-gold/15" />
       <div className="flex items-start justify-between gap-3">
         <p className="text-xs font-semibold uppercase tracking-wider text-muted line-clamp-1">{label}</p>
-        <span className="flex h-9 w-9 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl border border-gold/30 bg-gradient-to-br from-gold/20 to-gold/5 text-gold shadow-xs transition-transform duration-200 group-hover:scale-105">
+        <span className="clay-icon-well flex h-10 w-10 sm:h-11 sm:w-11 shrink-0 items-center justify-center border border-gold/35 bg-gradient-to-br from-gold/25 to-gold/10 text-gold transition-transform duration-200 group-hover:scale-105">
           {icon}
         </span>
       </div>

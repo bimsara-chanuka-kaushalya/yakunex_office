@@ -51,9 +51,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                         onClick={onNavigate}
                         aria-current={active ? 'page' : undefined}
                         className={cn(
-                          'group relative flex items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-all duration-150',
+                          'group relative flex items-center gap-3 rounded-2xl px-3.5 py-2.5 text-sm font-medium transition-all duration-150',
                           active
-                            ? 'bg-gradient-to-r from-gold/20 via-gold/10 to-transparent font-semibold text-gold shadow-2xs'
+                            ? 'bg-gradient-to-br from-gold/25 via-gold/15 to-gold/5 font-semibold text-gold shadow-[0_8px_18px_-6px_rgba(213,165,46,0.35),inset_2px_2px_6px_rgba(255,255,255,0.12),inset_-2px_-3px_6px_rgba(0,0,0,0.35)] border border-gold/25'
                             : 'text-white/70 hover:bg-white/6 hover:text-white',
                         )}
                       >
@@ -85,8 +85,8 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
       {/* User Footer Card */}
       {user && (
-        <div className="border-t border-sidebar-line/60 p-3">
-          <div className="flex items-center gap-3 rounded-xl border border-sidebar-line/50 bg-white/4 p-2.5 transition-colors hover:bg-white/7">
+        <div className="border-t border-sidebar-line/60 p-3.5">
+          <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.05] p-3 shadow-[0_10px_20px_-8px_rgba(0,0,0,0.5),inset_2px_2px_6px_rgba(255,255,255,0.08),inset_-2px_-3px_8px_rgba(0,0,0,0.45)] transition-colors hover:bg-white/[0.08]">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-gold/30 to-gold/10 font-mono text-xs font-bold text-gold">
               {user.companyId ? user.companyId.slice(-4) : user.fullName.slice(0, 2).toUpperCase()}
             </div>
