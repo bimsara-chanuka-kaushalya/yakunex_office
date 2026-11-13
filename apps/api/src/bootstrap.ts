@@ -5,8 +5,13 @@ import { config } from './config/config';
 
 export function configureApp(app: INestApplication): void {
   const httpAdapter = app.getHttpAdapter();
-  const instance = httpAdapter.getInstance() as { disable?: (setting: string) => void };
+  const instance = httpAdapter.getInstance() as {
+    disable?: (setting: string) => void;
+    set?: (setting: string, val: unknown) => void;
+  };
   instance.disable?.('x-powered-by');
+  // Honor X-Forwarded-For behind Vercel/edge proxies so throttler tracks real callers.
+  instance.set?.('trust proxy', 1);
 
   app.setGlobalPrefix('api');
   app.use(
@@ -39,3 +44,4 @@ export function configureApp(app: INestApplication): void {
     }),
   );
 }
+

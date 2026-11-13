@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { Role } from '@prisma/client';
 import { CurrentUser, RequirePermissions } from '../common/decorators';
 import type { AuthUser } from '../common/types';
@@ -256,7 +257,15 @@ export class WorkspaceController {
     return this.workspace.listMeetings(actor.organizationId);
   }
 
+  @Get('meetings/ice-config')
+  @SkipThrottle()
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  getMeetingIceConfig() {
+    return this.workspace.getMeetingIceConfig();
+  }
+
   @Get('meetings/:id/room')
+  @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   getMeetingRoom(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
     return this.workspace.getMeetingRoom(id, actor.organizationId);
@@ -295,6 +304,7 @@ export class WorkspaceController {
   }
 
   @Patch('meetings/:id/participant')
+  @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   updateParticipantState(
     @CurrentUser() actor: AuthUser,
@@ -324,6 +334,7 @@ export class WorkspaceController {
   }
 
   @Post('meetings/:id/signal')
+  @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   sendMeetingSignal(
     @CurrentUser() actor: AuthUser,
@@ -334,6 +345,7 @@ export class WorkspaceController {
   }
 
   @Get('meetings/:id/signals')
+  @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   pollMeetingSignals(
     @CurrentUser() actor: AuthUser,

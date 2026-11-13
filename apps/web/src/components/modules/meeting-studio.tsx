@@ -103,19 +103,64 @@ interface CurrentUserInfo {
 }
 
 type QualityTier = 'hd' | 'balanced' | 'low-signal';
+type PeerConnHealth = 'connecting' | 'connected' | 'reconnecting' | 'failed';
 
-const ICE_SERVERS: RTCConfiguration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' },
-  ],
-  bundlePolicy: 'max-bundle',
-  rtcpMuxPolicy: 'require',
-  iceCandidatePoolSize: 4,
-};
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+];
+
+function hasTurnServers(servers: RTCIceServer[]): boolean {
+  return servers.some((s) => {
+    const list = Array.isArray(s.urls) ? s.urls : [s.urls];
+    return list.some((u) => typeof u === 'string' && /^turns?:/i.test(u.trim()));
+  });
+}
+
+function buildInitialIceConfig(): RTCConfiguration {
+  const servers: RTCIceServer[] = [...DEFAULT_ICE_SERVERS];
+  const raw = process.env.NEXT_PUBLIC_WEBRTC_ICE_SERVERS?.trim();
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (item && typeof item === 'object' && 'urls' in item) {
+            servers.push(item as RTCIceServer);
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed env override and keep default STUN servers
+    }
+  }
+  return {
+    iceServers: servers,
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require',
+    iceCandidatePoolSize: 4,
+  };
+}
+
+function pickPreferredTransceiver(
+  pc: RTCPeerConnection,
+  kind: 'audio' | 'video',
+  scrIds: Set<string>,
+): RTCRtpTransceiver | undefined {
+  const candidates = pc.getTransceivers().filter((t) => {
+    const legacy = t as RTCRtpTransceiver & { stopped?: boolean };
+    if (legacy.stopped || t.direction === 'stopped' || t.currentDirection === 'stopped') {
+      return false;
+    }
+    const sId = t.sender.track?.id;
+    if (sId && scrIds.has(sId)) return false;
+    return t.sender.track?.kind === kind || t.receiver.track?.kind === kind;
+  });
+  return candidates.find((t) => t.mid !== null) ?? candidates[0];
+}
 
 const QUICK_REACTIONS = ['👍', '👏', '❤️', '🎉', '😂', '🔥'];
 
@@ -299,6 +344,9 @@ function ParticipantTile({
   compact = false,
   canHostControl,
   onHostMute,
+  connectionStatus,
+  iceTurnConfigured,
+  onRetryConnection,
 }: {
   participant: MeetingParticipant;
   stream: MediaStream | null | undefined;
@@ -308,6 +356,9 @@ function ParticipantTile({
   compact?: boolean;
   canHostControl?: boolean;
   onHostMute?: (userId: string) => void;
+  connectionStatus?: PeerConnHealth;
+  iceTurnConfigured?: boolean;
+  onRetryConnection?: (userId: string) => void;
 }) {
   const hasLiveVideo =
     participant.camOn &&
@@ -339,9 +390,28 @@ function ParticipantTile({
             {getInitials(participant.fullName)}
           </div>
           {!compact && (
-            <p className="mt-2.5 text-xs font-medium text-white/60">
-              {participant.camOn ? 'Connecting camera...' : 'Camera is off'}
-            </p>
+            <div className="mt-2.5 flex flex-col items-center gap-1.5 text-center">
+              <p className="text-xs font-medium text-white/60">
+                {!participant.camOn
+                  ? 'Camera is off'
+                  : !isSelf && connectionStatus === 'failed'
+                    ? iceTurnConfigured
+                      ? 'Network blocked video (ICE failed)'
+                      : 'Network/NAT blocked video (TURN relay needed)'
+                    : !isSelf && connectionStatus === 'reconnecting'
+                      ? 'Reconnecting camera...'
+                      : 'Connecting camera...'}
+              </p>
+              {participant.camOn && !isSelf && connectionStatus === 'failed' && onRetryConnection && (
+                <button
+                  type="button"
+                  onClick={() => onRetryConnection(participant.userId)}
+                  className="rounded-lg bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white/90 hover:bg-white/20"
+                >
+                  Retry Connection
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -453,8 +523,13 @@ export function MeetingStudio({
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [remoteCamStreams, setRemoteCamStreams] = useState<Record<string, MediaStream>>({});
   const [remoteScreenStreams, setRemoteScreenStreams] = useState<Record<string, MediaStream>>({});
+  const [peerConnStates, setPeerConnStates] = useState<Record<string, PeerConnHealth>>({});
+  const [iceTurnConfigured, setIceTurnConfigured] = useState<boolean>(() =>
+    hasTurnServers(buildInitialIceConfig().iceServers ?? []),
+  );
 
   // Refs for WebRTC stability across closures & async signal callbacks
+  const iceConfigRef = useRef<RTCConfiguration>(buildInitialIceConfig());
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const remoteCamStreamsRef = useRef<Record<string, MediaStream>>({});
@@ -464,6 +539,14 @@ export function MeetingStudio({
   const remoteScreenAudioTrackIdsRef = useRef<Record<string, string>>({});
   const participantsRef = useRef<MeetingParticipant[]>(initialRoom.participants);
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const peerConnStatesRef = useRef<Map<string, PeerConnHealth>>(new Map());
+  const lastOfferAtRef = useRef<Map<string, number>>(new Map());
+  const lastNeedOfferAtRef = useRef<Map<string, number>>(new Map());
+  const seenNeedOfferSessionsRef = useRef<Set<string>>(new Set());
+  const localSessionIdRef = useRef<string>(Math.random().toString(36).slice(2, 10));
+  const renegotiatePeerRef = useRef<
+    (peerId: string, iceRestart?: boolean, forceResetIfStuck?: boolean) => Promise<void>
+  >(async () => undefined);
   const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const pendingRenegotiateRef = useRef<Set<string>>(new Set());
   const pendingIceRestartRef = useRef<Set<string>>(new Set());
@@ -554,19 +637,61 @@ export function MeetingStudio({
   }, []);
 
   const sendSignal = useCallback(
-    async (toUserId: string, type: string, payload: unknown) => {
+    async (toUserId: string, type: string, payload: unknown): Promise<boolean> => {
       try {
         await post(`/meetings/${room.id}/signal`, {
           toUserId,
           type,
           payload,
         });
+        return true;
       } catch {
-        // Non-fatal; polling/renegotiation handles recovery
+        return false;
       }
     },
     [room.id],
   );
+
+  // Resolve server-supplied STUN + optional TURN ICE configuration on mount
+  useEffect(() => {
+    let active = true;
+    liveGet<{ iceServers?: RTCIceServer[]; hasTurn?: boolean; iceCandidatePoolSize?: number }>(
+      '/meetings/ice-config',
+    )
+      .then((cfg) => {
+        if (!active || !Array.isArray(cfg?.iceServers) || cfg.iceServers.length === 0) return;
+        const base = buildInitialIceConfig();
+        const combined: RTCIceServer[] = [...cfg.iceServers];
+        const envServers = base.iceServers ?? [];
+        if (hasTurnServers(envServers)) {
+          for (const entry of envServers) {
+            if (hasTurnServers([entry])) combined.push(entry);
+          }
+        }
+        const nextConfig: RTCConfiguration = {
+          iceServers: combined,
+          bundlePolicy: 'max-bundle',
+          rtcpMuxPolicy: 'require',
+          iceCandidatePoolSize: cfg.iceCandidatePoolSize ?? 4,
+        };
+        iceConfigRef.current = nextConfig;
+        setIceTurnConfigured(Boolean(cfg.hasTurn) || hasTurnServers(combined));
+        // Upgrade any peer connections not yet ICE connected with the dynamic ICE config
+        for (const pc of pcsRef.current.values()) {
+          if (pc.connectionState !== 'closed' && pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed') {
+            try {
+              pc.setConfiguration(nextConfig);
+            } catch {
+              // Ignore browser configuration constraint mismatches
+            }
+          }
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Sync localStreamRef state cleanly
   const commitLocalStream = useCallback((stream: MediaStream | null) => {
@@ -613,12 +738,15 @@ export function MeetingStudio({
               video: false,
             });
             if (active && initialCamOn) {
+              camOnRef.current = false;
               setCamOn(false);
               void patch(`/meetings/${initialRoom.id}/participant`, { camOn: false });
               showToast('Camera unavailable — joined with microphone audio.');
             }
           } catch {
             if (active) {
+              micOnRef.current = false;
+              camOnRef.current = false;
               setMicOn(false);
               setCamOn(false);
               void patch(`/meetings/${initialRoom.id}/participant`, {
@@ -710,26 +838,29 @@ export function MeetingStudio({
   }, []);
 
   // Attach local camera/mic + screen tracks into a peer connection and apply current quality tier
-  const attachOutgoingTracks = useCallback((pc: RTCPeerConnection) => {
-    const tier = activeTierRef.current;
-    const camStream = localStreamRef.current;
-    const scrIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
+  const attachOutgoingTracks = useCallback(
+    async (
+      pc: RTCPeerConnection,
+      options: { createOfferSlots?: boolean } = {},
+    ): Promise<void> => {
+      const { createOfferSlots = false } = options;
+      const tier = activeTierRef.current;
+      const camStream = localStreamRef.current;
+      const scrIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
 
-    // Always ensure baseline audio & video transceivers exist so SDP offers/answers
-    // include media sections even before local getUserMedia finishes or when joining cam/mic off.
-    for (const kind of ['audio', 'video'] as const) {
-      const wantedTrack =
-        (kind === 'audio' ? camStream?.getAudioTracks()[0] : camStream?.getVideoTracks()[0]) ?? null;
-      const existingTransceiver = pc.getTransceivers().find((t) => {
-        const sId = t.sender.track?.id;
-        if (sId && scrIds.has(sId)) return false;
-        return t.sender.track?.kind === kind || t.receiver.track?.kind === kind;
-      });
+      // Always ensure baseline audio & video transceivers exist on negotiated m-lines (or offer slots)
+      for (const kind of ['audio', 'video'] as const) {
+        const wantedTrack =
+          (kind === 'audio'
+            ? camStream?.getAudioTracks().find((t) => t.readyState === 'live')
+            : camStream?.getVideoTracks().find((t) => t.readyState === 'live')) ?? null;
+        const existingTransceiver = pickPreferredTransceiver(pc, kind, scrIds);
 
-      if (existingTransceiver) {
-        if (wantedTrack && existingTransceiver.sender.track?.id !== wantedTrack.id) {
-          void existingTransceiver.sender.replaceTrack(wantedTrack).catch(() => undefined);
-          if (existingTransceiver.direction !== 'sendrecv') {
+        if (existingTransceiver) {
+          if (wantedTrack && existingTransceiver.sender.track?.id !== wantedTrack.id) {
+            await existingTransceiver.sender.replaceTrack(wantedTrack).catch(() => undefined);
+          }
+          if (wantedTrack && existingTransceiver.direction !== 'sendrecv') {
             existingTransceiver.direction = 'sendrecv';
           }
           void tuneSenderQuality(
@@ -737,43 +868,36 @@ export function MeetingStudio({
             kind === 'video' ? 'cam-video' : 'mic-audio',
             tier,
           );
+        } else if (wantedTrack && camStream) {
+          const sender = pc.addTrack(wantedTrack, camStream);
+          void tuneSenderQuality(sender, kind === 'video' ? 'cam-video' : 'mic-audio', tier);
+        } else if (createOfferSlots) {
+          pc.addTransceiver(kind, { direction: 'recvonly' });
         }
-      } else if (wantedTrack && camStream) {
-        const sender = pc.addTrack(wantedTrack, camStream);
-        void tuneSenderQuality(sender, kind === 'video' ? 'cam-video' : 'mic-audio', tier);
-      } else {
-        pc.addTransceiver(kind, { direction: 'recvonly' });
       }
-    }
 
-    if (camStream) {
-      for (const track of camStream.getTracks()) {
-        const already = pc.getSenders().some((s) => s.track?.id === track.id);
-        if (!already) {
-          try {
-            const sender = pc.addTrack(track, camStream);
-            void tuneSenderQuality(sender, track.kind === 'video' ? 'cam-video' : 'mic-audio', tier);
-          } catch {
-            // Ignore if track already attached to another sender
+      const scrStream = screenStreamRef.current;
+      if (scrStream) {
+        for (const track of scrStream.getTracks()) {
+          if (track.readyState !== 'live') continue;
+          const already = pc.getSenders().some((s) => s.track?.id === track.id);
+          if (!already) {
+            try {
+              const sender = pc.addTrack(track, scrStream);
+              void tuneSenderQuality(
+                sender,
+                track.kind === 'video' ? 'screen-video' : 'screen-audio',
+                tier,
+              );
+            } catch {
+              // Ignore if track already attached to another sender
+            }
           }
         }
       }
-    }
-    const scrStream = screenStreamRef.current;
-    if (scrStream) {
-      for (const track of scrStream.getTracks()) {
-        const already = pc.getSenders().some((s) => s.track?.id === track.id);
-        if (!already) {
-          try {
-            const sender = pc.addTrack(track, scrStream);
-            void tuneSenderQuality(sender, track.kind === 'video' ? 'screen-video' : 'screen-audio', tier);
-          } catch {
-            // Ignore if track already attached to another sender
-          }
-        }
-      }
-    }
-  }, []);
+    },
+    [],
+  );
 
   const flushIceBatch = useCallback(
     async (peerId: string) => {
@@ -803,95 +927,80 @@ export function MeetingStudio({
     [flushIceBatch],
   );
 
-  const renegotiatePeer = useCallback(
-    async (peerId: string, iceRestart = false) => {
-      const pc = pcsRef.current.get(peerId);
-      if (!pc || pc.connectionState === 'closed') return;
-      if (makingOfferRef.current.get(peerId) || pc.signalingState !== 'stable') {
-        pendingRenegotiateRef.current.add(peerId);
-        if (iceRestart) pendingIceRestartRef.current.add(peerId);
-        return;
-      }
-      pendingRenegotiateRef.current.delete(peerId);
-      const shouldRestartIce = iceRestart || pendingIceRestartRef.current.has(peerId);
-      pendingIceRestartRef.current.delete(peerId);
-      try {
-        makingOfferRef.current.set(peerId, true);
-        attachOutgoingTracks(pc);
-        const offer = await pc.createOffer(shouldRestartIce ? { iceRestart: true } : undefined);
-        if (pc.signalingState !== 'stable') {
-          pendingRenegotiateRef.current.add(peerId);
-          if (shouldRestartIce) pendingIceRestartRef.current.add(peerId);
-          return;
-        }
-        await pc.setLocalDescription(offer);
-        if (pc.localDescription) {
-          await sendSignal(peerId, 'offer', {
-            sdp: pc.localDescription.toJSON(),
-            screenStreamId: screenStreamRef.current?.id ?? null,
-            screenTrackId: screenStreamRef.current?.getVideoTracks()[0]?.id ?? null,
-            screenAudioTrackId: screenStreamRef.current?.getAudioTracks()[0]?.id ?? null,
-          });
-        }
-      } catch {
-        pendingRenegotiateRef.current.add(peerId);
-      } finally {
-        makingOfferRef.current.set(peerId, false);
-      }
-    },
-    [attachOutgoingTracks, sendSignal],
-  );
-
-  const closePeer = useCallback((peerId: string) => {
-    const discTimer = disconnectTimersRef.current.get(peerId);
-    if (discTimer) clearTimeout(discTimer);
-    disconnectTimersRef.current.delete(peerId);
-
-    const iceEntry = iceBatchRef.current.get(peerId);
-    if (iceEntry?.timer) clearTimeout(iceEntry.timer);
-    iceBatchRef.current.delete(peerId);
-    pendingRenegotiateRef.current.delete(peerId);
-    pendingIceRestartRef.current.delete(peerId);
-
-    const pc = pcsRef.current.get(peerId);
-    if (pc) {
-      pc.onicecandidate = null;
-      pc.ontrack = null;
-      pc.onconnectionstatechange = null;
-      pc.oniceconnectionstatechange = null;
-      pc.onsignalingstatechange = null;
-      pc.close();
-      pcsRef.current.delete(peerId);
+  const setPeerHealth = useCallback((peerId: string, status: PeerConnHealth | null) => {
+    const prev = peerConnStatesRef.current.get(peerId);
+    if (status === null) {
+      if (prev === undefined) return;
+      peerConnStatesRef.current.delete(peerId);
+      setPeerConnStates((curr) => {
+        if (!(peerId in curr)) return curr;
+        const next = { ...curr };
+        delete next[peerId];
+        return next;
+      });
+      return;
     }
-    pendingIceRef.current.delete(peerId);
-    makingOfferRef.current.delete(peerId);
-    delete remoteCamStreamsRef.current[peerId];
-    delete remoteScreenStreamsRef.current[peerId];
-    delete remoteScreenStreamIdsRef.current[peerId];
-    delete remoteScreenTrackIdsRef.current[peerId];
-    delete remoteScreenAudioTrackIdsRef.current[peerId];
-    setRemoteCamStreams((prev) => {
-      if (!(peerId in prev)) return prev;
-      const next = { ...prev };
-      delete next[peerId];
-      return next;
-    });
-    setRemoteScreenStreams((prev) => {
-      if (!(peerId in prev)) return prev;
-      const next = { ...prev };
-      delete next[peerId];
-      return next;
-    });
+    if (prev === status) return;
+    peerConnStatesRef.current.set(peerId, status);
+    setPeerConnStates((curr) => ({ ...curr, [peerId]: status }));
   }, []);
+
+  const closePeer = useCallback(
+    (peerId: string) => {
+      const discTimer = disconnectTimersRef.current.get(peerId);
+      if (discTimer) clearTimeout(discTimer);
+      disconnectTimersRef.current.delete(peerId);
+
+      const iceEntry = iceBatchRef.current.get(peerId);
+      if (iceEntry?.timer) clearTimeout(iceEntry.timer);
+      iceBatchRef.current.delete(peerId);
+      pendingRenegotiateRef.current.delete(peerId);
+      pendingIceRestartRef.current.delete(peerId);
+
+      const pc = pcsRef.current.get(peerId);
+      if (pc) {
+        pc.onicecandidate = null;
+        pc.ontrack = null;
+        pc.onconnectionstatechange = null;
+        pc.oniceconnectionstatechange = null;
+        pc.onsignalingstatechange = null;
+        pc.close();
+        pcsRef.current.delete(peerId);
+      }
+      pendingIceRef.current.delete(peerId);
+      makingOfferRef.current.delete(peerId);
+      lastOfferAtRef.current.delete(peerId);
+      lastNeedOfferAtRef.current.delete(peerId);
+      setPeerHealth(peerId, null);
+      delete remoteCamStreamsRef.current[peerId];
+      delete remoteScreenStreamsRef.current[peerId];
+      delete remoteScreenStreamIdsRef.current[peerId];
+      delete remoteScreenTrackIdsRef.current[peerId];
+      delete remoteScreenAudioTrackIdsRef.current[peerId];
+      setRemoteCamStreams((prev) => {
+        if (!(peerId in prev)) return prev;
+        const next = { ...prev };
+        delete next[peerId];
+        return next;
+      });
+      setRemoteScreenStreams((prev) => {
+        if (!(peerId in prev)) return prev;
+        const next = { ...prev };
+        delete next[peerId];
+        return next;
+      });
+    },
+    [setPeerHealth],
+  );
 
   const getOrCreatePeer = useCallback(
     (peerId: string): RTCPeerConnection => {
       const existing = pcsRef.current.get(peerId);
       if (existing && existing.connectionState !== 'closed') return existing;
 
-      const pc = new RTCPeerConnection(ICE_SERVERS);
+      const pc = new RTCPeerConnection(iceConfigRef.current);
       pcsRef.current.set(peerId, pc);
-      attachOutgoingTracks(pc);
+      setPeerHealth(peerId, 'connecting');
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
@@ -904,7 +1013,7 @@ export function MeetingStudio({
           pendingRenegotiateRef.current.delete(peerId);
           const restart = pendingIceRestartRef.current.has(peerId);
           pendingIceRestartRef.current.delete(peerId);
-          setTimeout(() => void renegotiatePeer(peerId, restart), 50);
+          setTimeout(() => void renegotiatePeerRef.current(peerId, restart), 50);
         }
       };
 
@@ -1002,17 +1111,20 @@ export function MeetingStudio({
       pc.oniceconnectionstatechange = () => {
         if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
           clearDiscTimer();
+          setPeerHealth(peerId, 'connected');
         } else if (pc.iceConnectionState === 'failed') {
           clearDiscTimer();
-          void renegotiatePeer(peerId, true);
+          setPeerHealth(peerId, 'failed');
+          void renegotiatePeerRef.current(peerId, true, true);
         } else if (pc.iceConnectionState === 'disconnected' && !disconnectTimersRef.current.has(peerId)) {
-          // Wait 3.5s for transient mobile handoff before forcing ICE restart
+          setPeerHealth(peerId, 'reconnecting');
+          // Wait 2.5s for transient handoff before forcing ICE restart
           const timer = setTimeout(() => {
             disconnectTimersRef.current.delete(peerId);
             if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-              void renegotiatePeer(peerId, true);
+              void renegotiatePeerRef.current(peerId, true, true);
             }
-          }, 3500);
+          }, 2500);
           disconnectTimersRef.current.set(peerId, timer);
         }
       };
@@ -1020,16 +1132,80 @@ export function MeetingStudio({
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'connected') {
           clearDiscTimer();
+          setPeerHealth(peerId, 'connected');
         } else if (pc.connectionState === 'failed') {
           clearDiscTimer();
-          void renegotiatePeer(peerId, true);
+          setPeerHealth(peerId, 'failed');
+          void renegotiatePeerRef.current(peerId, true, true);
+        } else if (pc.connectionState === 'disconnected') {
+          setPeerHealth(peerId, 'reconnecting');
         }
       };
 
       return pc;
     },
-    [attachOutgoingTracks, queueIceCandidate, renegotiatePeer],
+    [queueIceCandidate, setPeerHealth],
   );
+
+  const renegotiatePeer = useCallback(
+    async (peerId: string, iceRestart = false, forceResetIfStuck = false) => {
+      let pc = pcsRef.current.get(peerId);
+      if (!pc || pc.connectionState === 'closed') return;
+      if (makingOfferRef.current.get(peerId) || pc.signalingState !== 'stable') {
+        if (forceResetIfStuck) {
+          makingOfferRef.current.set(peerId, false);
+          try {
+            if (pc.signalingState === 'have-local-offer') {
+              await pc.setLocalDescription({ type: 'rollback' });
+            }
+          } catch {
+            // Fall back to resetting the peer connection below
+          }
+          if (pc.signalingState !== 'stable') {
+            closePeer(peerId);
+            pc = getOrCreatePeer(peerId);
+          }
+        } else {
+          pendingRenegotiateRef.current.add(peerId);
+          if (iceRestart) pendingIceRestartRef.current.add(peerId);
+          return;
+        }
+      }
+      pendingRenegotiateRef.current.delete(peerId);
+      const shouldRestartIce = iceRestart || pendingIceRestartRef.current.has(peerId);
+      pendingIceRestartRef.current.delete(peerId);
+      try {
+        makingOfferRef.current.set(peerId, true);
+        await attachOutgoingTracks(pc, { createOfferSlots: true });
+        const offer = await pc.createOffer(shouldRestartIce ? { iceRestart: true } : undefined);
+        if (pc.signalingState !== 'stable') {
+          pendingRenegotiateRef.current.add(peerId);
+          if (shouldRestartIce) pendingIceRestartRef.current.add(peerId);
+          return;
+        }
+        await pc.setLocalDescription(offer);
+        if (pc.localDescription) {
+          lastOfferAtRef.current.set(peerId, Date.now());
+          const sent = await sendSignal(peerId, 'offer', {
+            sdp: pc.localDescription.toJSON(),
+            screenStreamId: screenStreamRef.current?.id ?? null,
+            screenTrackId: screenStreamRef.current?.getVideoTracks()[0]?.id ?? null,
+            screenAudioTrackId: screenStreamRef.current?.getAudioTracks()[0]?.id ?? null,
+          });
+          if (!sent) {
+            pendingRenegotiateRef.current.add(peerId);
+            if (shouldRestartIce) pendingIceRestartRef.current.add(peerId);
+          }
+        }
+      } catch {
+        pendingRenegotiateRef.current.add(peerId);
+      } finally {
+        makingOfferRef.current.set(peerId, false);
+      }
+    },
+    [attachOutgoingTracks, closePeer, getOrCreatePeer, sendSignal],
+  );
+  renegotiatePeerRef.current = renegotiatePeer;
 
   // Sync peer connections & screen-share state whenever participants enter, share, or leave
   useEffect(() => {
@@ -1091,6 +1267,9 @@ export function MeetingStudio({
           (fresh.chatMessages ?? []).length,
           (fresh.participants ?? []).map((p) => [
             p.userId,
+            p.fullName,
+            p.role,
+            p.joinedAt,
             p.micOn,
             p.camOn,
             p.screenSharing,
@@ -1164,6 +1343,45 @@ export function MeetingStudio({
         return;
       }
 
+      if (sig.type === 'peer-joined') {
+        const joinedId = String(payload.userId ?? fromId);
+        if (joinedId === currentUser.id) return;
+        const joinedAt = typeof payload.joinedAt === 'string' ? payload.joinedAt : '';
+        const prevJoinedAt = peerJoinedAtRef.current.get(joinedId);
+        if (joinedAt && prevJoinedAt && prevJoinedAt !== joinedAt) {
+          peerJoinedAtRef.current.set(joinedId, joinedAt);
+          peerFirstSeenAtRef.current.set(joinedId, Date.now());
+          closePeer(joinedId);
+        } else if (joinedAt && !prevJoinedAt) {
+          peerJoinedAtRef.current.set(joinedId, joinedAt);
+          peerFirstSeenAtRef.current.set(joinedId, Date.now());
+        }
+        const pc = getOrCreatePeer(joinedId);
+        if (currentUser.id.localeCompare(joinedId) < 0 && pc.signalingState === 'stable') {
+          void renegotiatePeerRef.current(joinedId);
+        }
+        return;
+      }
+
+      if (sig.type === 'need-offer') {
+        const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
+        const wantsReset = Boolean(payload.reset);
+        if (wantsReset && sessionId && !seenNeedOfferSessionsRef.current.has(sessionId)) {
+          seenNeedOfferSessionsRef.current.add(sessionId);
+          if (seenNeedOfferSessionsRef.current.size > 100) {
+            seenNeedOfferSessionsRef.current.clear();
+          }
+          closePeer(fromId);
+          getOrCreatePeer(fromId);
+          void renegotiatePeerRef.current(fromId, false, true);
+          return;
+        }
+        if (currentUser.id.localeCompare(fromId) < 0 || pcsRef.current.get(fromId)?.currentRemoteDescription) {
+          void renegotiatePeerRef.current(fromId, false, true);
+        }
+        return;
+      }
+
       if (sig.type === 'screen-meta') {
         const active = Boolean(payload.active);
         const streamId = String(payload.streamId ?? '');
@@ -1212,8 +1430,8 @@ export function MeetingStudio({
             await pc.setLocalDescription({ type: 'rollback' });
           }
           await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-          // Ensure outgoing tracks are attached before creating answer
-          attachOutgoingTracks(pc);
+          // Ensure outgoing tracks are attached onto negotiated m-lines before creating answer
+          await attachOutgoingTracks(pc, { createOfferSlots: false });
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           if (pc.localDescription) {
@@ -1306,8 +1524,21 @@ export function MeetingStudio({
           hadError = true;
         }
         if (cancelled) break;
-        // Fast signaling cadence (250ms) eliminates join/screen-share idle delay while backing off on errors
-        await new Promise((r) => setTimeout(r, hadError ? 1200 : 250));
+        // Fast 250ms cadence while peers are connecting/renegotiating or screen sharing; 600ms steady-state
+        const hasPendingPeers =
+          (participantsRef.current.length > 1 && pcsRef.current.size === 0) ||
+          Array.from(pcsRef.current.values()).some(
+            (pc) =>
+              pc.connectionState !== 'closed' &&
+              pc.iceConnectionState !== 'connected' &&
+              pc.iceConnectionState !== 'completed',
+          );
+        const cadenceMs = hadError
+          ? 1200
+          : hasPendingPeers || Boolean(screenStreamRef.current)
+            ? 250
+            : 600;
+        await new Promise((r) => setTimeout(r, cadenceMs));
       }
     };
 
@@ -1479,7 +1710,7 @@ export function MeetingStudio({
   const peerFirstSeenAtRef = useRef<Map<string, number>>(new Map());
 
   // Sync a single camera/mic track into an RTCPeerConnection, upgrading any baseline recvonly transceiver.
-  // Returns true when SDP renegotiation is needed (new track added or transceiver direction upgraded).
+  // Returns true when SDP renegotiation is needed (new track added or transceiver direction not yet sendrecv/sendonly).
   const syncLocalTrackToPeer = useCallback(
     async (
       pc: RTCPeerConnection,
@@ -1487,32 +1718,30 @@ export function MeetingStudio({
       newTrack: MediaStreamTrack,
       baseStream: MediaStream,
       scrTrackIds: Set<string>,
+      allowAdd = true,
     ): Promise<boolean> => {
-      const transceiver = pc.getTransceivers().find((t) => {
-        const sId = t.sender.track?.id;
-        if (sId && scrTrackIds.has(sId)) return false;
-        return t.sender.track?.kind === kind || t.receiver.track?.kind === kind;
-      });
+      const transceiver = pickPreferredTransceiver(pc, kind, scrTrackIds);
       if (transceiver) {
         const prevTrackId = transceiver.sender.track?.id ?? null;
         if (prevTrackId !== newTrack.id) {
           await transceiver.sender.replaceTrack(newTrack).catch(() => undefined);
         }
-        let needsRenegotiation = false;
         if (transceiver.direction !== 'sendrecv') {
           transceiver.direction = 'sendrecv';
-          needsRenegotiation = true;
-        } else if (!prevTrackId) {
-          needsRenegotiation = true;
         }
         void tuneSenderQuality(
           transceiver.sender,
           kind === 'video' ? 'cam-video' : 'mic-audio',
           activeTierRef.current,
         );
-        return needsRenegotiation;
+        const negotiated =
+          transceiver.currentDirection === 'sendrecv' || transceiver.currentDirection === 'sendonly';
+        return !negotiated || !prevTrackId;
       }
 
+      if (!allowAdd) {
+        return false;
+      }
       const added = pc.addTrack(newTrack, baseStream);
       void tuneSenderQuality(
         added,
@@ -1533,31 +1762,27 @@ export function MeetingStudio({
     const syncAll = async () => {
       for (const [peerId, pc] of Array.from(pcsRef.current.entries())) {
         if (cancelled) return;
+        const canAddOrOffer =
+          currentUser.id.localeCompare(peerId) < 0 || pc.remoteDescription !== null;
+        if (!canAddOrOffer) {
+          // Callee waits for incoming offer so local tracks bind onto negotiated mid='0'/'1' m-lines
+          continue;
+        }
         let needsReneg = false;
-        const audioTrack = localStream.getAudioTracks()[0];
-        const videoTrack = localStream.getVideoTracks()[0];
+        const audioTrack = localStream.getAudioTracks().find((t) => t.readyState === 'live');
+        const videoTrack = localStream.getVideoTracks().find((t) => t.readyState === 'live');
         if (audioTrack) {
-          if (await syncLocalTrackToPeer(pc, 'audio', audioTrack, localStream, scrTrackIds)) {
+          if (await syncLocalTrackToPeer(pc, 'audio', audioTrack, localStream, scrTrackIds, true)) {
             needsReneg = true;
           }
         }
         if (videoTrack) {
-          if (await syncLocalTrackToPeer(pc, 'video', videoTrack, localStream, scrTrackIds)) {
+          if (await syncLocalTrackToPeer(pc, 'video', videoTrack, localStream, scrTrackIds, true)) {
             needsReneg = true;
           }
         }
-        if (!needsReneg) continue;
-
-        if (currentUser.id.localeCompare(peerId) < 0) {
+        if (needsReneg && !cancelled) {
           void renegotiatePeer(peerId);
-        } else if (pc.remoteDescription !== null) {
-          setTimeout(() => {
-            if (cancelled) return;
-            const livePc = pcsRef.current.get(peerId);
-            if (livePc && livePc.signalingState === 'stable') {
-              void renegotiatePeer(peerId);
-            }
-          }, 320);
         }
       }
     };
@@ -1616,38 +1841,40 @@ export function MeetingStudio({
         }
 
         if (pc.connectionState === 'failed' || pc.iceConnectionState === 'failed') {
-          void renegotiatePeer(p.userId, true);
+          setPeerHealth(p.userId, 'failed');
+          void renegotiatePeer(p.userId, true, true);
           continue;
         }
 
-        // Heal any peer where local video/audio captured late or transceiver stayed recvonly
+        const isOfferer = currentUser.id.localeCompare(p.userId) < 0;
+        const canNegotiate = isOfferer || pc.remoteDescription !== null;
+
+        // Heal any peer where local video/audio captured late or transceiver was not negotiated as sendrecv
         const curLocal = localStreamRef.current;
-        if (curLocal && pc.signalingState === 'stable') {
+        if (curLocal && canNegotiate && pc.signalingState === 'stable') {
           const scrIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
           const vTrack = curLocal.getVideoTracks().find((t) => t.readyState === 'live');
           const aTrack = curLocal.getAudioTracks().find((t) => t.readyState === 'live');
           let needSync = false;
           if (vTrack) {
-            const vt = pc.getTransceivers().find((t) => {
-              const sId = t.sender.track?.id;
-              return !(sId && scrIds.has(sId)) && (t.sender.track?.kind === 'video' || t.receiver.track?.kind === 'video');
-            });
-            if (!vt || vt.sender.track?.id !== vTrack.id || vt.direction !== 'sendrecv') {
-              needSync = await syncLocalTrackToPeer(pc, 'video', vTrack, curLocal, scrIds);
+            const vt = pickPreferredTransceiver(pc, 'video', scrIds);
+            const vtNegotiated =
+              vt?.currentDirection === 'sendrecv' || vt?.currentDirection === 'sendonly';
+            if (!vt || vt.sender.track?.id !== vTrack.id || !vtNegotiated) {
+              needSync = await syncLocalTrackToPeer(pc, 'video', vTrack, curLocal, scrIds, true);
             }
           }
           if (aTrack) {
-            const at = pc.getTransceivers().find((t) => {
-              const sId = t.sender.track?.id;
-              return !(sId && scrIds.has(sId)) && (t.sender.track?.kind === 'audio' || t.receiver.track?.kind === 'audio');
-            });
-            if (!at || at.sender.track?.id !== aTrack.id || at.direction !== 'sendrecv') {
-              if (await syncLocalTrackToPeer(pc, 'audio', aTrack, curLocal, scrIds)) {
+            const at = pickPreferredTransceiver(pc, 'audio', scrIds);
+            const atNegotiated =
+              at?.currentDirection === 'sendrecv' || at?.currentDirection === 'sendonly';
+            if (!at || at.sender.track?.id !== aTrack.id || !atNegotiated) {
+              if (await syncLocalTrackToPeer(pc, 'audio', aTrack, curLocal, scrIds, true)) {
                 needSync = true;
               }
             }
           }
-          if (needSync && (currentUser.id.localeCompare(p.userId) < 0 || pc.remoteDescription !== null)) {
+          if (needSync) {
             void renegotiatePeer(p.userId);
             continue;
           }
@@ -1655,22 +1882,83 @@ export function MeetingStudio({
 
         const firstSeen = peerFirstSeenAtRef.current.get(p.userId) ?? now;
         const ageMs = now - firstSeen;
-        if (currentUser.id.localeCompare(p.userId) < 0 && ageMs > 3200 && !pc.currentRemoteDescription) {
-          if (pc.signalingState === 'stable') {
-            void renegotiatePeer(p.userId);
-          } else if (pc.signalingState === 'have-local-offer' && ageMs > 6500) {
-            peerFirstSeenAtRef.current.set(p.userId, now);
-            void renegotiatePeer(p.userId, true);
+        const lastOfferAt = lastOfferAtRef.current.get(p.userId) ?? 0;
+        const lastNeedOfferAt = lastNeedOfferAtRef.current.get(p.userId) ?? 0;
+
+        if (!pc.currentRemoteDescription) {
+          if (isOfferer) {
+            if (ageMs > 2400 && pc.signalingState === 'stable') {
+              void renegotiatePeer(p.userId);
+            } else if (
+              pc.signalingState !== 'stable' &&
+              lastOfferAt > 0 &&
+              now - lastOfferAt > 5000
+            ) {
+              // Break have-local-offer deadlock if offer was lost or collided
+              peerFirstSeenAtRef.current.set(p.userId, now);
+              void renegotiatePeer(p.userId, true, true);
+            }
+          } else if (ageMs > 2200 && now - lastNeedOfferAt > 2500) {
+            // Callee stuck without an offer (e.g. post-reload): ask peer to send fresh offer
+            lastNeedOfferAtRef.current.set(p.userId, now);
+            void sendSignal(p.userId, 'need-offer', {
+              reset: true,
+              sessionId: `${localSessionIdRef.current}_${Math.floor(now / 5000)}`,
+            });
           }
+          continue;
+        }
+
+        // Break any post-connection stalled renegotiation offer stuck > 5s
+        if (pc.signalingState !== 'stable' && lastOfferAt > 0 && now - lastOfferAt > 5000) {
+          void renegotiatePeer(p.userId, false, true);
+          continue;
+        }
+
+        // If peer's camera is marked ON while ICE is connected yet remote video never arrived, nudge peer to resync
+        const hasRemoteCam = Boolean(
+          remoteCamStreamsRef.current[p.userId]
+            ?.getVideoTracks()
+            .some((t) => t.readyState === 'live'),
+        );
+        if (
+          p.camOn &&
+          !hasRemoteCam &&
+          (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') &&
+          ageMs > 3500 &&
+          now - lastNeedOfferAt > 5000
+        ) {
+          lastNeedOfferAtRef.current.set(p.userId, now);
+          void sendSignal(p.userId, 'need-offer', { reset: false });
         }
       }
     };
-    const healInterval = setInterval(() => void healPeers(), 3000);
+    const initialHealTimer = setTimeout(() => void healPeers(), 1400);
+    const healInterval = setInterval(() => void healPeers(), 2500);
     return () => {
       active = false;
+      clearTimeout(initialHealTimer);
       clearInterval(healInterval);
     };
-  }, [currentUser.id, getOrCreatePeer, renegotiatePeer, room.participants, syncLocalTrackToPeer]);
+  }, [currentUser.id, getOrCreatePeer, renegotiatePeer, room.participants, sendSignal, setPeerHealth, syncLocalTrackToPeer]);
+
+  const handleRetryPeerConnection = useCallback(
+    (peerId: string) => {
+      closePeer(peerId);
+      peerFirstSeenAtRef.current.set(peerId, Date.now());
+      getOrCreatePeer(peerId);
+      if (currentUser.id.localeCompare(peerId) < 0) {
+        void renegotiatePeer(peerId, true, true);
+      } else {
+        void sendSignal(peerId, 'need-offer', {
+          reset: true,
+          sessionId: `${localSessionIdRef.current}_${Date.now()}`,
+        });
+      }
+      showToast('Reconnecting video & audio...');
+    },
+    [closePeer, currentUser.id, getOrCreatePeer, renegotiatePeer, sendSignal, showToast],
+  );
 
   // Helper to replace or add a single track across localStream & all active RTCPeerConnections
   const replaceOrAddLocalTrack = useCallback(
@@ -1686,7 +1974,8 @@ export function MeetingStudio({
       const renegotiateIds: string[] = [];
       const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
       for (const [peerId, pc] of pcsRef.current.entries()) {
-        if (await syncLocalTrackToPeer(pc, kind, newTrack, base, scrTrackIds)) {
+        const canAdd = currentUser.id.localeCompare(peerId) < 0 || pc.remoteDescription !== null;
+        if (await syncLocalTrackToPeer(pc, kind, newTrack, base, scrTrackIds, canAdd)) {
           renegotiateIds.push(peerId);
         }
       }
@@ -1694,7 +1983,7 @@ export function MeetingStudio({
         await Promise.all(renegotiateIds.map((id) => renegotiatePeer(id)));
       }
     },
-    [commitLocalStream, renegotiatePeer, syncLocalTrackToPeer],
+    [commitLocalStream, currentUser.id, renegotiatePeer, syncLocalTrackToPeer],
   );
 
   const toggleMic = async () => {
@@ -1726,7 +2015,8 @@ export function MeetingStudio({
         if (base) {
           const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
           for (const [peerId, pc] of pcsRef.current.entries()) {
-            if (await syncLocalTrackToPeer(pc, 'audio', track, base, scrTrackIds)) {
+            const canAdd = currentUser.id.localeCompare(peerId) < 0 || pc.remoteDescription !== null;
+            if (await syncLocalTrackToPeer(pc, 'audio', track, base, scrTrackIds, canAdd)) {
               void renegotiatePeer(peerId);
             }
           }
@@ -1787,7 +2077,8 @@ export function MeetingStudio({
         if (base) {
           const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
           for (const [peerId, pc] of pcsRef.current.entries()) {
-            if (await syncLocalTrackToPeer(pc, 'video', track, base, scrTrackIds)) {
+            const canAdd = currentUser.id.localeCompare(peerId) < 0 || pc.remoteDescription !== null;
+            if (await syncLocalTrackToPeer(pc, 'video', track, base, scrTrackIds, canAdd)) {
               void renegotiatePeer(peerId);
             }
           }
@@ -2521,6 +2812,9 @@ export function MeetingStudio({
                         compact
                         canHostControl={canHostControl}
                         onHostMute={hostMute}
+                        connectionStatus={peerConnStates[p.userId]}
+                        iceTurnConfigured={iceTurnConfigured}
+                        onRetryConnection={handleRetryPeerConnection}
                       />
                     </div>
                   );
@@ -2545,6 +2839,9 @@ export function MeetingStudio({
                   }
                   canHostControl={canHostControl}
                   onHostMute={hostMute}
+                  connectionStatus={peerConnStates[activeSpeakerParticipant.userId]}
+                  iceTurnConfigured={iceTurnConfigured}
+                  onRetryConnection={handleRetryPeerConnection}
                 />
               </div>
               {room.participants.length > 1 && (
@@ -2565,6 +2862,9 @@ export function MeetingStudio({
                             compact
                             canHostControl={canHostControl}
                             onHostMute={hostMute}
+                            connectionStatus={peerConnStates[p.userId]}
+                            iceTurnConfigured={iceTurnConfigured}
+                            onRetryConnection={handleRetryPeerConnection}
                           />
                         </div>
                       );
@@ -2587,6 +2887,9 @@ export function MeetingStudio({
                     reaction={react}
                     canHostControl={canHostControl}
                     onHostMute={hostMute}
+                    connectionStatus={peerConnStates[p.userId]}
+                    iceTurnConfigured={iceTurnConfigured}
+                    onRetryConnection={handleRetryPeerConnection}
                   />
                 );
               })}

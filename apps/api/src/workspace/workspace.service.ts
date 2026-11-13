@@ -278,12 +278,38 @@ export interface OrganizationSettings {
   requirePasswordRotationDays: number;
 }
 
+export interface IceServerEntry {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+}
+
+export interface MeetingIceConfig {
+  iceServers: IceServerEntry[];
+  hasTurn: boolean;
+  iceCandidatePoolSize: number;
+}
+
+const DEFAULT_STUN_SERVERS: IceServerEntry[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+];
+
+function containsTurnUrl(entry: IceServerEntry): boolean {
+  const list = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
+  return list.some((u) => typeof u === 'string' && /^turns?:/i.test(u.trim()));
+}
+
 @Injectable()
 export class WorkspaceService implements OnModuleInit {
   private readonly logger = new Logger(WorkspaceService.name);
   private defaultOrgId: string | null = null;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private auditLogsCache = new Map<string, { data: unknown; expiresAt: number }>();
+  private iceConfigCache: { data: MeetingIceConfig; expiresAt: number } | null = null;
   private lastMeetingsSyncAt = 0;
   private meetingSignals = new Map<string, { seq: number; items: MeetingSignalItem[] }>();
 
@@ -1828,11 +1854,12 @@ export class WorkspaceService implements OnModuleInit {
     }
     const micOn = body?.micOn !== undefined ? Boolean(body.micOn) : true;
     const camOn = body?.camOn !== undefined ? Boolean(body.camOn) : true;
+    const joinedAt = new Date().toISOString();
     const existing = mtg.participants.find((p) => p.userId === actor.id);
     if (existing) {
       if (body?.micOn !== undefined) existing.micOn = micOn;
       if (body?.camOn !== undefined) existing.camOn = camOn;
-      existing.joinedAt = new Date().toISOString();
+      existing.joinedAt = joinedAt;
     } else {
       mtg.participants.push({
         userId: actor.id,
@@ -1842,11 +1869,22 @@ export class WorkspaceService implements OnModuleInit {
         camOn,
         screenSharing: false,
         handRaised: false,
-        joinedAt: new Date().toISOString(),
+        joinedAt,
       });
     }
     mtg.attendeeCount = Math.max(mtg.attendeeCount, mtg.participants.length);
     await this.persistStateNow(actor.organizationId);
+    await this.appendMeetingSignal(
+      mtg.id,
+      {
+        fromUserId: actor.id,
+        fromUserName: actor.fullName,
+        toUserId: '*',
+        type: 'peer-joined',
+        payload: { userId: actor.id, joinedAt },
+      },
+      actor.organizationId,
+    );
     return mtg;
   }
 
@@ -2204,6 +2242,114 @@ export class WorkspaceService implements OnModuleInit {
       metadata: { role, count: this.roleMatrix[role].length },
     });
     return { role, permissions: this.roleMatrix[role] };
+  }
+
+  /**
+   * Resolves STUN + optional TURN relay servers from environment configuration.
+   * Supports WEBRTC_ICE_SERVERS_JSON, static TURN_URLS, Cloudflare Calls TURN, or Metered TURN.
+   */
+  async getMeetingIceConfig(): Promise<MeetingIceConfig> {
+    const now = Date.now();
+    if (this.iceConfigCache && this.iceConfigCache.expiresAt > now) {
+      return this.iceConfigCache.data;
+    }
+
+    const servers: IceServerEntry[] = [...DEFAULT_STUN_SERVERS];
+
+    const rawJson = process.env.WEBRTC_ICE_SERVERS_JSON?.trim();
+    if (rawJson) {
+      try {
+        const parsed = JSON.parse(rawJson) as unknown;
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (item && typeof item === 'object' && 'urls' in item) {
+              servers.push(item as IceServerEntry);
+            }
+          }
+        }
+      } catch {
+        this.logger.warn('Ignoring malformed WEBRTC_ICE_SERVERS_JSON environment value');
+      }
+    }
+
+    const turnUrlsRaw = process.env.TURN_URLS?.trim();
+    if (turnUrlsRaw) {
+      const urls = turnUrlsRaw
+        .split(',')
+        .map((u) => u.trim())
+        .filter(Boolean);
+      if (urls.length > 0) {
+        const entry: IceServerEntry = { urls };
+        if (process.env.TURN_USERNAME?.trim()) entry.username = process.env.TURN_USERNAME.trim();
+        if (process.env.TURN_CREDENTIAL?.trim()) entry.credential = process.env.TURN_CREDENTIAL.trim();
+        servers.push(entry);
+      }
+    }
+
+    const cfKeyId = process.env.CLOUDFLARE_TURN_KEY_ID?.trim();
+    const cfToken = process.env.CLOUDFLARE_TURN_API_TOKEN?.trim();
+    if (cfKeyId && cfToken) {
+      try {
+        const res = await fetch(
+          `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(cfKeyId)}/credentials/generate-ice-servers`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${cfToken}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ ttl: 86400 }),
+            signal: AbortSignal.timeout(4000),
+          },
+        );
+        if (res.ok) {
+          const data = (await res.json()) as { iceServers?: IceServerEntry[] | IceServerEntry };
+          const list = Array.isArray(data.iceServers)
+            ? data.iceServers
+            : data.iceServers
+              ? [data.iceServers]
+              : [];
+          servers.push(...list);
+        }
+      } catch {
+        this.logger.warn('Failed to fetch Cloudflare TURN ICE servers; continuing with fallback servers');
+      }
+    }
+
+    const meteredDomain = process.env.METERED_DOMAIN?.trim();
+    const meteredKey = process.env.METERED_SECRET_KEY?.trim();
+    if (meteredDomain && meteredKey) {
+      try {
+        const res = await fetch(
+          `https://${meteredDomain}/api/v1/turn/credentials?apiKey=${encodeURIComponent(meteredKey)}`,
+          { signal: AbortSignal.timeout(4000) },
+        );
+        if (res.ok) {
+          const data = (await res.json()) as unknown;
+          if (Array.isArray(data)) {
+            for (const item of data) {
+              if (item && typeof item === 'object' && 'urls' in item) {
+                servers.push(item as IceServerEntry);
+              }
+            }
+          }
+        }
+      } catch {
+        this.logger.warn('Failed to fetch Metered TURN ICE servers; continuing with fallback servers');
+      }
+    }
+
+    const result: MeetingIceConfig = {
+      iceServers: servers,
+      hasTurn: servers.some(containsTurnUrl),
+      iceCandidatePoolSize: 4,
+    };
+    // Cache shorter (30s) when TURN failed/absent so newly added transient fetch recovers fast, 5m with TURN.
+    this.iceConfigCache = {
+      data: result,
+      expiresAt: now + (result.hasTurn ? 5 * 60_000 : 30_000),
+    };
+    return result;
   }
 }
 
