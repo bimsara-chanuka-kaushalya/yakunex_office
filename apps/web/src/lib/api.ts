@@ -1,47 +1,172 @@
 /**
- * Thin fetch wrapper for the Yakunex Hub API.
+ * 3G-Resilient Fetch Engine for the Yakunex Hub API.
  * - Sends HttpOnly cookies (credentials: 'include').
- * - Fast in-memory GET cache (15s TTL) + in-flight GET deduplication for instant UI navigation.
+ * - Adaptive in-memory GET cache (30s standard / 60s on 3G) + in-flight GET deduplication.
+ * - Persistent stale-while-error fallback cache (memory + sessionStorage) so 3G micro-drops never break views.
+ * - Per-request AbortController timeout + exponential backoff retry on network drops / 502 / 503 / 504.
  * - Automatic cache invalidation on any mutation (POST / PATCH / PUT / DELETE).
- * - On 401, performs one silent refresh and retries the request.
- * - Surfaces the API's human-readable error messages.
+ * - On 401, performs a resilient silent refresh and retries the request.
  */
 
 export class ApiError extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  readonly isNetworkError: boolean;
+  constructor(status: number, message: string, isNetworkError = false) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.isNetworkError = isNetworkError;
   }
 }
 
 let refreshInFlight: Promise<boolean> | null = null;
-const GET_CACHE_TTL_MS = 30_000;
+const STORAGE_CACHE_KEY = 'yh-api-cache-v1';
 const getCache = new Map<string, { data: unknown; expiresAt: number }>();
+const staleCache = new Map<string, unknown>();
 const inflightGets = new Map<string, Promise<unknown>>();
+let storageHydrated = false;
+
+function hydrateStaleCacheFromStorage(): void {
+  if (storageHydrated || typeof window === 'undefined') return;
+  storageHydrated = true;
+  try {
+    const raw = window.sessionStorage.getItem(STORAGE_CACHE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed && typeof parsed === 'object') {
+      for (const [k, v] of Object.entries(parsed)) {
+        staleCache.set(k, v);
+      }
+    }
+  } catch {
+    // Ignore storage read errors
+  }
+}
+
+function persistStaleCacheToStorage(path: string, data: unknown): void {
+  staleCache.set(path, data);
+  if (typeof window === 'undefined') return;
+  try {
+    const obj: Record<string, unknown> = {};
+    let count = 0;
+    for (const [k, v] of staleCache.entries()) {
+      if (count >= 25) break;
+      obj[k] = v;
+      count += 1;
+    }
+    window.sessionStorage.setItem(STORAGE_CACHE_KEY, JSON.stringify(obj));
+  } catch {
+    // Ignore quota errors
+  }
+}
+
+export function isSlow3GConnection(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const nav = navigator as Navigator & {
+    connection?: { effectiveType?: string; saveData?: boolean; downlink?: number; rtt?: number };
+  };
+  const conn = nav.connection;
+  if (!conn) return false;
+  if (
+    conn.saveData ||
+    conn.effectiveType === 'slow-2g' ||
+    conn.effectiveType === '2g' ||
+    conn.effectiveType === '3g'
+  ) {
+    return true;
+  }
+  if (typeof conn.downlink === 'number' && conn.downlink > 0 && conn.downlink <= 1.5) {
+    return true;
+  }
+  if (typeof conn.rtt === 'number' && conn.rtt >= 300) {
+    return true;
+  }
+  return false;
+}
+
+function getCacheTtlMs(): number {
+  return isSlow3GConnection() ? 60_000 : 30_000;
+}
 
 export function clearApiCache(): void {
   getCache.clear();
   inflightGets.clear();
 }
 
-async function rawFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(`/api${path}`, {
-    ...init,
-    credentials: 'include',
-    cache: 'no-store',
-    headers: {
-      Accept: 'application/json',
-      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(init.headers ?? {}),
-    },
-  });
+const TRANSIENT_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+function isRetryableRequest(path: string, method: string): boolean {
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS' || method === 'PUT' || method === 'PATCH') {
+    return true;
+  }
+  // Safe/idempotent or signaling POST endpoints that can be retried on a 3G radio drop before response
+  return (
+    path === '/auth/refresh' ||
+    path.includes('/meetings/') ||
+    path === '/time-entries/stop'
+  );
+}
+
+async function rawFetch(
+  path: string,
+  init: RequestInit = {},
+  options: { timeoutMs?: number; maxRetries?: number } = {},
+): Promise<Response> {
+  const method = (init.method ?? 'GET').toUpperCase();
+  const timeoutMs = options.timeoutMs ?? 18_000;
+  const maxRetries = options.maxRetries ?? (isRetryableRequest(path, method) ? 2 : 1);
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`/api${path}`, {
+        ...init,
+        signal: init.signal ?? controller.signal,
+        credentials: 'include',
+        cache: 'no-store',
+        headers: {
+          Accept: 'application/json',
+          ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+          ...(init.headers ?? {}),
+        },
+      });
+      clearTimeout(timer);
+
+      if (attempt < maxRetries && TRANSIENT_STATUS_CODES.has(response.status) && isRetryableRequest(path, method)) {
+        const delay = (attempt === 0 ? 240 : 600) + Math.floor(Math.random() * 120);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      return response;
+    } catch (err) {
+      clearTimeout(timer);
+      lastError = err;
+      if (attempt < maxRetries) {
+        const delay = (attempt === 0 ? 250 : 650) + Math.floor(Math.random() * 150);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+    }
+  }
+
+  throw new ApiError(
+    0,
+    lastError instanceof Error && lastError.name === 'AbortError'
+      ? 'Connection timed out on slow network. Retrying...'
+      : 'Network connection interrupted. Please check your signal.',
+    true,
+  );
 }
 
 /** Rotates the refresh token. Concurrent callers share one in-flight request. */
 export function refreshSession(): Promise<boolean> {
-  return (refreshInFlight ??= rawFetch('/auth/refresh', { method: 'POST' })
+  return (refreshInFlight ??= rawFetch(
+    '/auth/refresh',
+    { method: 'POST' },
+    { timeoutMs: 12_000, maxRetries: 2 },
+  )
     .then((response) => response.ok)
     .catch(() => false)
     .finally(() => {
@@ -50,6 +175,7 @@ export function refreshSession(): Promise<boolean> {
 }
 
 export async function api<T>(path: string, init: RequestInit = {}, allowRetry = true): Promise<T> {
+  hydrateStaleCacheFromStorage();
   const method = (init.method ?? 'GET').toUpperCase();
 
   if (method === 'GET' && allowRetry) {
@@ -64,8 +190,19 @@ export async function api<T>(path: string, init: RequestInit = {}, allowRetry = 
     }
     const promise = executeRequest<T>(path, init, allowRetry)
       .then((data) => {
-        getCache.set(path, { data, expiresAt: Date.now() + GET_CACHE_TTL_MS });
+        getCache.set(path, { data, expiresAt: Date.now() + getCacheTtlMs() });
+        persistStaleCacheToStorage(path, data);
         return data;
+      })
+      .catch((err: unknown) => {
+        // On 3G transient failure or 5xx, serve last known good GET data instead of crashing the view
+        const isAuthFailure = err instanceof ApiError && (err.status === 401 || err.status === 403);
+        if (!isAuthFailure && staleCache.has(path)) {
+          const fallback = staleCache.get(path) as T;
+          getCache.set(path, { data: fallback, expiresAt: Date.now() + 8_000 });
+          return fallback;
+        }
+        throw err;
       })
       .finally(() => {
         inflightGets.delete(path);
@@ -74,7 +211,7 @@ export async function api<T>(path: string, init: RequestInit = {}, allowRetry = 
     return promise;
   }
 
-  // Any mutation invalidates cached GET responses so subsequent reads reflect fresh state.
+  // Any mutation invalidates fresh GET TTLs (while keeping staleCache for offline/3G fallback).
   if (method !== 'GET') {
     clearApiCache();
   }
@@ -84,15 +221,23 @@ export async function api<T>(path: string, init: RequestInit = {}, allowRetry = 
 
 /** Real-time GET request that bypasses the in-memory GET cache (used for live meeting rooms & WebRTC signaling). */
 export function liveGet<T>(path: string): Promise<T> {
-  return executeRequest<T>(path, { method: 'GET' }, true);
+  return executeRequest<T>(path, { method: 'GET' }, true, {
+    timeoutMs: 8_500,
+    maxRetries: 1,
+  });
 }
 
-async function executeRequest<T>(path: string, init: RequestInit, allowRetry: boolean): Promise<T> {
-  const response = await rawFetch(path, init);
+async function executeRequest<T>(
+  path: string,
+  init: RequestInit,
+  allowRetry: boolean,
+  fetchOptions?: { timeoutMs?: number; maxRetries?: number },
+): Promise<T> {
+  const response = await rawFetch(path, init, fetchOptions);
 
   if (response.status === 401 && allowRetry && !path.startsWith('/auth/')) {
     if (await refreshSession()) {
-      return executeRequest<T>(path, init, false);
+      return executeRequest<T>(path, init, false, fetchOptions);
     }
   }
 
@@ -107,6 +252,23 @@ async function executeRequest<T>(path: string, init: RequestInit, allowRetry: bo
     throw new ApiError(response.status, message);
   }
   return body as T;
+}
+
+/** Gently warms core module caches in the background so sidebar navigation on 3G is instantaneous. */
+export function warmWorkspaceCache(isAdmin: boolean): void {
+  if (typeof window === 'undefined') return;
+  const routes = [
+    isAdmin ? '/dashboard/admin' : '/dashboard/me',
+    '/projects',
+    '/tasks',
+    '/meetings',
+  ];
+  routes.forEach((route, idx) => {
+    setTimeout(() => {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      void api(route).catch(() => undefined);
+    }, (idx + 1) * 450);
+  });
 }
 
 export function post<T>(path: string, data?: unknown): Promise<T> {

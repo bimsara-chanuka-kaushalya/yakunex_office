@@ -1,7 +1,7 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { api, post, refreshSession } from '@/lib/api';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { api, ApiError, clearApiCache, post, refreshSession, warmWorkspaceCache } from '@/lib/api';
 import { translate, type Lang } from '@/lib/i18n';
 
 // ─── Session ─────────────────────────────────────────────────────────────
@@ -30,40 +30,134 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+const SESSION_CACHE_KEY = 'yh-session-cache-v1';
+
+function readCachedSession(): { user: SessionUser; permissions: string[] } | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(SESSION_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { user?: SessionUser; permissions?: string[] };
+    if (parsed?.user?.id && Array.isArray(parsed.permissions)) {
+      return { user: parsed.user, permissions: parsed.permissions };
+    }
+  } catch {
+    // Ignore storage parse error
+  }
+  return null;
+}
+
+function writeCachedSession(data: { user: SessionUser; permissions: string[] } | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!data) {
+      window.sessionStorage.removeItem(SESSION_CACHE_KEY);
+    } else {
+      window.sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify(data));
+    }
+  } catch {
+    // Ignore quota errors
+  }
+}
 
 function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<SessionStatus>('loading');
   const [user, setUser] = useState<SessionUser | null>(null);
   const [permissions, setPermissions] = useState<Set<string>>(new Set());
+  const userRef = useRef<SessionUser | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const warmedRef = useRef(false);
+
+  userRef.current = user;
 
   const reload = useCallback(async () => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
     try {
       const data = await api<{ user: SessionUser; permissions: string[] }>('/auth/me');
       setUser(data.user);
       setPermissions(new Set(data.permissions));
       setStatus('authenticated');
-    } catch {
-      setUser(null);
-      setPermissions(new Set());
-      setStatus('anonymous');
+      writeCachedSession(data);
+      if (!warmedRef.current) {
+        warmedRef.current = true;
+        warmWorkspaceCache(data.permissions.includes('dashboard.admin'));
+      }
+    } catch (err) {
+      const isExplicitUnauth =
+        err instanceof ApiError && (err.status === 401 || err.status === 403);
+      if (isExplicitUnauth) {
+        writeCachedSession(null);
+        setUser(null);
+        setPermissions(new Set());
+        setStatus('anonymous');
+        return;
+      }
+      // On 3G / weak mobile signal, never kick an authenticated user out on a transient network blip
+      const cached = readCachedSession();
+      if (userRef.current || cached) {
+        if (!userRef.current && cached) {
+          setUser(cached.user);
+          setPermissions(new Set(cached.permissions));
+        }
+        setStatus('authenticated');
+        retryTimerRef.current = setTimeout(() => {
+          void reload();
+        }, 4000);
+      } else {
+        // Initial load on 3G without cache: retry once before declaring anonymous
+        retryTimerRef.current = setTimeout(() => {
+          api<{ user: SessionUser; permissions: string[] }>('/auth/me')
+            .then((data) => {
+              setUser(data.user);
+              setPermissions(new Set(data.permissions));
+              setStatus('authenticated');
+              writeCachedSession(data);
+            })
+            .catch(() => {
+              setUser(null);
+              setPermissions(new Set());
+              setStatus('anonymous');
+            });
+        }, 1500);
+      }
     }
   }, []);
 
   useEffect(() => {
+    const cached = readCachedSession();
+    if (cached) {
+      setUser(cached.user);
+      setPermissions(new Set(cached.permissions));
+      setStatus('authenticated');
+    }
     void reload();
+    const onOnline = () => {
+      void refreshSession().then((ok) => {
+        if (ok || !userRef.current) void reload();
+      });
+    };
+    window.addEventListener('online', onOnline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    };
   }, [reload]);
 
-  // Proactive keep-alive refresh every 10 minutes so active sessions & meetings never expire mid-work
+  // Proactive keep-alive refresh every 8 minutes so active sessions & meetings never expire on 3G
   useEffect(() => {
     if (status !== 'authenticated') return;
     const timer = setInterval(() => {
       void refreshSession();
-    }, 10 * 60_000);
+    }, 8 * 60_000);
     return () => clearInterval(timer);
   }, [status]);
 
   const login = useCallback(
     async (email: string, password: string) => {
+      warmedRef.current = false;
       await post('/auth/login', { email, password });
       await reload();
     },
@@ -72,6 +166,8 @@ function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     await post('/auth/logout').catch(() => undefined);
+    writeCachedSession(null);
+    clearApiCache();
     setUser(null);
     setPermissions(new Set());
     setStatus('anonymous');

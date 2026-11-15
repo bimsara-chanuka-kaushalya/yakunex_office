@@ -30,7 +30,7 @@ import { Card, CardHeader, StatCard } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, patch, post, put } from '@/lib/api';
+import { api, liveGet, patch, post, put } from '@/lib/api';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 
@@ -279,13 +279,28 @@ export function MeetingsView() {
     void load();
   }, [load]);
 
-  // Periodically refresh meeting lobby list while not inside a call
+  // Periodically refresh meeting lobby list sequentially while visible & not inside a call
   useEffect(() => {
     if (activeSession || preJoin) return;
-    const t = setInterval(() => {
-      void api<MeetingRow[]>('/meetings').then(setMeetings).catch(() => undefined);
-    }, 6000);
-    return () => clearInterval(t);
+    let cancelled = false;
+    const loop = async () => {
+      while (!cancelled) {
+        await new Promise((r) => setTimeout(r, 6000));
+        if (cancelled) break;
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') continue;
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) continue;
+        try {
+          const fresh = await liveGet<MeetingRow[]>('/meetings');
+          if (!cancelled) setMeetings(fresh);
+        } catch {
+          // Ignore transient 3G poll errors
+        }
+      }
+    };
+    void loop();
+    return () => {
+      cancelled = true;
+    };
   }, [activeSession, preJoin]);
 
   // Auto-open Pre-Join Green Room if user navigated via ?room=YH-ROOM-XXX invite link

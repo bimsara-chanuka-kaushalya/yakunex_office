@@ -102,7 +102,7 @@ interface CurrentUserInfo {
   role: string;
 }
 
-type QualityTier = 'hd' | 'balanced' | 'low-signal';
+type QualityTier = 'hd' | 'balanced' | 'low-signal' | '3g-ultra';
 type PeerConnHealth = 'connecting' | 'connected' | 'reconnecting' | 'failed';
 
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
@@ -167,13 +167,51 @@ const QUICK_REACTIONS = ['👍', '👏', '❤️', '🎉', '😂', '🔥'];
 function detectInitialQualityTier(): QualityTier {
   if (typeof navigator === 'undefined') return 'hd';
   const nav = navigator as Navigator & {
-    connection?: { effectiveType?: string; saveData?: boolean };
+    connection?: { effectiveType?: string; saveData?: boolean; downlink?: number; rtt?: number };
   };
   const conn = nav.connection;
-  if (conn?.saveData || conn?.effectiveType === '2g' || conn?.effectiveType === 'slow-2g') {
+  if (!conn) return 'hd';
+  if (
+    conn.saveData ||
+    conn.effectiveType === '2g' ||
+    conn.effectiveType === 'slow-2g' ||
+    (typeof conn.downlink === 'number' && conn.downlink > 0 && conn.downlink <= 0.7) ||
+    (typeof conn.rtt === 'number' && conn.rtt >= 450)
+  ) {
+    return '3g-ultra';
+  }
+  if (
+    conn.effectiveType === '3g' ||
+    (typeof conn.downlink === 'number' && conn.downlink > 0 && conn.downlink <= 1.6) ||
+    (typeof conn.rtt === 'number' && conn.rtt >= 260)
+  ) {
     return 'low-signal';
   }
   return 'hd';
+}
+
+function getPlayoutDelayForTier(tier: QualityTier): number {
+  if (tier === '3g-ultra') return 0.35;
+  if (tier === 'low-signal') return 0.22;
+  if (tier === 'balanced') return 0.12;
+  return 0.05;
+}
+
+/** Enables Opus In-Band FEC & DTX in SDP so voice survives 3G packet loss without dropouts. */
+function enhanceSdpForResilience(sdp?: string): string | undefined {
+  if (!sdp) return sdp;
+  return sdp
+    .split('\r\n')
+    .map((line) => {
+      if (line.startsWith('a=fmtp:') && line.includes('minptime=')) {
+        let next = line;
+        if (!next.includes('useinbandfec=')) next += ';useinbandfec=1';
+        if (!next.includes('usedtx=')) next += ';usedtx=1';
+        return next;
+      }
+      return line;
+    })
+    .join('\r\n');
 }
 
 function getInitials(name: string): string {
@@ -204,26 +242,65 @@ async function tuneSenderQuality(
     if (!params.encodings || params.encodings.length === 0) {
       params.encodings = [{}];
     }
-    const enc = params.encodings[0] as RTCRtpEncodingParameters & { priority?: string };
+    const enc = params.encodings[0] as RTCRtpEncodingParameters & {
+      priority?: string;
+      networkPriority?: string;
+    };
 
     if (profile === 'screen-video') {
-      // Cap at smooth 30fps (15fps on weak links) so encoder queue never lags behind audio
-      enc.maxBitrate = tier === 'low-signal' ? 750_000 : tier === 'balanced' ? 1_500_000 : 2_800_000;
-      enc.maxFramerate = tier === 'low-signal' ? 15 : tier === 'balanced' ? 24 : 30;
-      enc.scaleResolutionDownBy = tier === 'low-signal' ? 1.25 : 1;
-      params.degradationPreference = tier === 'low-signal' ? 'maintain-framerate' : 'balanced';
+      // Cap at smooth 30fps (10-15fps on 3G/weak links) so encoder queue never lags behind audio
+      enc.maxBitrate =
+        tier === '3g-ultra'
+          ? 320_000
+          : tier === 'low-signal'
+            ? 550_000
+            : tier === 'balanced'
+              ? 1_500_000
+              : 2_800_000;
+      enc.maxFramerate =
+        tier === '3g-ultra' ? 10 : tier === 'low-signal' ? 15 : tier === 'balanced' ? 24 : 30;
+      enc.scaleResolutionDownBy =
+        tier === '3g-ultra' ? 1.5 : tier === 'low-signal' ? 1.25 : 1;
+      params.degradationPreference =
+        tier === '3g-ultra' || tier === 'low-signal' ? 'maintain-framerate' : 'balanced';
     } else if (profile === 'cam-video') {
-      enc.maxBitrate = tier === 'low-signal' ? 240_000 : tier === 'balanced' ? 650_000 : 1_500_000;
-      enc.maxFramerate = tier === 'low-signal' ? 15 : tier === 'balanced' ? 24 : 30;
-      enc.scaleResolutionDownBy = tier === 'low-signal' ? 2 : tier === 'balanced' ? 1.5 : 1;
+      enc.maxBitrate =
+        tier === '3g-ultra'
+          ? 110_000
+          : tier === 'low-signal'
+            ? 220_000
+            : tier === 'balanced'
+              ? 650_000
+              : 1_500_000;
+      enc.maxFramerate =
+        tier === '3g-ultra' ? 12 : tier === 'low-signal' ? 15 : tier === 'balanced' ? 24 : 30;
+      enc.scaleResolutionDownBy =
+        tier === '3g-ultra' ? 3 : tier === 'low-signal' ? 2 : tier === 'balanced' ? 1.5 : 1;
+      enc.networkPriority = tier === '3g-ultra' || tier === 'low-signal' ? 'low' : 'medium';
       params.degradationPreference = tier === 'hd' ? 'balanced' : 'maintain-framerate';
     } else if (profile === 'screen-audio') {
-      enc.maxBitrate = tier === 'low-signal' ? 64_000 : tier === 'balanced' ? 96_000 : 128_000;
+      enc.maxBitrate =
+        tier === '3g-ultra'
+          ? 48_000
+          : tier === 'low-signal'
+            ? 64_000
+            : tier === 'balanced'
+              ? 96_000
+              : 128_000;
       enc.priority = 'high';
+      enc.networkPriority = 'high';
     } else {
-      // Prioritize voice packets even when video adapts on weak signal
-      enc.maxBitrate = tier === 'low-signal' ? 32_000 : tier === 'balanced' ? 48_000 : 64_000;
+      // Prioritize voice packets above video so 3G calls never lose speech clarity
+      enc.maxBitrate =
+        tier === '3g-ultra'
+          ? 24_000
+          : tier === 'low-signal'
+            ? 32_000
+            : tier === 'balanced'
+              ? 48_000
+              : 64_000;
       enc.priority = 'high';
+      enc.networkPriority = 'high';
     }
 
     await sender.setParameters(params);
@@ -710,6 +787,13 @@ export function MeetingStudio({
       }
 
       let stream: MediaStream | null = null;
+      const startTier = activeTierRef.current;
+      const initialVideoConstraints =
+        startTier === '3g-ultra'
+          ? { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 15 } }
+          : startTier === 'low-signal'
+            ? { width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 20 } }
+            : { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: initialMicOn
@@ -720,9 +804,7 @@ export function MeetingStudio({
                 sampleRate: 48000,
               }
             : false,
-          video: initialCamOn
-            ? { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }
-            : false,
+          video: initialCamOn ? initialVideoConstraints : false,
         });
       } catch {
         // Fallback: try audio-only if camera failed/unavailable
@@ -816,12 +898,23 @@ export function MeetingStudio({
     };
   }, [commitLocalStream, initialCamOn, initialMicOn, initialRoom.id, refreshDevices, showToast]);
 
-  // Apply an active bitrate/resolution tier across every sender on all active peers (zero blink)
+  // Apply an active bitrate/resolution tier + jitter buffer hint across all active peers (zero blink)
   const applyQualityTierToAllPeers = useCallback(async (tier: QualityTier) => {
     activeTierRef.current = tier;
+    const delayHint = getPlayoutDelayForTier(tier);
     const scrVideoId = screenStreamRef.current?.getVideoTracks()[0]?.id;
     const scrAudioId = screenStreamRef.current?.getAudioTracks()[0]?.id;
     for (const pc of pcsRef.current.values()) {
+      for (const rx of pc.getReceivers()) {
+        const typedRx = rx as RTCRtpReceiver & { playoutDelayHint?: number };
+        if (typedRx && 'playoutDelayHint' in typedRx) {
+          try {
+            typedRx.playoutDelayHint = delayHint;
+          } catch {
+            // Ignore unsupported hint
+          }
+        }
+      }
       for (const sender of pc.getSenders()) {
         if (!sender.track) continue;
         const profile =
@@ -1018,11 +1111,11 @@ export function MeetingStudio({
       };
 
       pc.ontrack = (event) => {
-        // Minimize Chromium jitter buffer buildup so screen video & screen audio stay tightly synced
+        // Tune receiver jitter buffer dynamically (tight on HD, buffered on 3G to prevent choppy frames)
         const rx = event.receiver as RTCRtpReceiver & { playoutDelayHint?: number };
         if (rx && 'playoutDelayHint' in rx) {
           try {
-            rx.playoutDelayHint = 0.05;
+            rx.playoutDelayHint = getPlayoutDelayForTier(activeTierRef.current);
           } catch {
             // Ignore unsupported hint
           }
@@ -1115,16 +1208,21 @@ export function MeetingStudio({
         } else if (pc.iceConnectionState === 'failed') {
           clearDiscTimer();
           setPeerHealth(peerId, 'failed');
+          void applyQualityTierToAllPeers('3g-ultra');
           void renegotiatePeerRef.current(peerId, true, true);
         } else if (pc.iceConnectionState === 'disconnected' && !disconnectTimersRef.current.has(peerId)) {
           setPeerHealth(peerId, 'reconnecting');
-          // Wait 2.5s for transient handoff before forcing ICE restart
+          // Immediately step down uplink bitrate so 3G radio queue drains and ICE keep-alives pass
+          void applyQualityTierToAllPeers('3g-ultra');
+          // Wait 3.5s for 3G cell handoff before triggering non-destructive soft ICE restart
           const timer = setTimeout(() => {
             disconnectTimersRef.current.delete(peerId);
-            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+            if (pc.iceConnectionState === 'disconnected') {
+              void renegotiatePeerRef.current(peerId, true, false);
+            } else if (pc.iceConnectionState === 'failed') {
               void renegotiatePeerRef.current(peerId, true, true);
             }
-          }, 2500);
+          }, 3500);
           disconnectTimersRef.current.set(peerId, timer);
         }
       };
@@ -1144,7 +1242,7 @@ export function MeetingStudio({
 
       return pc;
     },
-    [queueIceCandidate, setPeerHealth],
+    [applyQualityTierToAllPeers, queueIceCandidate, setPeerHealth],
   );
 
   const renegotiatePeer = useCallback(
@@ -1159,11 +1257,17 @@ export function MeetingStudio({
               await pc.setLocalDescription({ type: 'rollback' });
             }
           } catch {
-            // Fall back to resetting the peer connection below
+            // Fall back below if rollback is unsupported
           }
           if (pc.signalingState !== 'stable') {
-            closePeer(peerId);
-            pc = getOrCreatePeer(peerId);
+            if (pc.iceConnectionState === 'failed' || pc.connectionState === 'failed') {
+              closePeer(peerId);
+              pc = getOrCreatePeer(peerId);
+            } else {
+              pendingRenegotiateRef.current.add(peerId);
+              if (iceRestart) pendingIceRestartRef.current.add(peerId);
+              return;
+            }
           }
         } else {
           pendingRenegotiateRef.current.add(peerId);
@@ -1183,7 +1287,10 @@ export function MeetingStudio({
           if (shouldRestartIce) pendingIceRestartRef.current.add(peerId);
           return;
         }
-        await pc.setLocalDescription(offer);
+        await pc.setLocalDescription({
+          type: offer.type,
+          sdp: enhanceSdpForResilience(offer.sdp),
+        });
         if (pc.localDescription) {
           lastOfferAtRef.current.set(peerId, Date.now());
           const sent = await sendSignal(peerId, 'offer', {
@@ -1254,43 +1361,51 @@ export function MeetingStudio({
     }
   }, [closePeer, currentUser.id, getOrCreatePeer, renegotiatePeer, room.participants, sendSignal]);
 
-  // Poll meeting room state continuously bypassing client cache (skip React updates when identical)
+  // Poll meeting room state sequentially (zero overlapping polls on 3G; skip React updates when identical)
   useEffect(() => {
-    let active = true;
-    const pollRoom = async () => {
-      try {
-        const fresh = await liveGet<MeetingRow>(`/meetings/${room.id}/room`);
-        if (!active) return;
-        const sig = JSON.stringify([
-          fresh.status,
-          fresh.notes,
-          (fresh.chatMessages ?? []).length,
-          (fresh.participants ?? []).map((p) => [
-            p.userId,
-            p.fullName,
-            p.role,
-            p.joinedAt,
-            p.micOn,
-            p.camOn,
-            p.screenSharing,
-            p.screenStreamId,
-            p.handRaised,
-          ]),
-        ]);
-        if (sig !== roomSigRef.current) {
-          roomSigRef.current = sig;
-          setRoom(fresh);
-          onMeetingUpdated?.(fresh);
+    let cancelled = false;
+    const runRoomLoop = async () => {
+      while (!cancelled) {
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          await new Promise((r) => setTimeout(r, 1500));
+          continue;
         }
-      } catch {
-        // Retry on next tick
+        try {
+          const fresh = await liveGet<MeetingRow>(`/meetings/${room.id}/room`);
+          if (cancelled) break;
+          const sig = JSON.stringify([
+            fresh.status,
+            fresh.notes,
+            (fresh.chatMessages ?? []).length,
+            (fresh.participants ?? []).map((p) => [
+              p.userId,
+              p.fullName,
+              p.role,
+              p.joinedAt,
+              p.micOn,
+              p.camOn,
+              p.screenSharing,
+              p.screenStreamId,
+              p.handRaised,
+            ]),
+          ]);
+          if (sig !== roomSigRef.current) {
+            roomSigRef.current = sig;
+            setRoom(fresh);
+            onMeetingUpdated?.(fresh);
+          }
+        } catch {
+          // Retry on next tick
+        }
+        if (cancelled) break;
+        const slowLink =
+          activeTierRef.current === '3g-ultra' || activeTierRef.current === 'low-signal';
+        await new Promise((r) => setTimeout(r, slowLink ? 2400 : 1600));
       }
     };
-    void pollRoom();
-    const timer = setInterval(() => void pollRoom(), 1600);
+    void runRoomLoop();
     return () => {
-      active = false;
-      clearInterval(timer);
+      cancelled = true;
     };
   }, [onMeetingUpdated, room.id]);
 
@@ -1433,7 +1548,10 @@ export function MeetingStudio({
           // Ensure outgoing tracks are attached onto negotiated m-lines before creating answer
           await attachOutgoingTracks(pc, { createOfferSlots: false });
           const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
+          await pc.setLocalDescription({
+            type: answer.type,
+            sdp: enhanceSdpForResilience(answer.sdp),
+          });
           if (pc.localDescription) {
             await sendSignal(fromId, 'answer', {
               sdp: pc.localDescription.toJSON(),
@@ -1634,24 +1752,48 @@ export function MeetingStudio({
     };
   }, [currentUser.id, localStream, micOn, remoteCamStreams]);
 
-  // Silent background WebRTC network adaptation & auto-reconnect on weak/dropped connections
+  // Silent background WebRTC network adaptation & auto-reconnect on 3G/weak/dropped connections
   useEffect(() => {
+    const navConn = (
+      typeof navigator !== 'undefined'
+        ? (navigator as Navigator & {
+            connection?: {
+              effectiveType?: string;
+              saveData?: boolean;
+              downlink?: number;
+              rtt?: number;
+              addEventListener?: (type: string, cb: () => void) => void;
+              removeEventListener?: (type: string, cb: () => void) => void;
+            };
+          }).connection
+        : undefined
+    );
+
+    const handleConnectionChange = () => {
+      const detected = detectInitialQualityTier();
+      if (detected === '3g-ultra' || detected === 'low-signal') {
+        void applyQualityTierToAllPeers(detected);
+      }
+    };
+
     const handleOnline = () => {
-      showToast('Connection restored — reconnecting video & audio...');
+      showToast('Connection restored — syncing live video & audio...');
+      void applyQualityTierToAllPeers(detectInitialQualityTier());
       for (const peerId of Array.from(pcsRef.current.keys())) {
-        void renegotiatePeer(peerId, true);
+        void renegotiatePeer(peerId, true, false);
       }
     };
     const handleOffline = () => {
-      void applyQualityTierToAllPeers('low-signal');
+      void applyQualityTierToAllPeers('3g-ultra');
     };
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    navConn?.addEventListener?.('change', handleConnectionChange);
 
     const checkStats = async () => {
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-        if (activeTierRef.current !== 'low-signal') {
-          await applyQualityTierToAllPeers('low-signal');
+        if (activeTierRef.current !== '3g-ultra') {
+          await applyQualityTierToAllPeers('3g-ultra');
         }
         return;
       }
@@ -1686,10 +1828,13 @@ export function MeetingStudio({
         }
       }
 
-      let targetTier: QualityTier = 'hd';
-      if (anyDisconnected || maxRtt > 0.5 || maxLoss > 0.08) {
+      const baseline = detectInitialQualityTier();
+      let targetTier: QualityTier = baseline;
+      if (anyDisconnected || maxRtt > 0.65 || maxLoss > 0.12 || baseline === '3g-ultra') {
+        targetTier = '3g-ultra';
+      } else if (maxRtt > 0.38 || maxLoss > 0.06 || baseline === 'low-signal') {
         targetTier = 'low-signal';
-      } else if (maxRtt > 0.25 || maxLoss > 0.03) {
+      } else if (maxRtt > 0.22 || maxLoss > 0.025) {
         targetTier = 'balanced';
       }
 
@@ -1698,11 +1843,12 @@ export function MeetingStudio({
       }
     };
 
-    const timer = setInterval(() => void checkStats(), 3500);
+    const timer = setInterval(() => void checkStats(), 2500);
     return () => {
       clearInterval(timer);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      navConn?.removeEventListener?.('change', handleConnectionChange);
     };
   }, [applyQualityTierToAllPeers, renegotiatePeer, showToast]);
 

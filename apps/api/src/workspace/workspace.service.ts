@@ -311,6 +311,7 @@ export class WorkspaceService implements OnModuleInit {
   private auditLogsCache = new Map<string, { data: unknown; expiresAt: number }>();
   private iceConfigCache: { data: MeetingIceConfig; expiresAt: number } | null = null;
   private lastMeetingsSyncAt = 0;
+  private lastSignalPruneAt = new Map<string, number>();
   private meetingSignals = new Map<string, { seq: number; items: MeetingSignalItem[] }>();
 
   private clients: ClientItem[] = [];
@@ -507,6 +508,7 @@ export class WorkspaceService implements OnModuleInit {
           value: payload,
         },
       });
+      this.lastMeetingsSyncAt = Date.now();
     } catch (err) {
       this.logger.warn(`Failed to persist workspace_state to Supabase: ${(err as Error).message}`);
     }
@@ -1666,7 +1668,7 @@ export class WorkspaceService implements OnModuleInit {
 
   // ─── Meetings (Built-in Yakunex Hub Meet Engine + WebRTC Signaling) ──────
   private async syncMeetingsFromDb(organizationId?: string, force = false): Promise<void> {
-    if (!force && Date.now() - this.lastMeetingsSyncAt < 800) {
+    if (!force && Date.now() - this.lastMeetingsSyncAt < 1200) {
       return;
     }
     try {
@@ -2055,16 +2057,20 @@ export class WorkspaceService implements OnModuleInit {
           .map((r) => r.value as unknown as MeetingSignalItem | null)
           .filter((v): v is MeetingSignalItem => Boolean(v && typeof v.createdAt === 'number'));
 
-        // Prune expired signal rows (>90s) in background
-        const cutoffKey = `${prefix}${String(now - 90_000).padStart(14, '0')}`;
-        void this.prisma.systemSetting
-          .deleteMany?.({
-            where: {
-              organizationId: orgId,
-              key: { startsWith: prefix, lt: cutoffKey },
-            },
-          })
-          .catch(() => undefined);
+        // Prune expired signal rows (>90s) in background at most once every 15s per room
+        const lastPruned = this.lastSignalPruneAt.get(id) ?? 0;
+        if (now - lastPruned > 15_000) {
+          this.lastSignalPruneAt.set(id, now);
+          const cutoffKey = `${prefix}${String(now - 90_000).padStart(14, '0')}`;
+          void this.prisma.systemSetting
+            .deleteMany?.({
+              where: {
+                organizationId: orgId,
+                key: { startsWith: prefix, lt: cutoffKey },
+              },
+            })
+            .catch(() => undefined);
+        }
       }
     } catch {
       // Fallback to in-memory bucket

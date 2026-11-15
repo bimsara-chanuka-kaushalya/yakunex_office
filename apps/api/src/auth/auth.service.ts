@@ -208,6 +208,15 @@ export class AuthService {
     }
 
     if (record.revokedAt) {
+      const revokedAgoMs = Date.now() - new Date(record.revokedAt).getTime();
+      // 60s grace window for 3G/mobile networks where a retry or concurrent tab presents a just-rotated token
+      if (revokedAgoMs <= 60_000) {
+        const graceUser = (await this.prisma.findActiveUserCached?.(record.userId)) ?? record.user;
+        if (record.expiresAt >= new Date() && !graceUser.deletedAt && graceUser.status === UserStatus.ACTIVE) {
+          const tokens = await this.issueTokens(graceUser, record.familyId, meta);
+          return { user: toAuthUser(graceUser), tokens };
+        }
+      }
       for (const rt of this.refreshTokenCache.values()) {
         if (rt.familyId === record.familyId && !rt.revokedAt) {
           rt.revokedAt = new Date();
