@@ -262,29 +262,28 @@ export class AuthService {
     if (!rawRefreshToken) return;
     const hashed = hashToken(rawRefreshToken);
     const cached = this.refreshTokenCache.get(hashed);
+    const hardRevokedAt = new Date(0);
     if (cached) {
-      for (const rt of this.refreshTokenCache.values()) {
-        if (rt.familyId === cached.familyId && !rt.revokedAt) {
-          rt.revokedAt = new Date();
+      for (const [key, rt] of this.refreshTokenCache.entries()) {
+        if (rt.familyId === cached.familyId) {
+          this.refreshTokenCache.delete(key);
         }
       }
     }
-    void (async () => {
-      try {
-        const record =
-          cached ??
-          (await this.prisma.refreshToken.findUnique({
-            where: { tokenHash: hashed },
-          }));
-        if (!record) return;
-        await this.prisma.refreshToken.updateMany({
-          where: { familyId: record.familyId, revokedAt: null },
-          data: { revokedAt: new Date() },
-        });
-      } catch {
-        // Ignore logout background errors
-      }
-    })();
+    try {
+      const record =
+        cached ??
+        (await this.prisma.refreshToken.findUnique({
+          where: { tokenHash: hashed },
+        }));
+      if (!record) return;
+      await this.prisma.refreshToken.updateMany({
+        where: { familyId: record.familyId, revokedAt: null },
+        data: { revokedAt: hardRevokedAt },
+      });
+    } catch {
+      // Ignore logout background errors
+    }
   }
 
   async changePassword(
@@ -313,9 +312,9 @@ export class AuthService {
       mustChangePassword: false,
       updatedAt: new Date(),
     });
-    for (const rt of this.refreshTokenCache.values()) {
-      if (rt.userId === userId && !rt.revokedAt) {
-        rt.revokedAt = new Date();
+    for (const [key, rt] of this.refreshTokenCache.entries()) {
+      if (rt.userId === userId) {
+        this.refreshTokenCache.delete(key);
       }
     }
 
@@ -326,7 +325,7 @@ export class AuthService {
     void this.prisma.refreshToken
       .updateMany({
         where: { userId, revokedAt: null },
-        data: { revokedAt: new Date() },
+        data: { revokedAt: new Date(0) },
       })
       .catch(() => undefined);
 

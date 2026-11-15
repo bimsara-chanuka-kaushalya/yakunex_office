@@ -1,4 +1,10 @@
-import { ForbiddenException, HttpException, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  HttpException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Role, User, UserStatus } from '@prisma/client';
 import * as argon2 from 'argon2';
@@ -124,6 +130,10 @@ describe('AuthService & 3G Refresh Grace Window', () => {
             return { count };
           },
         ),
+        deleteMany: jest.fn(async () => {
+          refreshStore.clear();
+          return { count: 1 };
+        }),
       },
     } as unknown as PrismaService;
 
@@ -216,6 +226,43 @@ describe('AuthService & 3G Refresh Grace Window', () => {
     // Entire token family should now be revoked
     const rt2Hash = hashToken(rot1.tokens.refreshToken);
     expect(refreshStore.get(rt2Hash)?.revokedAt).not.toBeNull();
+  });
+
+  it('supports login by Company ID, changePassword, forgotPassword, one-time resetPassword, and logout', async () => {
+    const user = createUser({ mustChangePassword: true });
+    const { service, getUser } = createHarness(user);
+    const meta = { ipAddress: '127.0.0.1', userAgent: 'Jest' };
+
+    // Login via Company ID (case-insensitive)
+    const loginById = await service.login('ynx-stf-0001', 'YakunexHub2026!', meta);
+    expect(loginById.user.companyId).toBe('YNX-STF-0001');
+
+    // Change password
+    await expect(
+      service.changePassword(user.id, 'YakunexHub2026!', 'YakunexHub2026!', meta),
+    ).rejects.toThrow(ConflictException);
+    await service.changePassword(user.id, 'YakunexHub2026!', 'NewPassword2026!', meta);
+    expect(getUser().mustChangePassword).toBe(false);
+
+    // Forgot & Reset password flow
+    const forgot = await service.forgotPassword('YNX-STF-0001', meta);
+    expect(forgot.ok).toBe(true);
+    expect(forgot.resetToken).toBeTruthy();
+
+    const reset = await service.resetPassword(forgot.resetToken!, 'ResetPassword2026!', meta);
+    expect(reset.ok).toBe(true);
+
+    // Reusing the same reset token fails because passwordHash fingerprint changed
+    await expect(
+      service.resetPassword(forgot.resetToken!, 'AnotherPass2026!', meta),
+    ).rejects.toThrow(BadRequestException);
+
+    // Login with the newly reset password and logout
+    const relogin = await service.login('staff@yakunex.local', 'ResetPassword2026!', meta);
+    await service.logout(relogin.tokens.refreshToken);
+    await expect(service.refresh(relogin.tokens.refreshToken, meta)).rejects.toThrow(
+      UnauthorizedException,
+    );
   });
 });
 
