@@ -78,4 +78,56 @@ describe('WorkspaceService meetings signaling & ICE config', () => {
     expect(peerJoined).toBeDefined();
     expect((peerJoined?.payload as { joinedAt?: string })?.joinedAt).toBe(guestParticipant?.joinedAt);
   });
+
+  it('supports 20 concurrent participants joining with video + mic and batched WebRTC signaling without drops', async () => {
+    const svc = makeService();
+    const host: AuthUser = {
+      id: 'usr_1',
+      organizationId: 'org_test',
+      companyId: 'YNX-0001',
+      email: 'user1@yakunex.local',
+      fullName: 'Host One',
+      role: Role.SUPER_ADMIN,
+      status: UserStatus.ACTIVE,
+      mustChangePassword: false,
+    };
+    const room = await svc.scheduleMeeting(host, { title: '20-Peer Sync', instant: true });
+
+    const guests: AuthUser[] = Array.from({ length: 19 }, (_, idx) => {
+      const n = idx + 2;
+      return {
+        id: `usr_${n}`,
+        organizationId: 'org_test',
+        companyId: `YNX-00${String(n).padStart(2, '0')}`,
+        email: `user${n}@yakunex.local`,
+        fullName: `Member ${n}`,
+        role: Role.STAFF,
+        status: UserStatus.ACTIVE,
+        mustChangePassword: false,
+      };
+    });
+
+    await Promise.all(
+      guests.map((g) => svc.joinMeetingRoom(g, room.id, { micOn: true, camOn: true })),
+    );
+
+    const updatedRoom = await svc.getMeetingRoom(room.id, host.organizationId);
+    expect(updatedRoom.participants.length).toBe(20);
+    expect(updatedRoom.participants.every((p) => p.micOn && p.camOn)).toBe(true);
+
+    const batchResult = await svc.sendMeetingSignal(host, room.id, {
+      batch: guests.map((g) => ({
+        toUserId: g.id,
+        type: 'offer',
+        payload: { sdp: `v=0-offer-for-${g.id}` },
+      })),
+    });
+    expect(batchResult.count).toBe(19);
+
+    for (const g of guests) {
+      const polled = await svc.pollMeetingSignals(g, room.id, 0);
+      const offer = polled.signals.find((s) => s.type === 'offer' && s.fromUserId === host.id && s.toUserId === g.id);
+      expect(offer).toBeDefined();
+    }
+  });
 });

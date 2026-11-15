@@ -288,6 +288,7 @@ export class WorkspaceController {
   }
 
   @Post('meetings/:id/join')
+  @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   joinMeetingRoom(
     @CurrentUser() actor: AuthUser,
@@ -298,6 +299,7 @@ export class WorkspaceController {
   }
 
   @Post('meetings/:id/leave')
+  @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   leaveMeetingRoom(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
     return this.workspace.leaveMeetingRoom(actor, id);
@@ -315,6 +317,7 @@ export class WorkspaceController {
   }
 
   @Post('meetings/:id/chat')
+  @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   postMeetingChat(
     @CurrentUser() actor: AuthUser,
@@ -325,6 +328,7 @@ export class WorkspaceController {
   }
 
   @Post('meetings/join-by-code')
+  @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   joinMeetingByCode(
     @CurrentUser() actor: AuthUser,
@@ -339,7 +343,13 @@ export class WorkspaceController {
   sendMeetingSignal(
     @CurrentUser() actor: AuthUser,
     @Param('id') id: string,
-    @Body() body: { toUserId?: string; type: string; payload: unknown },
+    @Body()
+    body: {
+      toUserId?: string;
+      type?: string;
+      payload?: unknown;
+      batch?: Array<{ toUserId?: string; type: string; payload?: unknown }>;
+    },
   ) {
     return this.workspace.sendMeetingSignal(actor, id, body);
   }

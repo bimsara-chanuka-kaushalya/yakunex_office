@@ -312,6 +312,7 @@ export class WorkspaceService implements OnModuleInit {
   private iceConfigCache: { data: MeetingIceConfig; expiresAt: number } | null = null;
   private lastMeetingsSyncAt = 0;
   private lastSignalPruneAt = new Map<string, number>();
+  private meetingMutationChain: Promise<unknown> = Promise.resolve();
   private meetingSignals = new Map<string, { seq: number; items: MeetingSignalItem[] }>();
 
   private clients: ClientItem[] = [];
@@ -1667,6 +1668,15 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   // ─── Meetings (Built-in Yakunex Hub Meet Engine + WebRTC Signaling) ──────
+  private withMeetingLock<T>(task: () => Promise<T>): Promise<T> {
+    const next = this.meetingMutationChain.then(task, task);
+    this.meetingMutationChain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
   private async syncMeetingsFromDb(organizationId?: string, force = false): Promise<void> {
     if (!force && Date.now() - this.lastMeetingsSyncAt < 1200) {
       return;
@@ -1687,41 +1697,58 @@ export class WorkspaceService implements OnModuleInit {
     }
   }
 
+  private async appendMeetingSignalsBatch(
+    meetingId: string,
+    signals: Array<Omit<MeetingSignalItem, 'id' | 'seq' | 'createdAt'>>,
+    organizationId?: string,
+  ): Promise<number> {
+    if (signals.length === 0) return Date.now();
+    const baseNow = Date.now();
+    const cached = this.meetingSignals.get(meetingId) ?? { seq: 0, items: [] };
+    const createdItems: MeetingSignalItem[] = signals.map((signal, idx) => {
+      const ts = baseNow + idx;
+      return {
+        id: `sig_${ts}_${randomUUID().slice(0, 6)}`,
+        ...signal,
+        seq: ts,
+        createdAt: ts,
+      };
+    });
+
+    const lastSeq = createdItems[createdItems.length - 1]?.seq ?? baseNow;
+    cached.items = [
+      ...cached.items.filter((x) => baseNow - x.createdAt < 90_000).slice(-(2500 - createdItems.length)),
+      ...createdItems,
+    ];
+    cached.seq = lastSeq;
+    this.meetingSignals.set(meetingId, cached);
+
+    try {
+      const orgId = await this.resolveOrgId(organizationId);
+      if (orgId) {
+        const rows = createdItems.map((item) => ({
+          organizationId: orgId,
+          key: `msig:${meetingId}:${String(item.createdAt).padStart(14, '0')}:${randomUUID().slice(0, 6)}`,
+          value: item as unknown as Prisma.InputJsonValue,
+        }));
+        if (rows.length > 1 && this.prisma.systemSetting?.createMany) {
+          await this.prisma.systemSetting.createMany({ data: rows, skipDuplicates: true });
+        } else if (this.prisma.systemSetting?.create) {
+          await Promise.all(rows.map((data) => this.prisma.systemSetting.create({ data })));
+        }
+      }
+    } catch {
+      // Non-fatal fallback to in-memory cache
+    }
+    return lastSeq;
+  }
+
   private async appendMeetingSignal(
     meetingId: string,
     signal: Omit<MeetingSignalItem, 'id' | 'seq' | 'createdAt'>,
     organizationId?: string,
   ): Promise<number> {
-    const now = Date.now();
-    const sigId = `sig_${now}_${randomUUID().slice(0, 6)}`;
-    const item: MeetingSignalItem = {
-      id: sigId,
-      ...signal,
-      seq: now,
-      createdAt: now,
-    };
-
-    const cached = this.meetingSignals.get(meetingId) ?? { seq: 0, items: [] };
-    cached.items = [...cached.items.filter((x) => now - x.createdAt < 90_000).slice(-199), item];
-    cached.seq = now;
-    this.meetingSignals.set(meetingId, cached);
-
-    try {
-      const orgId = await this.resolveOrgId(organizationId);
-      if (orgId && this.prisma.systemSetting?.create) {
-        const key = `msig:${meetingId}:${String(now).padStart(14, '0')}:${randomUUID().slice(0, 6)}`;
-        await this.prisma.systemSetting.create({
-          data: {
-            organizationId: orgId,
-            key,
-            value: item as unknown as Prisma.InputJsonValue,
-          },
-        });
-      }
-    } catch {
-      // Non-fatal fallback to in-memory cache
-    }
-    return now;
+    return this.appendMeetingSignalsBatch(meetingId, [signal], organizationId);
   }
 
   async listMeetings(organizationId?: string) {
@@ -1848,46 +1875,48 @@ export class WorkspaceService implements OnModuleInit {
     id: string,
     body?: { micOn?: boolean; camOn?: boolean },
   ) {
-    await this.syncMeetingsFromDb(actor.organizationId, true);
-    const mtg = this.meetings.find((m) => m.id === id);
-    if (!mtg) throw new NotFoundException('Meeting not found.');
-    if (mtg.status === 'SCHEDULED' || mtg.status === 'COMPLETED') {
-      mtg.status = 'LIVE';
-    }
-    const micOn = body?.micOn !== undefined ? Boolean(body.micOn) : true;
-    const camOn = body?.camOn !== undefined ? Boolean(body.camOn) : true;
-    const joinedAt = new Date().toISOString();
-    const existing = mtg.participants.find((p) => p.userId === actor.id);
-    if (existing) {
-      if (body?.micOn !== undefined) existing.micOn = micOn;
-      if (body?.camOn !== undefined) existing.camOn = camOn;
-      existing.joinedAt = joinedAt;
-    } else {
-      mtg.participants.push({
-        userId: actor.id,
-        fullName: actor.fullName,
-        role: actor.role,
-        micOn,
-        camOn,
-        screenSharing: false,
-        handRaised: false,
-        joinedAt,
-      });
-    }
-    mtg.attendeeCount = Math.max(mtg.attendeeCount, mtg.participants.length);
-    await this.persistStateNow(actor.organizationId);
-    await this.appendMeetingSignal(
-      mtg.id,
-      {
-        fromUserId: actor.id,
-        fromUserName: actor.fullName,
-        toUserId: '*',
-        type: 'peer-joined',
-        payload: { userId: actor.id, joinedAt },
-      },
-      actor.organizationId,
-    );
-    return mtg;
+    return this.withMeetingLock(async () => {
+      await this.syncMeetingsFromDb(actor.organizationId, true);
+      const mtg = this.meetings.find((m) => m.id === id);
+      if (!mtg) throw new NotFoundException('Meeting not found.');
+      if (mtg.status === 'SCHEDULED' || mtg.status === 'COMPLETED') {
+        mtg.status = 'LIVE';
+      }
+      const micOn = body?.micOn !== undefined ? Boolean(body.micOn) : true;
+      const camOn = body?.camOn !== undefined ? Boolean(body.camOn) : true;
+      const joinedAt = new Date().toISOString();
+      const existing = mtg.participants.find((p) => p.userId === actor.id);
+      if (existing) {
+        if (body?.micOn !== undefined) existing.micOn = micOn;
+        if (body?.camOn !== undefined) existing.camOn = camOn;
+        existing.joinedAt = joinedAt;
+      } else {
+        mtg.participants.push({
+          userId: actor.id,
+          fullName: actor.fullName,
+          role: actor.role,
+          micOn,
+          camOn,
+          screenSharing: false,
+          handRaised: false,
+          joinedAt,
+        });
+      }
+      mtg.attendeeCount = Math.max(mtg.attendeeCount, mtg.participants.length);
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        mtg.id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'peer-joined',
+          payload: { userId: actor.id, joinedAt },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    });
   }
 
   async joinMeetingByCode(
@@ -1906,55 +1935,59 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   async leaveMeetingRoom(actor: AuthUser, id: string) {
-    await this.syncMeetingsFromDb(actor.organizationId, true);
-    const mtg = this.meetings.find((m) => m.id === id);
-    if (!mtg) throw new NotFoundException('Meeting not found.');
-    mtg.participants = mtg.participants.filter((p) => p.userId !== actor.id);
-    await this.persistStateNow(actor.organizationId);
-    await this.appendMeetingSignal(
-      id,
-      {
-        fromUserId: actor.id,
-        fromUserName: actor.fullName,
-        toUserId: '*',
-        type: 'peer-left',
-        payload: { userId: actor.id },
-      },
-      actor.organizationId,
-    );
-    return mtg;
+    return this.withMeetingLock(async () => {
+      await this.syncMeetingsFromDb(actor.organizationId, true);
+      const mtg = this.meetings.find((m) => m.id === id);
+      if (!mtg) throw new NotFoundException('Meeting not found.');
+      mtg.participants = mtg.participants.filter((p) => p.userId !== actor.id);
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'peer-left',
+          payload: { userId: actor.id },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    });
   }
 
   async updateParticipantState(actor: AuthUser, id: string, body: Record<string, unknown>) {
-    await this.syncMeetingsFromDb(actor.organizationId, true);
-    const mtg = this.meetings.find((m) => m.id === id);
-    if (!mtg) throw new NotFoundException('Meeting not found.');
-    let participant = mtg.participants.find((p) => p.userId === actor.id);
-    if (!participant) {
-      participant = {
-        userId: actor.id,
-        fullName: actor.fullName,
-        role: actor.role,
-        micOn: true,
-        camOn: true,
-        screenSharing: false,
-        handRaised: false,
-        joinedAt: new Date().toISOString(),
-      };
-      mtg.participants.push(participant);
-    }
-    if (body.micOn !== undefined) participant.micOn = Boolean(body.micOn);
-    if (body.camOn !== undefined) participant.camOn = Boolean(body.camOn);
-    if (body.screenSharing !== undefined) {
-      participant.screenSharing = Boolean(body.screenSharing);
-      if (!participant.screenSharing) participant.screenStreamId = null;
-    }
-    if (body.screenStreamId !== undefined) {
-      participant.screenStreamId = body.screenStreamId ? String(body.screenStreamId) : null;
-    }
-    if (body.handRaised !== undefined) participant.handRaised = Boolean(body.handRaised);
-    await this.persistStateNow(actor.organizationId);
-    return mtg;
+    return this.withMeetingLock(async () => {
+      await this.syncMeetingsFromDb(actor.organizationId, true);
+      const mtg = this.meetings.find((m) => m.id === id);
+      if (!mtg) throw new NotFoundException('Meeting not found.');
+      let participant = mtg.participants.find((p) => p.userId === actor.id);
+      if (!participant) {
+        participant = {
+          userId: actor.id,
+          fullName: actor.fullName,
+          role: actor.role,
+          micOn: true,
+          camOn: true,
+          screenSharing: false,
+          handRaised: false,
+          joinedAt: new Date().toISOString(),
+        };
+        mtg.participants.push(participant);
+      }
+      if (body.micOn !== undefined) participant.micOn = Boolean(body.micOn);
+      if (body.camOn !== undefined) participant.camOn = Boolean(body.camOn);
+      if (body.screenSharing !== undefined) {
+        participant.screenSharing = Boolean(body.screenSharing);
+        if (!participant.screenSharing) participant.screenStreamId = null;
+      }
+      if (body.screenStreamId !== undefined) {
+        participant.screenStreamId = body.screenStreamId ? String(body.screenStreamId) : null;
+      }
+      if (body.handRaised !== undefined) participant.handRaised = Boolean(body.handRaised);
+      await this.persistStateNow(actor.organizationId);
+      return mtg;
+    });
   }
 
   async hostMeetingAction(
@@ -2016,8 +2049,31 @@ export class WorkspaceService implements OnModuleInit {
   async sendMeetingSignal(
     actor: AuthUser,
     id: string,
-    body: { toUserId?: string; type: string; payload: unknown },
+    body: {
+      toUserId?: string;
+      type?: string;
+      payload?: unknown;
+      batch?: Array<{ toUserId?: string; type: string; payload?: unknown }>;
+    },
   ) {
+    if (Array.isArray(body?.batch) && body.batch.length > 0) {
+      const valid = body.batch
+        .map((entry) => ({
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: String(entry?.toUserId || '*'),
+          type: String(entry?.type ?? '').trim(),
+          payload: entry?.payload ?? null,
+        }))
+        .filter((entry) => entry.type.length > 0)
+        .slice(0, 120);
+      if (valid.length === 0) {
+        throw new BadRequestException('Signal batch must contain at least one valid signal.');
+      }
+      const seq = await this.appendMeetingSignalsBatch(id, valid, actor.organizationId);
+      return { ok: true, seq, count: valid.length };
+    }
+
     const type = String(body?.type ?? '').trim();
     if (!type) throw new BadRequestException('Signal type is required.');
     const seq = await this.appendMeetingSignal(
@@ -2036,9 +2092,9 @@ export class WorkspaceService implements OnModuleInit {
 
   async pollMeetingSignals(actor: AuthUser, id: string, after: number) {
     const now = Date.now();
-    let items: MeetingSignalItem[] = [];
+    let dbItems: MeetingSignalItem[] = [];
 
-    const floor = after > 0 ? Math.max(0, after - 4000) : Math.max(0, now - 6000);
+    const floor = after > 0 ? Math.max(0, after - 4000) : Math.max(0, now - 8000);
 
     try {
       const orgId = await this.resolveOrgId(actor.organizationId);
@@ -2051,9 +2107,9 @@ export class WorkspaceService implements OnModuleInit {
         const rows = await this.prisma.systemSetting.findMany({
           where: { organizationId: orgId, key: keyFilter },
           orderBy: { key: 'asc' },
-          take: 300,
+          take: 1500,
         });
-        items = rows
+        dbItems = rows
           .map((r) => r.value as unknown as MeetingSignalItem | null)
           .filter((v): v is MeetingSignalItem => Boolean(v && typeof v.createdAt === 'number'));
 
@@ -2076,9 +2132,17 @@ export class WorkspaceService implements OnModuleInit {
       // Fallback to in-memory bucket
     }
 
-    if (items.length === 0) {
-      items = this.meetingSignals.get(id)?.items ?? [];
+    const memItems = this.meetingSignals.get(id)?.items ?? [];
+    const seenIds = new Set<string>();
+    const items: MeetingSignalItem[] = [];
+    for (const item of [...dbItems, ...memItems]) {
+      const key = item.id ?? `${item.seq}_${item.fromUserId}_${item.type}`;
+      if (!seenIds.has(key)) {
+        seenIds.add(key);
+        items.push(item);
+      }
     }
+    items.sort((a, b) => a.createdAt - b.createdAt);
 
     // 4-second overlap window ensures signals arriving near boundary timestamps across Lambdas are never missed;
     // client deduplicates cleanly via signal id.

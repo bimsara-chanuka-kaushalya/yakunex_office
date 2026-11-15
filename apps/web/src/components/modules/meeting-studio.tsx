@@ -197,7 +197,7 @@ function getPlayoutDelayForTier(tier: QualityTier): number {
   return 0.05;
 }
 
-/** Enables Opus In-Band FEC & DTX in SDP so voice survives 3G packet loss without dropouts. */
+/** Enables Opus In-Band FEC, DTX & mono voice bitrates in SDP so 20+ mics survive 3G packet loss. */
 function enhanceSdpForResilience(sdp?: string): string | undefined {
   if (!sdp) return sdp;
   return sdp
@@ -207,6 +207,8 @@ function enhanceSdpForResilience(sdp?: string): string | undefined {
         let next = line;
         if (!next.includes('useinbandfec=')) next += ';useinbandfec=1';
         if (!next.includes('usedtx=')) next += ';usedtx=1';
+        if (!next.includes('stereo=')) next += ';stereo=0;sprop-stereo=0';
+        if (!next.includes('maxaveragebitrate=')) next += ';maxaveragebitrate=24000';
         return next;
       }
       return line;
@@ -231,11 +233,12 @@ function formatDuration(seconds: number): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
-/** Tunes WebRTC RTCRtpSender bitrates, resolution scaling & priority without stalling frames. */
+/** Tunes WebRTC RTCRtpSender bitrates, resolution scaling & priority for 1-to-20+ peers without stalling frames. */
 async function tuneSenderQuality(
   sender: RTCRtpSender,
   profile: 'cam-video' | 'screen-video' | 'mic-audio' | 'screen-audio',
   tier: QualityTier = 'hd',
+  peerCount = 1,
 ): Promise<void> {
   try {
     const params = sender.getParameters();
@@ -246,58 +249,87 @@ async function tuneSenderQuality(
       priority?: string;
       networkPriority?: string;
     };
+    const peers = Math.max(1, peerCount);
 
     if (profile === 'screen-video') {
-      // Cap at smooth 30fps (10-15fps on 3G/weak links) so encoder queue never lags behind audio
-      enc.maxBitrate =
+      // Divide total screen-share uplink budget smoothly across active peers
+      const baseScreenBitrate =
         tier === '3g-ultra'
-          ? 320_000
+          ? Math.min(320_000, Math.round(650_000 / Math.sqrt(peers)))
           : tier === 'low-signal'
-            ? 550_000
+            ? Math.min(550_000, Math.round(1_100_000 / Math.sqrt(peers)))
             : tier === 'balanced'
-              ? 1_500_000
-              : 2_800_000;
+              ? Math.min(1_500_000, Math.round(2_400_000 / Math.sqrt(peers)))
+              : Math.min(2_800_000, Math.round(4_000_000 / Math.sqrt(peers)));
+      enc.maxBitrate = Math.max(85_000, baseScreenBitrate);
       enc.maxFramerate =
-        tier === '3g-ultra' ? 10 : tier === 'low-signal' ? 15 : tier === 'balanced' ? 24 : 30;
+        tier === '3g-ultra' || peers >= 12
+          ? 10
+          : tier === 'low-signal' || peers >= 6
+            ? 15
+            : tier === 'balanced'
+              ? 24
+              : 30;
       enc.scaleResolutionDownBy =
-        tier === '3g-ultra' ? 1.5 : tier === 'low-signal' ? 1.25 : 1;
+        tier === '3g-ultra' || peers >= 12 ? 1.5 : tier === 'low-signal' ? 1.25 : 1;
       params.degradationPreference =
-        tier === '3g-ultra' || tier === 'low-signal' ? 'maintain-framerate' : 'balanced';
+        tier === '3g-ultra' || tier === 'low-signal' || peers >= 6 ? 'maintain-framerate' : 'balanced';
     } else if (profile === 'cam-video') {
-      enc.maxBitrate =
+      // Crowd-aware per-peer camera bitrate budgeting so 20 simultaneous cameras never saturate uplink
+      const maxPerPeer =
         tier === '3g-ultra'
-          ? 110_000
+          ? Math.max(22_000, Math.min(110_000, Math.round(380_000 / peers)))
           : tier === 'low-signal'
-            ? 220_000
+            ? Math.max(35_000, Math.min(220_000, Math.round(680_000 / peers)))
             : tier === 'balanced'
-              ? 650_000
-              : 1_500_000;
-      enc.maxFramerate =
+              ? Math.max(65_000, Math.min(650_000, Math.round(1_350_000 / peers)))
+              : Math.max(110_000, Math.min(1_500_000, Math.round(2_500_000 / peers)));
+      enc.maxBitrate = maxPerPeer;
+
+      const baseFps =
         tier === '3g-ultra' ? 12 : tier === 'low-signal' ? 15 : tier === 'balanced' ? 24 : 30;
-      enc.scaleResolutionDownBy =
+      enc.maxFramerate =
+        peers >= 13
+          ? Math.min(baseFps, tier === '3g-ultra' ? 10 : 15)
+          : peers >= 7
+            ? Math.min(baseFps, 18)
+            : peers >= 3
+              ? Math.min(baseFps, 24)
+              : baseFps;
+
+      const baseScale =
         tier === '3g-ultra' ? 3 : tier === 'low-signal' ? 2 : tier === 'balanced' ? 1.5 : 1;
-      enc.networkPriority = tier === '3g-ultra' || tier === 'low-signal' ? 'low' : 'medium';
-      params.degradationPreference = tier === 'hd' ? 'balanced' : 'maintain-framerate';
+      enc.scaleResolutionDownBy =
+        peers >= 13
+          ? Math.max(baseScale, 3)
+          : peers >= 7
+            ? Math.max(baseScale, 2.25)
+            : peers >= 3
+              ? Math.max(baseScale, 1.5)
+              : baseScale;
+
+      enc.networkPriority = tier === '3g-ultra' || tier === 'low-signal' || peers >= 6 ? 'low' : 'medium';
+      params.degradationPreference = tier === 'hd' && peers <= 2 ? 'balanced' : 'maintain-framerate';
     } else if (profile === 'screen-audio') {
       enc.maxBitrate =
         tier === '3g-ultra'
-          ? 48_000
+          ? 40_000
           : tier === 'low-signal'
-            ? 64_000
+            ? 56_000
             : tier === 'balanced'
-              ? 96_000
+              ? 80_000
               : 128_000;
       enc.priority = 'high';
       enc.networkPriority = 'high';
     } else {
-      // Prioritize voice packets above video so 3G calls never lose speech clarity
+      // Prioritize voice packets above video so 20-person calls on 3G/4G never lose speech clarity
       enc.maxBitrate =
-        tier === '3g-ultra'
-          ? 24_000
-          : tier === 'low-signal'
-            ? 32_000
+        tier === '3g-ultra' || peers >= 10
+          ? 20_000
+          : tier === 'low-signal' || peers >= 5
+            ? 28_000
             : tier === 'balanced'
-              ? 48_000
+              ? 40_000
               : 64_000;
       enc.priority = 'high';
       enc.networkPriority = 'high';
@@ -713,20 +745,63 @@ export function MeetingStudio({
     }
   }, []);
 
-  const sendSignal = useCallback(
-    async (toUserId: string, type: string, payload: unknown): Promise<boolean> => {
-      try {
+  const signalOutboxRef = useRef<{
+    timer: ReturnType<typeof setTimeout> | null;
+    queue: Array<{
+      toUserId: string;
+      type: string;
+      payload: unknown;
+      resolve: (ok: boolean) => void;
+    }>;
+  }>({ timer: null, queue: [] });
+
+  const flushSignalOutbox = useCallback(async () => {
+    const box = signalOutboxRef.current;
+    box.timer = null;
+    if (box.queue.length === 0) return;
+    const items = box.queue.splice(0, box.queue.length);
+    try {
+      if (items.length === 1) {
+        const only = items[0]!;
         await post(`/meetings/${room.id}/signal`, {
-          toUserId,
-          type,
-          payload,
+          toUserId: only.toUserId,
+          type: only.type,
+          payload: only.payload,
         });
-        return true;
-      } catch {
-        return false;
+      } else {
+        await post(`/meetings/${room.id}/signal`, {
+          batch: items.map((item) => ({
+            toUserId: item.toUserId,
+            type: item.type,
+            payload: item.payload,
+          })),
+        });
       }
+      items.forEach((item) => item.resolve(true));
+    } catch {
+      items.forEach((item) => item.resolve(false));
+    }
+  }, [room.id]);
+
+  const sendSignal = useCallback(
+    (toUserId: string, type: string, payload: unknown): Promise<boolean> => {
+      return new Promise<boolean>((resolve) => {
+        const box = signalOutboxRef.current;
+        box.queue.push({ toUserId, type, payload, resolve });
+        if (box.queue.length >= 25) {
+          if (box.timer) {
+            clearTimeout(box.timer);
+            box.timer = null;
+          }
+          void flushSignalOutbox();
+        } else if (!box.timer) {
+          box.timer = setTimeout(() => {
+            void flushSignalOutbox();
+          }, 28);
+        }
+      });
     },
-    [room.id],
+    [flushSignalOutbox],
   );
 
   // Resolve server-supplied STUN + optional TURN ICE configuration on mount
@@ -901,6 +976,7 @@ export function MeetingStudio({
   // Apply an active bitrate/resolution tier + jitter buffer hint across all active peers (zero blink)
   const applyQualityTierToAllPeers = useCallback(async (tier: QualityTier) => {
     activeTierRef.current = tier;
+    const peerCount = Math.max(1, pcsRef.current.size);
     const delayHint = getPlayoutDelayForTier(tier);
     const scrVideoId = screenStreamRef.current?.getVideoTracks()[0]?.id;
     const scrAudioId = screenStreamRef.current?.getAudioTracks()[0]?.id;
@@ -925,10 +1001,29 @@ export function MeetingStudio({
               : sender.track.kind === 'video'
                 ? 'cam-video'
                 : 'mic-audio';
-        await tuneSenderQuality(sender, profile, tier);
+        await tuneSenderQuality(sender, profile, tier, peerCount);
       }
     }
   }, []);
+
+  // Dynamically adapt local camera capture resolution & framerate as room scales up to 20 participants
+  useEffect(() => {
+    const peerCount = Math.max(1, room.participants.length - 1);
+    const tier = activeTierRef.current;
+    const vTrack = localStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live');
+    if (vTrack && typeof vTrack.applyConstraints === 'function') {
+      const target =
+        tier === '3g-ultra' || peerCount >= 13
+          ? { width: { ideal: 320 }, height: { ideal: 180 }, frameRate: { ideal: 15, max: 15 } }
+          : tier === 'low-signal' || peerCount >= 7
+            ? { width: { ideal: 480 }, height: { ideal: 270 }, frameRate: { ideal: 18, max: 20 } }
+            : peerCount >= 3
+              ? { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 24 } }
+              : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } };
+      void vTrack.applyConstraints(target).catch(() => undefined);
+    }
+    void applyQualityTierToAllPeers(tier);
+  }, [applyQualityTierToAllPeers, room.participants.length]);
 
   // Attach local camera/mic + screen tracks into a peer connection and apply current quality tier
   const attachOutgoingTracks = useCallback(
@@ -938,6 +1033,7 @@ export function MeetingStudio({
     ): Promise<void> => {
       const { createOfferSlots = false } = options;
       const tier = activeTierRef.current;
+      const peerCount = Math.max(1, pcsRef.current.size);
       const camStream = localStreamRef.current;
       const scrIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
 
@@ -960,10 +1056,16 @@ export function MeetingStudio({
             existingTransceiver.sender,
             kind === 'video' ? 'cam-video' : 'mic-audio',
             tier,
+            peerCount,
           );
         } else if (wantedTrack && camStream) {
           const sender = pc.addTrack(wantedTrack, camStream);
-          void tuneSenderQuality(sender, kind === 'video' ? 'cam-video' : 'mic-audio', tier);
+          void tuneSenderQuality(
+            sender,
+            kind === 'video' ? 'cam-video' : 'mic-audio',
+            tier,
+            peerCount,
+          );
         } else if (createOfferSlots) {
           pc.addTransceiver(kind, { direction: 'recvonly' });
         }
@@ -981,6 +1083,7 @@ export function MeetingStudio({
                 sender,
                 track.kind === 'video' ? 'screen-video' : 'screen-audio',
                 tier,
+                peerCount,
               );
             } catch {
               // Ignore if track already attached to another sender
@@ -1353,9 +1456,16 @@ export function MeetingStudio({
             audioTrackId: activeScr.getAudioTracks()[0]?.id ?? '',
           });
         }
-        // Deterministic offerer avoids glare on initial join: lexicographically smaller ID initiates
+        // Deterministic offerer avoids glare on initial join; stagger offers by 55ms in large 20-peer rooms
         if (currentUser.id.localeCompare(p.userId) < 0 && pc.signalingState === 'stable') {
-          void renegotiatePeer(p.userId);
+          const peerIdx = Math.min(19, pcsRef.current.size);
+          if (peerIdx <= 2) {
+            void renegotiatePeer(p.userId);
+          } else {
+            setTimeout(() => {
+              void renegotiatePeerRef.current(p.userId);
+            }, (peerIdx - 2) * 55);
+          }
         }
       }
     }
@@ -1675,43 +1785,76 @@ export function MeetingStudio({
     showToast,
   ]);
 
-  // Web Audio active speaker detector across local + remote streams (renders ONLY when status changes)
+  // Persistent single AudioContext active speaker detector across up to 20+ local & remote streams
+  const speakerCtxRef = useRef<AudioContext | null>(null);
+  const speakerAnalysersRef = useRef<
+    Map<string, { trackId: string; analyser: AnalyserNode; source: MediaStreamAudioSourceNode }>
+  >(new Map());
+
   useEffect(() => {
     if (typeof window === 'undefined' || !('AudioContext' in window)) return;
-    let ctx: AudioContext | null = null;
-    try {
-      ctx = new window.AudioContext({ latencyHint: 'interactive' });
-      if (ctx.state === 'suspended') {
-        void ctx.resume().catch(() => undefined);
+    if (!speakerCtxRef.current || speakerCtxRef.current.state === 'closed') {
+      try {
+        speakerCtxRef.current = new window.AudioContext({ latencyHint: 'interactive' });
+      } catch {
+        return;
       }
-    } catch {
-      return;
+    }
+    const ctx = speakerCtxRef.current;
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => undefined);
     }
 
-    const analysers = new Map<string, { analyser: AnalyserNode; source: MediaStreamAudioSourceNode }>();
-    const bindStream = (userId: string, stream: MediaStream | null | undefined) => {
-      if (!ctx || !stream || stream.getAudioTracks().length === 0) return;
+    const activeAnalysers = speakerAnalysersRef.current;
+    const wantedStreams = new Map<string, MediaStream>();
+    if (micOn && localStream && localStream.getAudioTracks().length > 0) {
+      wantedStreams.set(currentUser.id, localStream);
+    }
+    for (const [uid, s] of Object.entries(remoteCamStreams)) {
+      if (s && s.getAudioTracks().length > 0) {
+        wantedStreams.set(uid, s);
+      }
+    }
+
+    // Remove disconnected or replaced streams
+    for (const [uid, entry] of Array.from(activeAnalysers.entries())) {
+      const currentStream = wantedStreams.get(uid);
+      const currentTrackId = currentStream?.getAudioTracks()[0]?.id ?? '';
+      if (!currentStream || currentTrackId !== entry.trackId) {
+        try {
+          entry.source.disconnect();
+        } catch {
+          // Ignore
+        }
+        activeAnalysers.delete(uid);
+      }
+    }
+
+    // Incrementally bind new streams onto the shared AudioContext
+    for (const [uid, stream] of wantedStreams.entries()) {
+      if (activeAnalysers.has(uid)) continue;
+      const trackId = stream.getAudioTracks()[0]?.id ?? '';
+      if (!trackId) continue;
       try {
         const source = ctx.createMediaStreamSource(stream);
         const analyser = ctx.createAnalyser();
-        analyser.fftSize = 256;
+        analyser.fftSize = 128;
         source.connect(analyser);
-        analysers.set(userId, { analyser, source });
+        activeAnalysers.set(uid, { trackId, analyser, source });
       } catch {
         // Ignore stream without active audio
       }
-    };
-
-    if (micOn && localStream) bindStream(currentUser.id, localStream);
-    for (const [uid, s] of Object.entries(remoteCamStreams)) {
-      bindStream(uid, s);
     }
+  }, [currentUser.id, localStream, micOn, remoteCamStreams]);
 
-    const buf = new Uint8Array(128);
+  useEffect(() => {
+    const buf = new Uint8Array(64);
     const interval = setInterval(() => {
+      const ctx = speakerCtxRef.current;
       if (ctx?.state === 'suspended') {
         void ctx.resume().catch(() => undefined);
       }
+      const analysers = speakerAnalysersRef.current;
       const next: Record<string, boolean> = {};
       let changed = false;
       const prev = speakingRef.current;
@@ -1737,20 +1880,22 @@ export function MeetingStudio({
         speakingRef.current = next;
         setSpeakingUsers(next);
       }
-    }, 240);
+    }, 280);
 
     return () => {
       clearInterval(interval);
-      analysers.forEach(({ source }) => {
+      speakerAnalysersRef.current.forEach(({ source }) => {
         try {
           source.disconnect();
         } catch {
           // Ignore
         }
       });
-      void ctx?.close().catch(() => undefined);
+      speakerAnalysersRef.current.clear();
+      void speakerCtxRef.current?.close().catch(() => undefined);
+      speakerCtxRef.current = null;
     };
-  }, [currentUser.id, localStream, micOn, remoteCamStreams]);
+  }, []);
 
   // Silent background WebRTC network adaptation & auto-reconnect on 3G/weak/dropped connections
   useEffect(() => {
@@ -1879,6 +2024,7 @@ export function MeetingStudio({
           transceiver.sender,
           kind === 'video' ? 'cam-video' : 'mic-audio',
           activeTierRef.current,
+          Math.max(1, pcsRef.current.size),
         );
         const negotiated =
           transceiver.currentDirection === 'sendrecv' || transceiver.currentDirection === 'sendonly';
@@ -1893,6 +2039,7 @@ export function MeetingStudio({
         added,
         kind === 'video' ? 'cam-video' : 'mic-audio',
         activeTierRef.current,
+        Math.max(1, pcsRef.current.size),
       );
       return true;
     },
@@ -2030,33 +2177,35 @@ export function MeetingStudio({
         const ageMs = now - firstSeen;
         const lastOfferAt = lastOfferAtRef.current.get(p.userId) ?? 0;
         const lastNeedOfferAt = lastNeedOfferAtRef.current.get(p.userId) ?? 0;
+        const crowdGraceMs = Math.min(8_000, pcsRef.current.size * 350);
+        const offerTimeoutMs = 5500 + crowdGraceMs;
 
         if (!pc.currentRemoteDescription) {
           if (isOfferer) {
-            if (ageMs > 2400 && pc.signalingState === 'stable') {
+            if (ageMs > 2400 + Math.min(3000, pcsRef.current.size * 120) && pc.signalingState === 'stable') {
               void renegotiatePeer(p.userId);
             } else if (
               pc.signalingState !== 'stable' &&
               lastOfferAt > 0 &&
-              now - lastOfferAt > 5000
+              now - lastOfferAt > offerTimeoutMs
             ) {
               // Break have-local-offer deadlock if offer was lost or collided
               peerFirstSeenAtRef.current.set(p.userId, now);
               void renegotiatePeer(p.userId, true, true);
             }
-          } else if (ageMs > 2200 && now - lastNeedOfferAt > 2500) {
+          } else if (ageMs > 2400 + Math.min(3500, pcsRef.current.size * 150) && now - lastNeedOfferAt > 3500) {
             // Callee stuck without an offer (e.g. post-reload): ask peer to send fresh offer
             lastNeedOfferAtRef.current.set(p.userId, now);
             void sendSignal(p.userId, 'need-offer', {
               reset: true,
-              sessionId: `${localSessionIdRef.current}_${Math.floor(now / 5000)}`,
+              sessionId: `${localSessionIdRef.current}_${Math.floor(now / 6000)}`,
             });
           }
           continue;
         }
 
-        // Break any post-connection stalled renegotiation offer stuck > 5s
-        if (pc.signalingState !== 'stable' && lastOfferAt > 0 && now - lastOfferAt > 5000) {
+        // Break any post-connection stalled renegotiation offer stuck beyond crowd-scaled timeout
+        if (pc.signalingState !== 'stable' && lastOfferAt > 0 && now - lastOfferAt > offerTimeoutMs) {
           void renegotiatePeer(p.userId, false, true);
           continue;
         }
@@ -2705,14 +2854,16 @@ export function MeetingStudio({
     return null;
   }, [currentUser.fullName, currentUser.id, remoteScreenStreams, room.participants, screenStream]);
 
-  // Compute grid columns in Gallery View based on participant count
+  // Compute grid columns in Gallery View based on participant count (supports 1 to 20+ simultaneous video tiles)
   const gridColsClass = useMemo(() => {
     const n = room.participants.length;
     if (n <= 1) return 'grid-cols-1 max-w-4xl mx-auto';
     if (n === 2) return 'grid-cols-1 md:grid-cols-2 max-w-6xl mx-auto';
     if (n <= 4) return 'grid-cols-1 sm:grid-cols-2 max-w-6xl mx-auto';
     if (n <= 6) return 'grid-cols-2 lg:grid-cols-3';
-    return 'grid-cols-2 md:grid-cols-3 xl:grid-cols-4';
+    if (n <= 9) return 'grid-cols-2 sm:grid-cols-3';
+    if (n <= 12) return 'grid-cols-2 sm:grid-cols-3 xl:grid-cols-4';
+    return 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5';
   }, [room.participants.length]);
 
   const activeSpeakerParticipant = useMemo(() => {
