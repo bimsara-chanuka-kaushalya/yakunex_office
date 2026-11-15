@@ -67,10 +67,10 @@ export function ChatView() {
   const loadChannels = useCallback(async () => {
     const chs = await api<ChatChannel[]>('/chat/channels');
     setChannels(chs);
-    if (chs.length > 0 && !chs.some((c) => c.id === activeId)) {
-      setActiveId(chs[0].id);
+    if (chs.length > 0) {
+      setActiveId((prev) => (chs.some((c) => c.id === prev) ? prev : chs[0].id));
     }
-  }, [activeId]);
+  }, []);
 
   const loadMessages = useCallback(async (channelId: string) => {
     setMessages(await api<ChatMessage[]>(`/chat/channels/${channelId}/messages`));

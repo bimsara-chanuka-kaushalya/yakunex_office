@@ -466,13 +466,15 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   private persistState(organizationId?: string): void {
+    if (!this.prisma.systemSetting?.upsert) return;
     if (this.persistTimer) {
       clearTimeout(this.persistTimer);
     }
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
       void this.persistStateNow(organizationId);
-    }, 400);
+    }, 80);
+    this.persistTimer.unref?.();
   }
 
   private async persistStateNow(organizationId?: string): Promise<void> {
@@ -1688,8 +1690,25 @@ export class WorkspaceService implements OnModuleInit {
         where: { organizationId_key: { organizationId: orgId, key: 'workspace_state' } },
       });
       const val = (setting?.value ?? null) as Record<string, unknown> | null;
-      if (val && Array.isArray(val.meetings)) {
-        this.meetings = val.meetings as MeetingItem[];
+      if (val && typeof val === 'object') {
+        if (Array.isArray(val.clients)) this.clients = val.clients as ClientItem[];
+        if (Array.isArray(val.projects)) this.projects = val.projects as ProjectItem[];
+        if (Array.isArray(val.sprints)) this.sprints = val.sprints as SprintItem[];
+        if (Array.isArray(val.tasks)) this.tasks = val.tasks as TaskItem[];
+        if (Array.isArray(val.bugs)) this.bugs = val.bugs as BugItem[];
+        if (Array.isArray(val.documents)) this.documents = val.documents as DocumentItem[];
+        if (Array.isArray(val.timeEntries)) this.timeEntries = val.timeEntries as TimeEntryItem[];
+        if (Array.isArray(val.attendance)) this.attendance = val.attendance as AttendanceItem[];
+        if (Array.isArray(val.leaveRequests)) this.leaveRequests = val.leaveRequests as LeaveRequestItem[];
+        if (Array.isArray(val.interns)) this.interns = val.interns as InternItem[];
+        if (Array.isArray(val.channels) && val.channels.length > 0) {
+          this.channels = val.channels as ChatChannelItem[];
+        }
+        if (Array.isArray(val.messages)) this.messages = val.messages as ChatMessageItem[];
+        if (Array.isArray(val.meetings)) this.meetings = val.meetings as MeetingItem[];
+        if (val.settings && typeof val.settings === 'object') {
+          this.settings = { ...this.settings, ...(val.settings as Partial<OrganizationSettings>) };
+        }
       }
       this.lastMeetingsSyncAt = Date.now();
     } catch {

@@ -77,13 +77,13 @@ export function TimeTrackerView() {
       setActiveTimer(res.activeTimer);
       setEntries(res.entries);
       setProjects(prjs);
-      if (prjs.length > 0 && !projectId) {
-        setProjectId(prjs[0].id);
+      if (prjs.length > 0) {
+        setProjectId((prev) => prev || prjs[0].id);
       }
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -796,6 +796,8 @@ interface InternRow {
 }
 
 export function InternsView() {
+  const { user } = useAuth();
+  const canEvaluate = user?.role !== 'INTERN';
   const [interns, setInterns] = useState<InternRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [evalTarget, setEvalTarget] = useState<InternRow | null>(null);
@@ -804,6 +806,7 @@ export function InternsView() {
   const [strengths, setStrengths] = useState('');
   const [improvements, setImprovements] = useState('');
   const [feedback, setFeedback] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -819,25 +822,35 @@ export function InternsView() {
   }, [load]);
 
   async function toggleTask(internId: string, taskId: string) {
-    await patch(`/interns/${internId}/tasks/${taskId}`, {});
-    await load();
+    setError(null);
+    try {
+      await patch(`/interns/${internId}/tasks/${taskId}`, {});
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not update training task.');
+    }
   }
 
   async function onAddEvaluation(e: FormEvent) {
     e.preventDefault();
     if (!evalTarget) return;
-    await post(`/interns/${evalTarget.id}/evaluations`, {
-      period,
-      score: Number(score),
-      strengths,
-      improvements,
-      feedback,
-    });
-    setEvalTarget(null);
-    setStrengths('');
-    setImprovements('');
-    setFeedback('');
-    await load();
+    setError(null);
+    try {
+      await post(`/interns/${evalTarget.id}/evaluations`, {
+        period,
+        score: Number(score),
+        strengths,
+        improvements,
+        feedback,
+      });
+      setEvalTarget(null);
+      setStrengths('');
+      setImprovements('');
+      setFeedback('');
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not submit evaluation.');
+    }
   }
 
   return (
@@ -848,6 +861,12 @@ export function InternsView() {
           University intern onboarding, structured weekly training plans and mentor evaluations.
         </p>
       </header>
+
+      {error && (
+        <div className="rounded-xl border border-danger/30 bg-danger/10 px-4 py-2.5 text-xs text-danger">
+          {error}
+        </div>
+      )}
 
       {loading ? (
         <Skeleton className="h-64 rounded-2xl" />
@@ -877,9 +896,11 @@ export function InternsView() {
                     </p>
                   </div>
                 </div>
-                <Button size="sm" onClick={() => setEvalTarget(intern)}>
-                  <Star className="h-4 w-4" /> Add evaluation
-                </Button>
+                {canEvaluate && (
+                  <Button size="sm" onClick={() => setEvalTarget(intern)}>
+                    <Star className="h-4 w-4" /> Add evaluation
+                  </Button>
+                )}
               </div>
 
               <div className="mt-5">

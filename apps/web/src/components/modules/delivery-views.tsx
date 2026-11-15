@@ -490,6 +490,9 @@ export function TasksView() {
       const [t, p] = await Promise.all([api<TaskRow[]>('/tasks'), api<ProjectRow[]>('/projects')]);
       setTasks(t);
       setProjects(p);
+      if (p.length > 0) {
+        setProjectId((prev) => prev || p[0].id);
+      }
     } finally {
       setLoading(false);
     }
@@ -757,6 +760,7 @@ export function TasksView() {
                 value={projectId}
                 onChange={(e) => setProjectId(e.target.value)}
               >
+                <option value="">General Work</option>
                 {projects.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
