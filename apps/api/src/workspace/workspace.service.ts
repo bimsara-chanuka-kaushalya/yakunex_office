@@ -653,7 +653,26 @@ export class WorkspaceService implements OnModuleInit {
         if (Array.isArray(snap.leaveRequests)) this.leaveRequests = snap.leaveRequests as LeaveRequestItem[];
         if (Array.isArray(snap.interns)) this.interns = snap.interns as InternItem[];
         if (Array.isArray(snap.channels) && snap.channels.length > 0) {
-          this.channels = snap.channels as ChatChannelItem[];
+          const merged = new Map<string, ChatChannelItem>(this.channels.map((c) => [c.id, c]));
+          for (const saved of snap.channels as ChatChannelItem[]) {
+            if (saved?.id) {
+              const base = merged.get(saved.id);
+              merged.set(
+                saved.id,
+                base
+                  ? {
+                      ...base,
+                      ...saved,
+                      category: saved.category ?? base.category,
+                      privacy: saved.privacy ?? base.privacy,
+                      allowedRoles: saved.allowedRoles ?? base.allowedRoles,
+                      allowedTitleKeywords: saved.allowedTitleKeywords ?? base.allowedTitleKeywords,
+                    }
+                  : saved,
+              );
+            }
+          }
+          this.channels = Array.from(merged.values());
         }
         if (Array.isArray(snap.messages)) this.messages = snap.messages as ChatMessageItem[];
         if (Array.isArray(snap.meetings)) this.meetings = snap.meetings as MeetingItem[];

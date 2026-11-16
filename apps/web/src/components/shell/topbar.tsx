@@ -1,7 +1,7 @@
 'use client';
 
 import { usePathname, useRouter } from 'next/navigation';
-import { ArrowLeft, Bell, ChevronRight, Database, LogOut, Menu, Monitor, Moon, Search, Sun } from 'lucide-react';
+import { ArrowLeft, ChevronRight, LogOut, Menu, Monitor, Moon, Search, Sun } from 'lucide-react';
 import { useAuth, useLang, useTheme, type ThemeChoice } from '@/components/providers';
 import { Button } from '@/components/ui/button';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';

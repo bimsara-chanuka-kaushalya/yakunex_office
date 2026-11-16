@@ -10,7 +10,6 @@ import {
   FolderKanban,
   Kanban,
   List,
-  ListChecks,
   Mail,
   MapPin,
   Phone,
@@ -21,7 +20,7 @@ import {
 import { useAuth } from '@/components/providers';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardHeader, StatCard } from '@/components/ui/card';
+import { Card, StatCard } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';

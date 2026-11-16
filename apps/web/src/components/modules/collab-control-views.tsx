@@ -20,7 +20,6 @@ import {
   Reply,
   Search,
   Send,
-  Settings,
   Trash2,
   Users,
   Video,
@@ -85,11 +84,24 @@ interface OrgMember {
 const CHANNEL_CATEGORIES: Array<{ key: string; label: string }> = [
   { key: 'ANNOUNCEMENTS', label: 'Announcements & General' },
   { key: 'MANAGEMENT', label: 'Management' },
-  { key: 'DEPARTMENT', label: 'Departments' },
+  { key: 'DEPARTMENTS', label: 'Departments' },
   { key: 'TECHNICAL', label: 'Technical & Projects' },
-  { key: 'CONFIDENTIAL', label: 'Private & Confidential' },
+  { key: 'PRIVATE', label: 'Private & Confidential' },
   { key: 'DIRECT', label: 'Direct Messages' },
 ];
+
+function normalizeChannelCategory(ch: ChatChannel): string {
+  if (ch.type === 'DIRECT' || ch.category === 'DIRECT') return 'DIRECT';
+  if (ch.category === 'ANNOUNCEMENTS' || ch.type === 'ANNOUNCEMENT') return 'ANNOUNCEMENTS';
+  if (ch.category === 'MANAGEMENT' || ch.type === 'MANAGEMENT') return 'MANAGEMENT';
+  if (ch.category === 'DEPARTMENTS' || ch.category === 'DEPARTMENT' || ch.type === 'DEPARTMENT') {
+    return ch.privacy === 'CONFIDENTIAL' && ch.category === 'PRIVATE' ? 'PRIVATE' : 'DEPARTMENTS';
+  }
+  if (ch.category === 'PRIVATE' || ch.category === 'CONFIDENTIAL' || ch.privacy === 'CONFIDENTIAL') {
+    return 'PRIVATE';
+  }
+  return 'TECHNICAL';
+}
 
 const QUICK_REACTIONS = ['👍', '❤️', '🎉'];
 
@@ -313,10 +325,7 @@ export function ChatView() {
 
           <div className="flex-1 space-y-4 overflow-y-auto pr-1">
             {CHANNEL_CATEGORIES.map((cat) => {
-              const items = filteredChannels.filter((c) => {
-                const cCat = c.category ?? (c.type === 'DIRECT' ? 'DIRECT' : 'TECHNICAL');
-                return cCat === cat.key;
-              });
+              const items = filteredChannels.filter((c) => normalizeChannelCategory(c) === cat.key);
               if (items.length === 0) return null;
               return (
                 <div key={cat.key}>

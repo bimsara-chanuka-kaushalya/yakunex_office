@@ -5,16 +5,10 @@ import Link from 'next/link';
 import {
   ArrowRight,
   Bug,
-  Calendar,
-  CheckCircle2,
   Clock,
   FolderKanban,
-  GraduationCap,
   ListChecks,
-  Plus,
   ShieldCheck,
-  Sparkles,
-  UserCheck,
   Users,
   Video,
 } from 'lucide-react';
