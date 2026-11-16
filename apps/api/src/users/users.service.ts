@@ -330,6 +330,48 @@ export class UsersService {
     return updated;
   }
 
+  async deleteUser(
+    actor: AuthUser,
+    targetId: string,
+    meta: { ipAddress?: string; userAgent?: string },
+  ) {
+    if (actor.role !== Role.SUPER_ADMIN) {
+      throw new ForbiddenException('Only a Super Admin can delete user accounts.');
+    }
+    if (targetId === actor.id) {
+      throw new BadRequestException('You cannot delete your own Super Admin account.');
+    }
+    const target = await this.findTargetOrFail(actor, targetId);
+
+    await this.prisma.user.update({
+      where: { id: target.id },
+      data: {
+        deletedAt: new Date(),
+        status: UserStatus.DEACTIVATED,
+        email: `deleted_${Date.now()}_${target.email}`,
+        companyId: target.companyId ? `DEL-${target.companyId}-${target.id.slice(-4)}` : null,
+      },
+    });
+    await this.prisma.refreshToken.updateMany({
+      where: { userId: target.id, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    this.rbac.invalidateCache(target.id);
+
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'USER_DELETED',
+      entityType: 'User',
+      entityId: target.id,
+      metadata: { email: target.email, companyId: target.companyId, role: target.role },
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent,
+    });
+
+    return { ok: true, id: target.id };
+  }
+
   async getPermissionOverrides(actor: AuthUser, targetId: string) {
     const target = await this.findTargetOrFail(actor, targetId);
     const [overrides, roleDefaults] = await Promise.all([

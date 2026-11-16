@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Put, Query, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { CurrentUser, RequirePermissions } from '../common/decorators';
 import type { AuthUser } from '../common/types';
@@ -69,5 +69,11 @@ export class UsersController {
   @RequirePermissions(PERMISSIONS.USERS_MANAGE_PERMISSIONS)
   catalog() {
     return this.users.permissionCatalog();
+  }
+
+  @Delete(':id')
+  @RequirePermissions(PERMISSIONS.USERS_WRITE)
+  remove(@CurrentUser() actor: AuthUser, @Param('id') id: string, @Req() req: Request) {
+    return this.users.deleteUser(actor, id, metaOf(req));
   }
 }

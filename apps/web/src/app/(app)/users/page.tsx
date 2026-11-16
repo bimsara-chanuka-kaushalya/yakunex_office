@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { Check, Copy, Eye, EyeOff, KeyRound, Search, UserPlus, Users as UsersIcon } from 'lucide-react';
+import { Check, Copy, Eye, EyeOff, KeyRound, Search, Trash2, UserPlus, Users as UsersIcon } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -10,7 +10,7 @@ import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/ui/empty-state';
-import { api, ApiError, patch, post, put } from '@/lib/api';
+import { api, ApiError, del, patch, post, put } from '@/lib/api';
 import { PERMISSIONS, ROLE_LABELS, type Role } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 
@@ -125,6 +125,23 @@ export default function UsersPage() {
           status === 'ACTIVE'
             ? `${row.fullName} can sign in again.`
             : `${row.fullName} has been ${status.toLowerCase()} and signed out.`,
+      });
+      await load();
+    } catch (err) {
+      setNotice({ tone: 'error', text: errorText(err) });
+    }
+  }
+
+  async function deleteUserAccount(row: UserRow) {
+    if (!window.confirm(`Delete ${row.fullName} (${row.companyId || row.email})? Their login access will be permanently revoked.`)) {
+      return;
+    }
+    setNotice(null);
+    try {
+      await del(`/users/${row.id}`);
+      setNotice({
+        tone: 'success',
+        text: `${row.fullName}'s account has been deleted.`,
       });
       await load();
     } catch (err) {
@@ -358,6 +375,18 @@ export default function UsersPage() {
                                   {t('reactivate')}
                                 </Button>
                               )
+                            )}
+                            {user?.role === 'SUPER_ADMIN' && row.id !== user.id && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-danger hover:bg-danger/10 hover:text-danger"
+                                onClick={() => void deleteUserAccount(row)}
+                                title="Delete account"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                Delete
+                              </Button>
                             )}
                           </div>
                         </td>
