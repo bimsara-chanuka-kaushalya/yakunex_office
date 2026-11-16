@@ -83,7 +83,7 @@ function AuthProvider({ children }: { children: ReactNode }) {
       writeCachedSession(data);
       if (!warmedRef.current) {
         warmedRef.current = true;
-        warmWorkspaceCache(data.permissions.includes('dashboard.admin'));
+        warmWorkspaceCache(data.permissions.includes('dashboard:admin'));
       }
     } catch (err) {
       const isExplicitUnauth =

@@ -155,19 +155,32 @@ export function ChatView() {
 
   useEffect(() => {
     void loadChannels();
-    api<{ items?: Array<{ id: string; fullName?: string; name?: string; email: string; role: string; title?: string; department?: string }> } | OrgMember[]>(
-      '/users?page=1&pageSize=100',
-    )
+    api<{
+      employees?: Array<{
+        id: string;
+        fullName?: string;
+        name?: string;
+        email: string;
+        role: string;
+        title?: string | null;
+        department?: { id: string; name: string } | string | null;
+      }>;
+    }>('/organization')
       .then((res) => {
-        const raw = Array.isArray(res) ? res : Array.isArray(res?.items) ? res.items : [];
+        const raw = Array.isArray(res?.employees) ? res.employees : [];
         setMembers(
           raw.map((u) => ({
             id: u.id,
-            name: ('fullName' in u && u.fullName) ? u.fullName : ('name' in u && u.name) ? u.name : u.email,
+            name: u.fullName || u.name || u.email,
             email: u.email,
             role: u.role,
-            title: u.title,
-            department: u.department,
+            title: u.title ?? undefined,
+            department:
+              typeof u.department === 'object' && u.department
+                ? u.department.name
+                : typeof u.department === 'string'
+                  ? u.department
+                  : undefined,
           })),
         );
       })
