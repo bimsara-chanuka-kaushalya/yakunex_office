@@ -7,6 +7,10 @@
  * Dark theme keeps the gold accent and swaps surfaces.
  */
 :root {
+  --font-ui: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-display: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+  --font-sinhala: 'Noto Sans Sinhala', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
   --gold: 213 165 46;          /* #D5A52E */
   --gold-strong: 184 137 26;   /* hover/pressed on light surfaces */
   --gold-ink: 32 36 43;        /* text on gold */

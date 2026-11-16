@@ -28,8 +28,9 @@ const config: Config = {
         danger: 'rgb(var(--danger) / <alpha-value>)',
       },
       fontFamily: {
-        display: ['var(--font-display)', 'var(--font-sinhala)', 'Georgia', 'serif'],
+        display: ['var(--font-display)', 'var(--font-ui)', 'var(--font-sinhala)', 'system-ui', 'sans-serif'],
         sans: ['var(--font-ui)', 'var(--font-sinhala)', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
       boxShadow: {
         card: '0 1px 2px rgb(20 24 31 / 0.04), 0 4px 16px -8px rgb(20 24 31 / 0.08)',
