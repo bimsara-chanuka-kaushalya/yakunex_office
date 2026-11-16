@@ -1,6 +1,26 @@
 import { Role } from '@prisma/client';
 
-export const COMPANY_ROLE_CODES = ['CEO', 'MD', 'DIR', 'HR', 'PM', 'DEV', 'INT', 'STF'] as const;
+export const COMPANY_ROLE_CODES = [
+  'CEO',
+  'MD',
+  'SEC',
+  'CTO',
+  'COO',
+  'CFO',
+  'DIR',
+  'HR',
+  'PM',
+  'PO',
+  'BA',
+  'TL',
+  'SE',
+  'QA',
+  'UIUX',
+  'DEVOPS',
+  'DEV',
+  'INT',
+  'STF',
+] as const;
 export type CompanyRoleCode = (typeof COMPANY_ROLE_CODES)[number];
 
 export function resolveCompanyRoleCode(
@@ -20,20 +40,50 @@ export function resolveCompanyRoleCode(
   if (/\b(md|managing\s*director)\b/.test(t)) {
     return 'MD';
   }
+  if (/\b(company\s*secretary|legal\s*admin)\b/.test(t)) {
+    return 'SEC';
+  }
+  if (/\b(cto|chief\s*technology)\b/.test(t)) {
+    return 'CTO';
+  }
+  if (/\b(coo|chief\s*operating)\b/.test(t)) {
+    return 'COO';
+  }
+  if (/\b(cfo|chief\s*financial)\b/.test(t)) {
+    return 'CFO';
+  }
   if (/\b(hr|human\s*resources?|people\s*ops|talent)\b/.test(t)) {
     return 'HR';
   }
-  if (/\b(director|cto|coo|cfo|founder|vp|management|head\s*of)\b/.test(t)) {
+  if (/\b(director|founder|vp|management|head\s*of)\b/.test(t)) {
     return 'DIR';
+  }
+  if (/\b(product\s*owner|\bpo\b)\b/.test(t)) {
+    return 'PO';
+  }
+  if (/\b(business\s*analyst|\bba\b)\b/.test(t)) {
+    return 'BA';
   }
   if (/\b(project\s*manager|scrum\s*master|delivery\s*lead|\bpm\b)\b/.test(t)) {
     return 'PM';
   }
+  if (/\b(tech\s*lead|\btl\b)\b/.test(t)) {
+    return 'TL';
+  }
+  if (/\b(devops)\b/.test(t)) {
+    return 'DEVOPS';
+  }
+  if (/\b(qa|quality\s*assurance)\b/.test(t)) {
+    return 'QA';
+  }
+  if (/\b(ui\/?ux|designer)\b/.test(t)) {
+    return 'UIUX';
+  }
   if (/\b(intern|trainee)\b/.test(t)) {
     return 'INT';
   }
-  if (/\b(dev|developer|engineer|software|frontend|backend|fullstack|full\s*stack|qa|mobile|architect|devops)\b/.test(t)) {
-    return 'DEV';
+  if (/\b(dev|developer|engineer|software|frontend|backend|fullstack|full\s*stack|mobile|architect)\b/.test(t)) {
+    return 'SE';
   }
 
   switch (role) {
