@@ -885,6 +885,11 @@ export function MeetingStudio({
           })
           .catch(() => undefined);
       }
+      const micPub = lkRoom.localParticipant.getTrackPublication(Track.Source.Microphone);
+      if (micPub) {
+        if (micOnRef.current && micPub.isMuted) await micPub.unmute().catch(() => undefined);
+        else if (!micOnRef.current && !micPub.isMuted) await micPub.mute().catch(() => undefined);
+      }
     }
 
     if (videoTrack) {
@@ -901,6 +906,11 @@ export function MeetingStudio({
           })
           .catch(() => undefined);
       }
+      const camPub = lkRoom.localParticipant.getTrackPublication(Track.Source.Camera);
+      if (camPub) {
+        if (camOnRef.current && camPub.isMuted) await camPub.unmute().catch(() => undefined);
+        else if (!camOnRef.current && !camPub.isMuted) await camPub.mute().catch(() => undefined);
+      }
     }
   }, []);
 
@@ -916,12 +926,6 @@ export function MeetingStudio({
           token?: string | null;
         }>(`/meetings/${room.id}/sfu-token`);
         if (!active || !res?.enabled || !res.url || !res.token) return;
-
-        // Switch engine to SFU and tear down any P2P mesh connections
-        sfuModeRef.current = true;
-        setSfuActive(true);
-        pcsRef.current.forEach((pc) => pc.close());
-        pcsRef.current.clear();
 
         const lkRoom = new Room({
           adaptiveStream: true,
@@ -1021,12 +1025,44 @@ export function MeetingStudio({
               peerConnStatesRef.current.set(p.identity, 'connected');
               setPeerConnStates((prev) => ({ ...prev, [p.identity]: 'connected' }));
             }
+          })
+          .on(RoomEvent.Connected, () => {
+            if (!active) return;
+            sfuModeRef.current = true;
+            setSfuActive(true);
+            void syncSfuLocalTracks();
+          })
+          .on(RoomEvent.Disconnected, () => {
+            if (!active) return;
+            sfuModeRef.current = false;
+            setSfuActive(false);
           });
 
         await lkRoom.connect(res.url, res.token);
         if (!active) {
           await lkRoom.disconnect();
           return;
+        }
+        // Switch engine to SFU only after LiveKit WebSocket + WebRTC connection succeeds
+        sfuModeRef.current = true;
+        setSfuActive(true);
+        pcsRef.current.forEach((pc) => pc.close());
+        pcsRef.current.clear();
+
+        for (const remote of lkRoom.remoteParticipants.values()) {
+          if (remote.identity && remote.identity !== currentUser.id) {
+            peerConnStatesRef.current.set(remote.identity, 'connected');
+            setPeerConnStates((prev) => ({ ...prev, [remote.identity]: 'connected' }));
+            for (const pub of remote.trackPublications.values()) {
+              if (pub.isSubscribed && pub.track) {
+                upsertRemoteTrack(
+                  pub.track as RemoteTrack,
+                  pub as RemoteTrackPublication,
+                  remote,
+                );
+              }
+            }
+          }
         }
         await syncSfuLocalTracks();
       } catch {
@@ -1087,8 +1123,22 @@ export function MeetingStudio({
           video: initialCamOn ? initialVideoConstraints : false,
         });
       } catch {
-        // Fallback: try audio-only if camera failed/unavailable
-        if (initialMicOn) {
+        // Fallback 1: try 720p video + audio if 1080p constraints were rejected
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: initialMicOn
+              ? {
+                  echoCancellation: true,
+                  noiseSuppression: true,
+                  autoGainControl: true,
+                  sampleRate: 48000,
+                }
+              : false,
+            video: initialCamOn ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } : false,
+          });
+        } catch {
+          // Fallback 2: try audio-only if camera failed/unavailable
+          if (initialMicOn) {
           try {
             stream = await navigator.mediaDevices.getUserMedia({
               audio: {
@@ -1118,6 +1168,7 @@ export function MeetingStudio({
               showToast('Microphone/camera not detected or blocked — joined as viewer.');
             }
           }
+        }
         }
       }
 
@@ -2522,12 +2573,22 @@ export function MeetingStudio({
             }
           }
         }
+        if (sfuRoomRef.current?.state === 'connected') {
+          await syncSfuLocalTracks();
+          const micPub = sfuRoomRef.current.localParticipant.getTrackPublication(Track.Source.Microphone);
+          if (micPub?.isMuted) await micPub.unmute().catch(() => undefined);
+        }
       }
     } else {
       localStreamRef.current?.getAudioTracks().forEach((t) => {
         t.enabled = false;
       });
+      if (sfuRoomRef.current?.state === 'connected') {
+        const micPub = sfuRoomRef.current.localParticipant.getTrackPublication(Track.Source.Microphone);
+        if (micPub && !micPub.isMuted) await micPub.mute().catch(() => undefined);
+      }
     }
+    micOnRef.current = next;
     setMicOn(next);
     const updated = await patch<MeetingRow>(`/meetings/${room.id}/participant`, {
       micOn: next,
@@ -2584,12 +2645,22 @@ export function MeetingStudio({
             }
           }
         }
+        if (sfuRoomRef.current?.state === 'connected') {
+          await syncSfuLocalTracks();
+          const camPub = sfuRoomRef.current.localParticipant.getTrackPublication(Track.Source.Camera);
+          if (camPub?.isMuted) await camPub.unmute().catch(() => undefined);
+        }
       }
     } else {
       localStreamRef.current?.getVideoTracks().forEach((t) => {
         t.enabled = false;
       });
+      if (sfuRoomRef.current?.state === 'connected') {
+        const camPub = sfuRoomRef.current.localParticipant.getTrackPublication(Track.Source.Camera);
+        if (camPub && !camPub.isMuted) await camPub.mute().catch(() => undefined);
+      }
     }
+    camOnRef.current = next;
     setCamOn(next);
     const updated = await patch<MeetingRow>(`/meetings/${room.id}/participant`, {
       camOn: next,
@@ -3136,6 +3207,7 @@ export function MeetingStudio({
   useEffect(() => {
     const lkRoom = sfuRoomRef.current;
     if (!sfuActive || !lkRoom || lkRoom.state !== 'connected') return;
+    const knownIds = new Set(room.participants.map((p) => p.userId));
     const visibleIds = new Set(visibleGalleryParticipants.map((p) => p.userId));
     const n = visibleGalleryParticipants.length;
     const targetQuality =
@@ -3148,7 +3220,10 @@ export function MeetingStudio({
       if (!camPub) continue;
       const shouldWatch =
         layoutMode === 'gallery'
-          ? visibleIds.has(remote.identity) || Boolean(speakingUsers[remote.identity])
+          ? room.participants.length <= GALLERY_PAGE_SIZE ||
+            !knownIds.has(remote.identity) ||
+            visibleIds.has(remote.identity) ||
+            Boolean(speakingUsers[remote.identity])
           : remote.identity === activeSpeakerParticipant?.userId || Boolean(speakingUsers[remote.identity]);
       try {
         camPub.setSubscribed(shouldWatch);
@@ -3161,7 +3236,7 @@ export function MeetingStudio({
         // Ignore transient track subscription errors
       }
     }
-  }, [activeSpeakerParticipant?.userId, layoutMode, sfuActive, speakingUsers, visibleGalleryParticipants]);
+  }, [activeSpeakerParticipant?.userId, layoutMode, room.participants, sfuActive, speakingUsers, visibleGalleryParticipants]);
 
   return (
     <div
