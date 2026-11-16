@@ -7,12 +7,16 @@ import {
   CheckCircle2,
   Clock,
   Coffee,
+  Download,
   GraduationCap,
   LogIn,
   LogOut,
+  Pause,
   Plane,
   Play,
   Plus,
+  RefreshCw,
+  Send,
   Square,
   Star,
 } from 'lucide-react';
@@ -37,32 +41,95 @@ interface TimeEntry {
   projectName: string;
   taskId: string | null;
   taskTitle: string;
+  workCategory?: string;
   source: 'TIMER' | 'MANUAL';
   startedAt: string;
   endedAt: string | null;
+  pausedAt?: string | null;
+  pauseDurationSeconds?: number;
   durationMinutes: number;
   billable: boolean;
   note: string;
+  status?: 'RUNNING' | 'PAUSED' | 'SAVED' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'REVISION_REQUIRED';
+  approvedByName?: string | null;
 }
 
-function formatElapsed(startedAtIso: string): string {
-  const diffSec = Math.max(0, Math.floor((Date.now() - new Date(startedAtIso).getTime()) / 1000));
+interface TimeSummary {
+  todayMinutes: number;
+  weekMinutes: number;
+  monthMinutes: number;
+  approvedMinutes: number;
+}
+
+const WORK_CATEGORIES = [
+  'Development',
+  'Testing / QA',
+  'Design',
+  'Meeting',
+  'Research',
+  'Documentation',
+  'Support',
+  'Management',
+];
+
+function formatElapsed(
+  startedAtIso: string,
+  pausedAt?: string | null,
+  pauseDurationSeconds = 0,
+): string {
+  const endMs = pausedAt ? new Date(pausedAt).getTime() : Date.now();
+  const rawSec = Math.floor((endMs - new Date(startedAtIso).getTime()) / 1000);
+  const diffSec = Math.max(0, rawSec - (pauseDurationSeconds ?? 0));
   const hrs = String(Math.floor(diffSec / 3600)).padStart(2, '0');
   const mins = String(Math.floor((diffSec % 3600) / 60)).padStart(2, '0');
   const secs = String(diffSec % 60).padStart(2, '0');
   return `${hrs}:${mins}:${secs}`;
 }
 
+function formatMins(mins: number): string {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function statusTone(status?: string): 'gold' | 'success' | 'danger' | 'neutral' {
+  switch (status) {
+    case 'APPROVED':
+      return 'success';
+    case 'REJECTED':
+    case 'REVISION_REQUIRED':
+      return 'danger';
+    case 'RUNNING':
+    case 'PAUSED':
+    case 'SUBMITTED':
+      return 'gold';
+    default:
+      return 'neutral';
+  }
+}
+
 export function TimeTrackerView() {
   const [activeTimer, setActiveTimer] = useState<TimeEntry | null>(null);
   const [entries, setEntries] = useState<TimeEntry[]>([]);
+  const [summary, setSummary] = useState<TimeSummary>({
+    todayMinutes: 0,
+    weekMinutes: 0,
+    monthMinutes: 0,
+    approvedMinutes: 0,
+  });
   const [projects, setProjects] = useState<Array<{ id: string; name: string; code: string }>>([]);
+  const [tasks, setTasks] = useState<Array<{ id: string; title: string; projectId: string | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [elapsed, setElapsed] = useState('00:00:00');
   const [error, setError] = useState<string | null>(null);
 
   const [projectId, setProjectId] = useState('');
+  const [taskId, setTaskId] = useState('');
+  const [workCategory, setWorkCategory] = useState('Development');
+  const [billable, setBillable] = useState(true);
   const [note, setNote] = useState('');
+
+  const [switchOpen, setSwitchOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualMinutes, setManualMinutes] = useState('60');
   const [manualNote, setManualNote] = useState('');
@@ -70,13 +137,16 @@ export function TimeTrackerView() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [res, prjs] = await Promise.all([
-        api<{ activeTimer: TimeEntry | null; entries: TimeEntry[] }>('/time-entries'),
+      const [res, prjs, tsks] = await Promise.all([
+        api<{ activeTimer: TimeEntry | null; entries: TimeEntry[]; summary?: TimeSummary }>('/time-entries'),
         api<Array<{ id: string; name: string; code: string }>>('/projects').catch(() => []),
+        api<Array<{ id: string; title: string; projectId: string | null }>>('/tasks').catch(() => []),
       ]);
       setActiveTimer(res.activeTimer);
       setEntries(res.entries);
+      if (res.summary) setSummary(res.summary);
       setProjects(prjs);
+      setTasks(tsks);
       if (prjs.length > 0) {
         setProjectId((prev) => prev || prjs[0].id);
       }
@@ -94,19 +164,77 @@ export function TimeTrackerView() {
       setElapsed('00:00:00');
       return;
     }
-    setElapsed(formatElapsed(activeTimer.startedAt));
-    const id = setInterval(() => setElapsed(formatElapsed(activeTimer.startedAt)), 1000);
+    const updateClock = () =>
+      setElapsed(
+        formatElapsed(
+          activeTimer.startedAt,
+          activeTimer.pausedAt,
+          activeTimer.pauseDurationSeconds ?? 0,
+        ),
+      );
+    updateClock();
+    if (activeTimer.status === 'PAUSED' || activeTimer.pausedAt) {
+      return;
+    }
+    const id = setInterval(updateClock, 1000);
     return () => clearInterval(id);
   }, [activeTimer]);
+
+  const filteredTasks = projectId ? tasks.filter((t) => !t.projectId || t.projectId === projectId) : tasks;
 
   async function handleStart() {
     setError(null);
     try {
-      await post('/time-entries/start', { projectId, note: note || 'Sprint engineering work', billable: true });
+      await post('/time-entries/start', {
+        projectId,
+        taskId: taskId || undefined,
+        workCategory,
+        note: note || `${workCategory} work`,
+        billable,
+      });
       setNote('');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not start timer.');
+    }
+  }
+
+  async function handlePause() {
+    setError(null);
+    try {
+      await post('/time-entries/pause');
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not pause timer.');
+    }
+  }
+
+  async function handleResume() {
+    setError(null);
+    try {
+      await post('/time-entries/resume');
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not resume timer.');
+    }
+  }
+
+  async function handleSwitch(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    try {
+      await post('/time-entries/switch', {
+        projectId,
+        taskId: taskId || undefined,
+        workCategory,
+        note: note || `${workCategory} work`,
+        billable,
+      });
+      setSwitchOpen(false);
+      setNote('');
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not switch task.');
     }
   }
 
@@ -120,21 +248,63 @@ export function TimeTrackerView() {
     }
   }
 
+  async function handleSubmitEntry(id: string) {
+    setError(null);
+    try {
+      await post(`/time-entries/${id}/submit`);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not submit timesheet.');
+    }
+  }
+
   async function handleManual(e: FormEvent) {
     e.preventDefault();
-    await post('/time-entries/manual', {
-      projectId,
-      durationMinutes: Number(manualMinutes),
-      note: manualNote,
-      billable: true,
-    });
-    setManualOpen(false);
-    setManualNote('');
-    await load();
+    setError(null);
+    try {
+      await post('/time-entries/manual', {
+        projectId,
+        taskId: taskId || undefined,
+        workCategory,
+        durationMinutes: Number(manualMinutes),
+        note: manualNote,
+        billable,
+      });
+      setManualOpen(false);
+      setManualNote('');
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not log manual time.');
+    }
+  }
+
+  function exportCsv() {
+    const header = ['Date', 'Person', 'Project', 'Task', 'Category', 'Source', 'Status', 'Billable', 'Minutes', 'Note'];
+    const rows = entries.map((e) => [
+      new Date(e.startedAt).toISOString().slice(0, 10),
+      e.userName,
+      e.projectName,
+      e.taskTitle,
+      e.workCategory ?? 'Development',
+      e.source,
+      e.status ?? (e.endedAt ? 'SAVED' : 'RUNNING'),
+      e.billable ? 'Yes' : 'No',
+      String(e.durationMinutes),
+      `"${(e.note || '').replace(/"/g, '""')}"`,
+    ]);
+    const csv = [header.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `yakunex-timesheet-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   const totalMinutes = entries.reduce((s, e) => s + e.durationMinutes, 0);
   const billableMinutes = entries.filter((e) => e.billable).reduce((s, e) => s + e.durationMinutes, 0);
+  const isPaused = Boolean(activeTimer && (activeTimer.status === 'PAUSED' || activeTimer.pausedAt));
 
   return (
     <div className="space-y-6">
@@ -142,37 +312,69 @@ export function TimeTrackerView() {
         <div>
           <h2 className="font-display text-3xl font-semibold">Time Tracker & Timesheets</h2>
           <p className="mt-1 text-sm text-muted">
-            Single-running-timer task tracking, manual time logs and billable hour summaries.
+            Project & task timer with Pause/Resume, Task Switch, manual entries, and approval workflow.
           </p>
         </div>
-        <Button variant="secondary" onClick={() => setManualOpen(true)}>
-          <Plus className="h-4 w-4" /> Log manual time
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" onClick={exportCsv} disabled={entries.length === 0}>
+            <Download className="h-4 w-4" /> Export CSV
+          </Button>
+          <Button variant="secondary" onClick={() => setManualOpen(true)}>
+            <Plus className="h-4 w-4" /> Log manual time
+          </Button>
+        </div>
       </header>
 
       <Card className="border-gold/40 bg-surface p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex-1 space-y-3">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Badge tone={activeTimer ? 'gold' : 'neutral'}>
-                {activeTimer ? 'Timer running' : 'Ready to track'}
+                {!activeTimer ? 'Ready to track' : isPaused ? 'Timer paused' : 'Timer running'}
               </Badge>
+              {activeTimer?.workCategory && (
+                <Badge tone="neutral">{activeTimer.workCategory}</Badge>
+              )}
               <span className="text-xs text-muted">
-                Enforces one active timer per user
+                Enforces one active timer per user · Paused time excluded
               </span>
             </div>
             {activeTimer ? (
               <div>
-                <p className="font-semibold text-ink">{activeTimer.projectName}</p>
+                <p className="font-semibold text-ink">
+                  {activeTimer.projectName}
+                  {activeTimer.taskTitle ? ` · ${activeTimer.taskTitle}` : ''}
+                </p>
                 <p className="text-sm text-muted">{activeTimer.note}</p>
               </div>
             ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <Select
+                  value={projectId}
+                  onChange={(e) => {
+                    setProjectId(e.target.value);
+                    setTaskId('');
+                  }}
+                >
                   <option value="">General Project Work</option>
                   {projects.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.code ? `${p.code} · ` : ''}{p.name}
+                    </option>
+                  ))}
+                </Select>
+                <Select value={taskId} onChange={(e) => setTaskId(e.target.value)}>
+                  <option value="">General Task</option>
+                  {filteredTasks.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.title}
+                    </option>
+                  ))}
+                </Select>
+                <Select value={workCategory} onChange={(e) => setWorkCategory(e.target.value)}>
+                  {WORK_CATEGORIES.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
                     </option>
                   ))}
                 </Select>
@@ -185,12 +387,26 @@ export function TimeTrackerView() {
             )}
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3">
             <p className="font-mono text-3xl font-semibold tabular-nums text-ink">{elapsed}</p>
             {activeTimer ? (
-              <Button variant="danger" onClick={handleStop}>
-                <Square className="h-4 w-4" /> Stop timer
-              </Button>
+              <>
+                {isPaused ? (
+                  <Button onClick={handleResume}>
+                    <Play className="h-4 w-4" /> Resume
+                  </Button>
+                ) : (
+                  <Button variant="secondary" onClick={handlePause}>
+                    <Pause className="h-4 w-4" /> Pause
+                  </Button>
+                )}
+                <Button variant="secondary" onClick={() => setSwitchOpen(true)}>
+                  <RefreshCw className="h-4 w-4" /> Switch
+                </Button>
+                <Button variant="danger" onClick={handleStop}>
+                  <Square className="h-4 w-4" /> Stop
+                </Button>
+              </>
             ) : (
               <Button onClick={handleStart}>
                 <Play className="h-4 w-4" /> Start timer
@@ -201,31 +417,17 @@ export function TimeTrackerView() {
         {error && <p className="mt-3 text-xs text-danger">{error}</p>}
       </Card>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <StatCard
-          label="Total hours logged"
-          value={`${(totalMinutes / 60).toFixed(1)}h`}
-          hint={`${entries.length} time entries recorded`}
-          icon={<Clock className="h-4 w-4" />}
-        />
-        <StatCard
-          label="Billable hours"
-          value={`${(billableMinutes / 60).toFixed(1)}h`}
-          hint={`${totalMinutes > 0 ? Math.round((billableMinutes / totalMinutes) * 100) : 100}% billable ratio`}
-          icon={<CheckCircle2 className="h-4 w-4" />}
-        />
-        <StatCard
-          label="Active session"
-          value={activeTimer ? elapsed : 'Idle'}
-          hint={activeTimer ? activeTimer.projectName : 'Start a timer above'}
-          icon={<Play className="h-4 w-4" />}
-        />
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Today" value={formatMins(summary.todayMinutes)} hint="Logged today" icon={<Clock className="h-4 w-4" />} />
+        <StatCard label="This Week" value={formatMins(summary.weekMinutes)} hint="Current 7-day window" icon={<CalendarCheck className="h-4 w-4" />} />
+        <StatCard label="This Month" value={formatMins(summary.monthMinutes)} hint={`${formatMins(billableMinutes)} billable`} icon={<Play className="h-4 w-4" />} />
+        <StatCard label="Approved Hours" value={formatMins(summary.approvedMinutes)} hint={`${entries.length} total entries (${formatMins(totalMinutes)})`} icon={<CheckCircle2 className="h-4 w-4" />} />
       </div>
 
       <Card>
         <CardHeader
           title="Recent time entries"
-          description="Logged timer and manual entries across projects."
+          description="Logged timer and manual entries across projects. Submit saved entries for manager approval."
         />
         {loading ? (
           <div className="p-6">
@@ -233,53 +435,155 @@ export function TimeTrackerView() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left text-sm">
+            <table className="w-full min-w-[820px] text-left text-sm">
               <thead className="bg-canvas/60 text-xs uppercase tracking-wider text-muted">
                 <tr>
                   <th className="px-5 py-3">Person</th>
-                  <th className="px-5 py-3">Project & Note</th>
-                  <th className="px-5 py-3">Source</th>
+                  <th className="px-5 py-3">Project, Task & Note</th>
+                  <th className="px-5 py-3">Category</th>
+                  <th className="px-5 py-3">Status</th>
                   <th className="px-5 py-3">Billable</th>
                   <th className="px-5 py-3 text-right">Duration</th>
+                  <th className="px-5 py-3 text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
-                {entries.map((entry) => (
-                  <tr key={entry.id} className="hover:bg-canvas/40">
-                    <td className="px-5 py-3.5 font-medium">{entry.userName}</td>
-                    <td className="px-5 py-3.5">
-                      <p className="font-medium text-ink">{entry.projectName}</p>
-                      <p className="text-xs text-muted">{entry.note}</p>
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <Badge tone={entry.source === 'TIMER' ? 'gold' : 'neutral'}>
-                        {entry.source}
-                      </Badge>
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <Badge tone={entry.billable ? 'success' : 'neutral'}>
-                        {entry.billable ? 'Billable' : 'Internal'}
-                      </Badge>
-                    </td>
-                    <td className="px-5 py-3.5 text-right font-mono text-xs font-semibold">
-                      {entry.endedAt ? `${entry.durationMinutes} min` : 'Running…'}
-                    </td>
-                  </tr>
-                ))}
+                {entries.map((entry) => {
+                  const st = entry.status ?? (entry.endedAt ? 'SAVED' : 'RUNNING');
+                  const canSubmit = Boolean(entry.endedAt) && (st === 'SAVED' || st === 'REJECTED' || st === 'REVISION_REQUIRED');
+                  return (
+                    <tr key={entry.id} className="hover:bg-canvas/40">
+                      <td className="px-5 py-3.5 font-medium">{entry.userName}</td>
+                      <td className="px-5 py-3.5">
+                        <p className="font-medium text-ink">
+                          {entry.projectName}
+                          {entry.taskTitle ? ` · ${entry.taskTitle}` : ''}
+                        </p>
+                        <p className="text-xs text-muted">{entry.note}</p>
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <Badge tone="neutral">{entry.workCategory ?? 'Development'}</Badge>
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <Badge tone={statusTone(st)}>{st}</Badge>
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <Badge tone={entry.billable ? 'success' : 'neutral'}>
+                          {entry.billable ? 'Billable' : 'Internal'}
+                        </Badge>
+                      </td>
+                      <td className="px-5 py-3.5 text-right font-mono text-xs font-semibold">
+                        {entry.endedAt ? `${entry.durationMinutes} min` : st === 'PAUSED' ? 'Paused' : 'Running…'}
+                      </td>
+                      <td className="px-5 py-3.5 text-right">
+                        {canSubmit ? (
+                          <Button size="sm" variant="secondary" onClick={() => handleSubmitEntry(entry.id)}>
+                            <Send className="h-3.5 w-3.5" /> Submit
+                          </Button>
+                        ) : st === 'APPROVED' ? (
+                          <span className="text-xs text-success font-medium">Locked</span>
+                        ) : (
+                          <span className="text-xs text-muted">{entry.source}</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </Card>
 
-      <Modal open={manualOpen} title="Log manual time entry" onClose={() => setManualOpen(false)}>
-        <form onSubmit={handleManual} className="space-y-4">
-          <Field label="Project" htmlFor="mn-prj">
-            <Select id="mn-prj" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+      <Modal open={switchOpen} title="Switch active task" onClose={() => setSwitchOpen(false)}>
+        <form onSubmit={handleSwitch} className="space-y-4">
+          <Field label="Next Project" htmlFor="sw-prj">
+            <Select
+              id="sw-prj"
+              value={projectId}
+              onChange={(e) => {
+                setProjectId(e.target.value);
+                setTaskId('');
+              }}
+            >
               <option value="">General Project Work</option>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.code ? `${p.code} · ` : ''}{p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Next Task" htmlFor="sw-tsk">
+            <Select id="sw-tsk" value={taskId} onChange={(e) => setTaskId(e.target.value)}>
+              <option value="">General Task</option>
+              {filteredTasks.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.title}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Work Category" htmlFor="sw-cat">
+            <Select id="sw-cat" value={workCategory} onChange={(e) => setWorkCategory(e.target.value)}>
+              {WORK_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Note" htmlFor="sw-note">
+            <Input
+              id="sw-note"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="What are you switching to?"
+            />
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" type="button" onClick={() => setSwitchOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit">Stop current &amp; start next</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={manualOpen} title="Log manual time entry" onClose={() => setManualOpen(false)}>
+        <form onSubmit={handleManual} className="space-y-4">
+          <Field label="Project" htmlFor="mn-prj">
+            <Select
+              id="mn-prj"
+              value={projectId}
+              onChange={(e) => {
+                setProjectId(e.target.value);
+                setTaskId('');
+              }}
+            >
+              <option value="">General Project Work</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.code ? `${p.code} · ` : ''}{p.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Task" htmlFor="mn-tsk">
+            <Select id="mn-tsk" value={taskId} onChange={(e) => setTaskId(e.target.value)}>
+              <option value="">General Task</option>
+              {filteredTasks.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.title}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Work Category" htmlFor="mn-cat">
+            <Select id="mn-cat" value={workCategory} onChange={(e) => setWorkCategory(e.target.value)}>
+              {WORK_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {c}
                 </option>
               ))}
             </Select>
@@ -295,15 +599,24 @@ export function TimeTrackerView() {
               onChange={(e) => setManualMinutes(e.target.value)}
             />
           </Field>
-          <Field label="Work description" htmlFor="mn-note">
+          <Field label="Reason / Work description" htmlFor="mn-note">
             <Input
               id="mn-note"
               required
               value={manualNote}
               onChange={(e) => setManualNote(e.target.value)}
-              placeholder="What was completed during this block?"
+              placeholder="Reason for manual entry & what was completed"
             />
           </Field>
+          <label className="flex items-center gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={billable}
+              onChange={(e) => setBillable(e.target.checked)}
+              className="rounded border-line"
+            />
+            Billable hours
+          </label>
           <div className="flex justify-end gap-2">
             <Button variant="secondary" type="button" onClick={() => setManualOpen(false)}>
               Cancel

@@ -4,19 +4,27 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   BarChart3,
   Check,
+  CheckSquare,
   Clock,
   Copy,
   Download,
+  Edit2,
   FolderKanban,
   Hash,
   KeyRound,
+  Lock,
+  MessageSquarePlus,
   MessagesSquare,
+  Pin,
   Plus,
+  Reply,
   Search,
   Send,
   Settings,
+  Trash2,
   Users,
   Video,
+  X,
 } from 'lucide-react';
 import {
   MeetingStudio,
@@ -30,7 +38,7 @@ import { Card, CardHeader, StatCard } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, liveGet, patch, post, put } from '@/lib/api';
+import { api, del, liveGet, patch, post, put } from '@/lib/api';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 
@@ -39,7 +47,10 @@ import { cn } from '@/lib/cn';
 interface ChatChannel {
   id: string;
   name: string;
-  type: 'PROJECT' | 'DEPARTMENT' | 'GROUP' | 'DIRECT';
+  type: 'PROJECT' | 'DEPARTMENT' | 'GROUP' | 'DIRECT' | 'MANAGEMENT' | 'ANNOUNCEMENT';
+  category?: string;
+  privacy?: 'PUBLIC' | 'ROLE_RESTRICTED' | 'CONFIDENTIAL' | 'DIRECT';
+  department?: string | null;
   description: string;
   projectName: string | null;
 }
@@ -52,17 +63,61 @@ interface ChatMessage {
   senderRole: string;
   body: string;
   createdAt: string;
+  replyToId?: string | null;
+  replyPreview?: string | null;
+  pinned?: boolean;
+  editedAt?: string | null;
+  deleted?: boolean;
+  reactions?: Record<string, string[]>;
+  linkedTaskId?: string | null;
+  linkedMeetingCode?: string | null;
 }
 
+interface OrgMember {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  title?: string;
+  department?: string;
+}
+
+const CHANNEL_CATEGORIES: Array<{ key: string; label: string }> = [
+  { key: 'ANNOUNCEMENTS', label: 'Announcements & General' },
+  { key: 'MANAGEMENT', label: 'Management' },
+  { key: 'DEPARTMENT', label: 'Departments' },
+  { key: 'TECHNICAL', label: 'Technical & Projects' },
+  { key: 'CONFIDENTIAL', label: 'Private & Confidential' },
+  { key: 'DIRECT', label: 'Direct Messages' },
+];
+
+const QUICK_REACTIONS = ['👍', '❤️', '🎉'];
+
 export function ChatView() {
+  const { user } = useAuth();
   const { lang } = useLang();
   const [channels, setChannels] = useState<ChatChannel[]>([]);
   const [activeId, setActiveId] = useState<string>('ch_general');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [members, setMembers] = useState<OrgMember[]>([]);
   const [text, setText] = useState('');
+  const [channelSearch, setChannelSearch] = useState('');
+  const [msgSearch, setMsgSearch] = useState('');
+  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
+  const [editingMsg, setEditingMsg] = useState<ChatMessage | null>(null);
+  const [editText, setEditText] = useState('');
+  const [banner, setBanner] = useState<string | null>(null);
+
   const [modalOpen, setModalOpen] = useState(false);
   const [newChannelName, setNewChannelName] = useState('');
   const [newChannelDesc, setNewChannelDesc] = useState('');
+  const [newChannelType, setNewChannelType] = useState<ChatChannel['type']>('GROUP');
+  const [newChannelCategory, setNewChannelCategory] = useState('TECHNICAL');
+  const [newChannelPrivacy, setNewChannelPrivacy] = useState<'PUBLIC' | 'ROLE_RESTRICTED' | 'CONFIDENTIAL'>('PUBLIC');
+  const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
+
+  const [dmModalOpen, setDmModalOpen] = useState(false);
+  const [dmSearch, setDmSearch] = useState('');
 
   const loadChannels = useCallback(async () => {
     const chs = await api<ChatChannel[]>('/chat/channels');
@@ -78,17 +133,28 @@ export function ChatView() {
 
   useEffect(() => {
     void loadChannels();
+    api<OrgMember[]>('/organization')
+      .then((list) => setMembers(list))
+      .catch(() => setMembers([]));
   }, [loadChannels]);
 
   useEffect(() => {
-    if (activeId) void loadMessages(activeId);
+    if (activeId) {
+      setReplyTo(null);
+      setEditingMsg(null);
+      void loadMessages(activeId);
+    }
   }, [activeId, loadMessages]);
 
   async function onSend(e: FormEvent) {
     e.preventDefault();
     if (!text.trim()) return;
-    await post(`/chat/channels/${activeId}/messages`, { body: text });
+    await post(`/chat/channels/${activeId}/messages`, {
+      body: text,
+      replyToId: replyTo?.id,
+    });
     setText('');
+    setReplyTo(null);
     await loadMessages(activeId);
   }
 
@@ -97,99 +163,382 @@ export function ChatView() {
     const created = await post<ChatChannel>('/chat/channels', {
       name: newChannelName,
       description: newChannelDesc,
-      type: 'GROUP',
+      type: newChannelType,
+      category: newChannelCategory,
+      privacy: newChannelPrivacy,
+      memberIds: selectedMemberIds,
     });
     setModalOpen(false);
     setNewChannelName('');
     setNewChannelDesc('');
+    setSelectedMemberIds([]);
     await loadChannels();
     setActiveId(created.id);
   }
 
+  async function onStartDm(member: OrgMember) {
+    const ch = await post<ChatChannel>('/chat/direct', {
+      targetUserId: member.id,
+      targetUserName: member.name,
+    });
+    setDmModalOpen(false);
+    setDmSearch('');
+    await loadChannels();
+    setActiveId(ch.id);
+  }
+
+  async function onSaveEdit(e: FormEvent) {
+    e.preventDefault();
+    if (!editingMsg || !editText.trim()) return;
+    await patch(`/chat/messages/${editingMsg.id}`, { body: editText });
+    setEditingMsg(null);
+    setEditText('');
+    await loadMessages(activeId);
+  }
+
+  async function onDeleteMessage(msgId: string) {
+    await del(`/chat/messages/${msgId}`);
+    await loadMessages(activeId);
+  }
+
+  async function onReact(msgId: string, emoji: string) {
+    await post(`/chat/messages/${msgId}/react`, { emoji });
+    await loadMessages(activeId);
+  }
+
+  async function onTogglePin(msgId: string) {
+    await patch(`/chat/messages/${msgId}/pin`, {});
+    await loadMessages(activeId);
+  }
+
+  async function onConvertToTask(msg: ChatMessage) {
+    await post(`/chat/messages/${msg.id}/to-task`, {});
+    setBanner(`Task created from message by ${msg.senderName}.`);
+    await loadMessages(activeId);
+  }
+
+  async function onStartChannelMeeting() {
+    if (!activeChannel) return;
+    const mt = await post<MeetingRow>(`/chat/channels/${activeChannel.id}/meeting`, {
+      title: `${activeChannel.name} Sync`,
+      agenda: `Channel huddle for #${activeChannel.name}`,
+    });
+    setBanner(`Meeting started (${mt.roomCode}) — open Meetings to join.`);
+    await loadMessages(activeId);
+  }
+
+  function toggleMemberSelection(id: string) {
+    setSelectedMemberIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }
+
   const activeChannel = channels.find((c) => c.id === activeId);
+  const filteredChannels = channelSearch.trim()
+    ? channels.filter((c) => c.name.toLowerCase().includes(channelSearch.toLowerCase()))
+    : channels;
+
+  const pinnedMessages = messages.filter((m) => m.pinned && !m.deleted);
+  const visibleMessages = msgSearch.trim()
+    ? messages.filter(
+        (m) =>
+          m.body.toLowerCase().includes(msgSearch.toLowerCase()) ||
+          m.senderName.toLowerCase().includes(msgSearch.toLowerCase()),
+      )
+    : messages;
 
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h2 className="font-display text-3xl font-semibold">Team & Project Chat</h2>
+          <h2 className="font-display text-3xl font-semibold">Yakunex Hub — Team Chat</h2>
           <p className="mt-1 text-sm text-muted">
-            Dedicated channels for project delivery, engineering guilds and announcements.
+            Role-based organization channels, confidential groups, direct messages, threads &amp; quick actions.
           </p>
         </div>
-        <Button variant="secondary" onClick={() => setModalOpen(true)}>
-          <Plus className="h-4 w-4" /> New channel
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" onClick={() => setDmModalOpen(true)}>
+            <MessageSquarePlus className="h-4 w-4" /> Direct message
+          </Button>
+          <Button variant="secondary" onClick={() => setModalOpen(true)}>
+            <Plus className="h-4 w-4" /> Create group
+          </Button>
+        </div>
       </header>
 
-      <Card className="grid min-h-[540px] overflow-hidden md:grid-cols-[260px_1fr]">
-        <aside className="border-b border-line bg-canvas/50 p-3 md:border-b-0 md:border-r">
-          <p className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted">
-            Channels ({channels.length})
-          </p>
-          <ul className="space-y-1">
-            {channels.map((ch) => (
-              <li key={ch.id}>
-                <button
-                  type="button"
-                  onClick={() => setActiveId(ch.id)}
-                  className={cn(
-                    'flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors',
-                    ch.id === activeId
-                      ? 'bg-gold/15 font-medium text-gold-strong'
-                      : 'text-ink hover:bg-surface',
-                  )}
-                >
-                  <Hash className="h-4 w-4 shrink-0 text-gold" />
-                  <span className="truncate">{ch.name}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
+      {banner && (
+        <div className="flex items-center justify-between rounded-xl border border-gold/40 bg-gold/10 px-4 py-2 text-xs font-medium text-ink">
+          <span>{banner}</span>
+          <button type="button" onClick={() => setBanner(null)} className="text-muted hover:text-ink">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      <Card className="grid min-h-[600px] overflow-hidden md:grid-cols-[280px_1fr]">
+        <aside className="flex flex-col border-b border-line bg-canvas/50 p-3 md:border-b-0 md:border-r">
+          <div className="relative mb-3">
+            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted" />
+            <Input
+              className="pl-8 text-xs"
+              placeholder="Filter channels…"
+              value={channelSearch}
+              onChange={(e) => setChannelSearch(e.target.value)}
+            />
+          </div>
+
+          <div className="flex-1 space-y-4 overflow-y-auto pr-1">
+            {CHANNEL_CATEGORIES.map((cat) => {
+              const items = filteredChannels.filter((c) => {
+                const cCat = c.category ?? (c.type === 'DIRECT' ? 'DIRECT' : 'TECHNICAL');
+                return cCat === cat.key;
+              });
+              if (items.length === 0) return null;
+              return (
+                <div key={cat.key}>
+                  <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted">
+                    {cat.label} ({items.length})
+                  </p>
+                  <ul className="space-y-0.5">
+                    {items.map((ch) => (
+                      <li key={ch.id}>
+                        <button
+                          type="button"
+                          onClick={() => setActiveId(ch.id)}
+                          className={cn(
+                            'flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-left text-sm transition-colors',
+                            ch.id === activeId
+                              ? 'bg-gold/15 font-medium text-gold-strong'
+                              : 'text-ink hover:bg-surface',
+                          )}
+                        >
+                          {ch.privacy === 'CONFIDENTIAL' ? (
+                            <Lock className="h-3.5 w-3.5 shrink-0 text-gold" />
+                          ) : ch.type === 'DIRECT' ? (
+                            <Users className="h-3.5 w-3.5 shrink-0 text-gold" />
+                          ) : (
+                            <Hash className="h-3.5 w-3.5 shrink-0 text-gold" />
+                          )}
+                          <span className="truncate">{ch.name}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
+          </div>
         </aside>
 
         <div className="flex flex-col">
-          <div className="border-b border-line px-5 py-3.5">
-            <div className="flex items-center gap-2">
-              <Hash className="h-4 w-4 text-gold" />
-              <h3 className="font-semibold text-ink">{activeChannel?.name ?? 'general'}</h3>
-              {activeChannel?.projectName && (
-                <Badge tone="gold">{activeChannel.projectName}</Badge>
-              )}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3.5">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                {activeChannel?.privacy === 'CONFIDENTIAL' ? (
+                  <Lock className="h-4 w-4 text-gold" />
+                ) : (
+                  <Hash className="h-4 w-4 text-gold" />
+                )}
+                <h3 className="font-semibold text-ink">{activeChannel?.name ?? 'general'}</h3>
+                {activeChannel?.privacy && activeChannel.privacy !== 'PUBLIC' && (
+                  <Badge tone="gold">{activeChannel.privacy}</Badge>
+                )}
+                {activeChannel?.projectName && (
+                  <Badge tone="neutral">{activeChannel.projectName}</Badge>
+                )}
+              </div>
+              <p className="mt-0.5 text-xs text-muted">{activeChannel?.description}</p>
             </div>
-            <p className="mt-0.5 text-xs text-muted">{activeChannel?.description}</p>
+            <div className="flex items-center gap-2">
+              <div className="relative w-44">
+                <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted" />
+                <Input
+                  className="pl-8 text-xs"
+                  placeholder="Search messages…"
+                  value={msgSearch}
+                  onChange={(e) => setMsgSearch(e.target.value)}
+                />
+              </div>
+              <Button size="sm" variant="secondary" onClick={onStartChannelMeeting}>
+                <Video className="h-3.5 w-3.5" /> Start Meeting
+              </Button>
+            </div>
           </div>
 
+          {pinnedMessages.length > 0 && (
+            <div className="border-b border-line bg-gold/5 px-5 py-2 text-xs">
+              <div className="flex items-center gap-1.5 font-semibold text-gold-strong">
+                <Pin className="h-3.5 w-3.5" />
+                <span>Pinned ({pinnedMessages.length}):</span>
+                <span className="truncate font-normal text-ink">{pinnedMessages[0].body}</span>
+              </div>
+            </div>
+          )}
+
           <div className="flex-1 space-y-4 overflow-y-auto p-5">
-            {messages.length === 0 ? (
+            {visibleMessages.length === 0 ? (
               <div className="flex h-64 flex-col items-center justify-center text-center text-muted">
-                <MessagesSquare className="h-8 w-8 text-muted/60 mb-2" />
-                <p className="font-semibold text-ink text-sm">No messages in #{activeChannel?.name ?? 'channel'} yet</p>
-                <p className="text-xs mt-1">Start the conversation by sending the first message below.</p>
+                <MessagesSquare className="mb-2 h-8 w-8 text-muted/60" />
+                <p className="text-sm font-semibold text-ink">
+                  {msgSearch.trim()
+                    ? 'No matching messages found'
+                    : `No messages in #${activeChannel?.name ?? 'channel'} yet`}
+                </p>
+                <p className="mt-1 text-xs">Start the conversation by sending the first message below.</p>
               </div>
             ) : (
-              messages.map((msg) => (
-              <div key={msg.id} className="flex items-start gap-3">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gold/15 text-xs font-semibold text-gold">
-                  {msg.senderName.charAt(0).toUpperCase()}
-                </span>
-                <div className="min-w-0 flex-1 rounded-2xl border border-line bg-canvas/40 px-4 py-2.5">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-semibold text-ink">{msg.senderName}</span>
-                    <Badge>{ROLE_LABELS[msg.senderRole as Role]?.[lang] ?? msg.senderRole}</Badge>
-                    <span className="text-[11px] text-muted">
-                      {new Date(msg.createdAt).toLocaleTimeString('en-LK', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        timeZone: 'Asia/Colombo',
-                      })}
+              visibleMessages.map((msg) => {
+                const isOwn = user?.id === msg.senderId;
+                return (
+                  <div key={msg.id} className="group flex items-start gap-3">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gold/15 text-xs font-semibold text-gold">
+                      {msg.senderName.charAt(0).toUpperCase()}
                     </span>
+                    <div className="min-w-0 flex-1 rounded-2xl border border-line bg-canvas/40 px-4 py-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-semibold text-ink">{msg.senderName}</span>
+                          <Badge>{ROLE_LABELS[msg.senderRole as Role]?.[lang] ?? msg.senderRole}</Badge>
+                          <span className="text-[11px] text-muted">
+                            {new Date(msg.createdAt).toLocaleTimeString('en-LK', {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              timeZone: 'Asia/Colombo',
+                            })}
+                          </span>
+                          {msg.editedAt && <span className="text-[10px] text-muted">(edited)</span>}
+                          {msg.pinned && <Badge tone="gold">Pinned</Badge>}
+                          {msg.linkedTaskId && <Badge tone="success">Task linked</Badge>}
+                          {msg.linkedMeetingCode && <Badge tone="gold">Meeting {msg.linkedMeetingCode}</Badge>}
+                        </div>
+
+                        {!msg.deleted && (
+                          <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                            {QUICK_REACTIONS.map((emoji) => (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => onReact(msg.id, emoji)}
+                                className="rounded px-1.5 py-0.5 text-xs hover:bg-surface"
+                                title={`React ${emoji}`}
+                              >
+                                {emoji}
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() => setReplyTo(msg)}
+                              className="rounded p-1 text-muted hover:bg-surface hover:text-ink"
+                              title="Reply"
+                            >
+                              <Reply className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onTogglePin(msg.id)}
+                              className="rounded p-1 text-muted hover:bg-surface hover:text-ink"
+                              title={msg.pinned ? 'Unpin' : 'Pin'}
+                            >
+                              <Pin className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onConvertToTask(msg)}
+                              className="rounded p-1 text-muted hover:bg-surface hover:text-ink"
+                              title="Convert to Task"
+                            >
+                              <CheckSquare className="h-3.5 w-3.5" />
+                            </button>
+                            {isOwn && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingMsg(msg);
+                                    setEditText(msg.body);
+                                  }}
+                                  className="rounded p-1 text-muted hover:bg-surface hover:text-ink"
+                                  title="Edit"
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => onDeleteMessage(msg.id)}
+                                  className="rounded p-1 text-muted hover:bg-surface hover:text-danger"
+                                  title="Delete"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {msg.replyPreview && (
+                        <div className="mt-1.5 rounded-lg border-l-2 border-gold bg-surface/60 px-2.5 py-1 text-xs text-muted">
+                          {msg.replyPreview}
+                        </div>
+                      )}
+
+                      {editingMsg?.id === msg.id ? (
+                        <form onSubmit={onSaveEdit} className="mt-2 flex gap-2">
+                          <Input
+                            value={editText}
+                            onChange={(e) => setEditText(e.target.value)}
+                            autoFocus
+                          />
+                          <Button size="sm" type="submit">Save</Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            type="button"
+                            onClick={() => setEditingMsg(null)}
+                          >
+                            Cancel
+                          </Button>
+                        </form>
+                      ) : (
+                        <p className={cn('mt-1 text-sm', msg.deleted ? 'italic text-muted' : 'text-ink')}>
+                          {msg.body}
+                        </p>
+                      )}
+
+                      {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {Object.entries(msg.reactions).map(([emoji, users]) =>
+                            users.length > 0 ? (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => onReact(msg.id, emoji)}
+                                className="inline-flex items-center gap-1 rounded-full border border-line bg-surface px-2 py-0.5 text-xs hover:border-gold"
+                              >
+                                <span>{emoji}</span>
+                                <span className="font-mono text-[11px] text-muted">{users.length}</span>
+                              </button>
+                            ) : null,
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <p className="mt-1 text-sm text-ink">{msg.body}</p>
-                </div>
-              </div>
-            )))}
+                );
+              })
+            )}
           </div>
+
+          {replyTo && (
+            <div className="flex items-center justify-between border-t border-line bg-surface/60 px-4 py-2 text-xs">
+              <span className="truncate text-muted">
+                Replying to <strong className="text-ink">{replyTo.senderName}</strong>: {replyTo.body}
+              </span>
+              <button type="button" onClick={() => setReplyTo(null)} className="text-muted hover:text-ink">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
 
           <form onSubmit={onSend} className="flex gap-2 border-t border-line p-4">
             <Input
@@ -204,9 +553,9 @@ export function ChatView() {
         </div>
       </Card>
 
-      <Modal open={modalOpen} title="Create chat channel" onClose={() => setModalOpen(false)}>
+      <Modal open={modalOpen} title="Create organization or private group" onClose={() => setModalOpen(false)}>
         <form onSubmit={onCreateChannel} className="space-y-4">
-          <Field label="Channel name" htmlFor="ch-name">
+          <Field label="Group Name" htmlFor="ch-name">
             <Input
               id="ch-name"
               required
@@ -215,7 +564,7 @@ export function ChatView() {
               placeholder="e.g. prj-lankamed-portal"
             />
           </Field>
-          <Field label="Purpose / description" htmlFor="ch-desc">
+          <Field label="Group Description" htmlFor="ch-desc">
             <Input
               id="ch-desc"
               required
@@ -223,13 +572,113 @@ export function ChatView() {
               onChange={(e) => setNewChannelDesc(e.target.value)}
             />
           </Field>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label="Group Type" htmlFor="ch-type">
+              <Select
+                id="ch-type"
+                value={newChannelType}
+                onChange={(e) => setNewChannelType(e.target.value as ChatChannel['type'])}
+              >
+                <option value="GROUP">Private / Team Group</option>
+                <option value="PROJECT">Project Group</option>
+                <option value="DEPARTMENT">Department Group</option>
+                <option value="MANAGEMENT">Management Group</option>
+                <option value="ANNOUNCEMENT">Announcement Group</option>
+              </Select>
+            </Field>
+            <Field label="Sidebar Category" htmlFor="ch-cat">
+              <Select
+                id="ch-cat"
+                value={newChannelCategory}
+                onChange={(e) => setNewChannelCategory(e.target.value)}
+              >
+                <option value="ANNOUNCEMENTS">Announcements</option>
+                <option value="MANAGEMENT">Management</option>
+                <option value="DEPARTMENT">Departments</option>
+                <option value="TECHNICAL">Technical &amp; Projects</option>
+                <option value="CONFIDENTIAL">Private &amp; Confidential</option>
+              </Select>
+            </Field>
+            <Field label="Group Privacy" htmlFor="ch-priv">
+              <Select
+                id="ch-priv"
+                value={newChannelPrivacy}
+                onChange={(e) =>
+                  setNewChannelPrivacy(e.target.value as 'PUBLIC' | 'ROLE_RESTRICTED' | 'CONFIDENTIAL')
+                }
+              >
+                <option value="PUBLIC">Public (All Employees)</option>
+                <option value="ROLE_RESTRICTED">Role / Member Restricted</option>
+                <option value="CONFIDENTIAL">Confidential (Invite Only)</option>
+              </Select>
+            </Field>
+          </div>
+          {members.length > 0 && (
+            <div>
+              <p className="mb-1.5 text-xs font-medium text-muted">
+                Select Members ({selectedMemberIds.length} selected)
+              </p>
+              <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-line p-2">
+                {members.map((m) => (
+                  <label
+                    key={m.id}
+                    className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 text-xs hover:bg-surface"
+                  >
+                    <span className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedMemberIds.includes(m.id)}
+                        onChange={() => toggleMemberSelection(m.id)}
+                      />
+                      <span className="font-medium text-ink">{m.name}</span>
+                    </span>
+                    <span className="text-muted">{m.title ?? m.role}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" type="button" onClick={() => setModalOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit">Create channel</Button>
+            <Button type="submit">Create group</Button>
           </div>
         </form>
+      </Modal>
+
+      <Modal open={dmModalOpen} title="Start direct message" onClose={() => setDmModalOpen(false)}>
+        <div className="space-y-3">
+          <Input
+            placeholder="Search employee by name, role, or department…"
+            value={dmSearch}
+            onChange={(e) => setDmSearch(e.target.value)}
+          />
+          <div className="max-h-64 space-y-1 overflow-y-auto">
+            {members
+              .filter(
+                (m) =>
+                  m.id !== user?.id &&
+                  (`${m.name} ${m.title ?? ''} ${m.department ?? ''}`)
+                    .toLowerCase()
+                    .includes(dmSearch.toLowerCase()),
+              )
+              .map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => onStartDm(m)}
+                  className="flex w-full items-center justify-between rounded-xl border border-line px-3 py-2 text-left text-sm hover:border-gold hover:bg-surface"
+                >
+                  <div>
+                    <p className="font-medium text-ink">{m.name}</p>
+                    <p className="text-xs text-muted">{m.title ?? m.role}</p>
+                  </div>
+                  <Badge tone="neutral">{m.department ?? m.role}</Badge>
+                </button>
+              ))}
+          </div>
+        </div>
       </Modal>
     </div>
   );

@@ -142,12 +142,17 @@ export interface TimeEntryItem {
   projectName: string;
   taskId: string | null;
   taskTitle: string;
+  workCategory?: string;
   source: 'TIMER' | 'MANUAL';
   startedAt: string;
   endedAt: string | null;
+  pausedAt?: string | null;
+  pauseDurationSeconds?: number;
   durationMinutes: number;
   billable: boolean;
   note: string;
+  status?: 'RUNNING' | 'PAUSED' | 'SAVED' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'REVISION_REQUIRED';
+  approvedByName?: string | null;
 }
 
 export interface AttendanceItem {
@@ -211,9 +216,17 @@ export interface InternItem {
 export interface ChatChannelItem {
   id: string;
   name: string;
-  type: 'PROJECT' | 'DEPARTMENT' | 'GROUP' | 'DIRECT';
+  type: 'PROJECT' | 'DEPARTMENT' | 'GROUP' | 'DIRECT' | 'MANAGEMENT' | 'ANNOUNCEMENT' | 'PRIVATE' | 'EXTERNAL';
+  category?: 'ANNOUNCEMENTS' | 'MANAGEMENT' | 'DEPARTMENTS' | 'TECHNICAL' | 'PROJECTS' | 'PRIVATE' | 'DIRECT';
+  privacy?: 'PUBLIC' | 'PRIVATE' | 'CONFIDENTIAL';
   description: string;
   projectName: string | null;
+  department?: string | null;
+  allowedRoles?: Role[];
+  allowedTitleKeywords?: string[];
+  memberIds?: string[];
+  ownerId?: string | null;
+  allowInvites?: boolean;
 }
 
 export interface ChatMessageItem {
@@ -223,6 +236,17 @@ export interface ChatMessageItem {
   senderName: string;
   senderRole: string;
   body: string;
+  replyToId?: string | null;
+  replyPreview?: string | null;
+  pinned?: boolean;
+  editedAt?: string | null;
+  deleted?: boolean;
+  attachmentUrl?: string | null;
+  attachmentName?: string | null;
+  reactions?: Record<string, string[]>; // emoji -> userIds
+  linkedTaskId?: string | null;
+  linkedMeetingCode?: string | null;
+  poll?: { question: string; options: Array<{ id: string; label: string; votes: string[] }> } | null;
   createdAt: string;
 }
 
@@ -342,11 +366,124 @@ export class WorkspaceService implements OnModuleInit {
 
   private channels: ChatChannelItem[] = [
     {
+      id: 'ch_announcements',
+      name: 'company-announcements',
+      type: 'ANNOUNCEMENT',
+      category: 'ANNOUNCEMENTS',
+      privacy: 'PUBLIC',
+      description: 'Official company-wide notices & leadership updates.',
+      projectName: null,
+    },
+    {
       id: 'ch_general',
       name: 'general',
       type: 'GROUP',
-      description: 'Company-wide announcements and team updates.',
+      category: 'ANNOUNCEMENTS',
+      privacy: 'PUBLIC',
+      description: 'All-employees general discussion and team updates.',
       projectName: null,
+    },
+    {
+      id: 'ch_board_md',
+      name: 'board-md-governance',
+      type: 'MANAGEMENT',
+      category: 'MANAGEMENT',
+      privacy: 'CONFIDENTIAL',
+      description: 'Board of Directors / MD & Company Secretary governance channel.',
+      projectName: null,
+      allowedTitleKeywords: ['md', 'managing director', 'ceo', 'company secretary', 'board'],
+    },
+    {
+      id: 'ch_exec_mgmt',
+      name: 'executive-management',
+      type: 'MANAGEMENT',
+      category: 'MANAGEMENT',
+      privacy: 'PRIVATE',
+      description: 'CEO, CTO, COO, CFO & HR Manager leadership sync.',
+      projectName: null,
+      allowedTitleKeywords: ['md', 'ceo', 'cto', 'coo', 'cfo', 'hr', 'director'],
+    },
+    {
+      id: 'ch_dept_tech',
+      name: 'technology-department',
+      type: 'DEPARTMENT',
+      category: 'DEPARTMENTS',
+      privacy: 'PRIVATE',
+      description: 'CTO, Tech Leads, SE, QA, UI/UX, DevOps & Interns.',
+      projectName: null,
+      allowedRoles: [Role.STAFF, Role.INTERN],
+      allowedTitleKeywords: ['cto', 'tech lead', 'software', 'engineer', 'qa', 'ui/ux', 'devops', 'intern', 'dev'],
+    },
+    {
+      id: 'ch_dept_ops',
+      name: 'operations-delivery',
+      type: 'DEPARTMENT',
+      category: 'DEPARTMENTS',
+      privacy: 'PRIVATE',
+      description: 'COO, Project Managers, Business Analysts & Product Owners.',
+      projectName: null,
+      allowedRoles: [Role.PROJECT_MANAGER],
+      allowedTitleKeywords: ['coo', 'project manager', 'pm', 'ba', 'po', 'business analyst', 'product owner'],
+    },
+    {
+      id: 'ch_dept_finance',
+      name: 'finance-confidential',
+      type: 'DEPARTMENT',
+      category: 'PRIVATE',
+      privacy: 'CONFIDENTIAL',
+      description: 'CFO & Accountant confidential finance & payroll channel.',
+      projectName: null,
+      allowedTitleKeywords: ['cfo', 'accountant', 'finance', 'md', 'ceo'],
+    },
+    {
+      id: 'ch_dept_hr',
+      name: 'hr-confidential',
+      type: 'DEPARTMENT',
+      category: 'PRIVATE',
+      privacy: 'CONFIDENTIAL',
+      description: 'HR Manager & Admin confidential people operations channel.',
+      projectName: null,
+      allowedTitleKeywords: ['hr', 'human resources', 'admin', 'ceo', 'md'],
+    },
+    {
+      id: 'ch_dept_legal',
+      name: 'legal-governance',
+      type: 'DEPARTMENT',
+      category: 'DEPARTMENTS',
+      privacy: 'CONFIDENTIAL',
+      description: 'Legal Admin & Company Secretary compliance & governance.',
+      projectName: null,
+      allowedTitleKeywords: ['company secretary', 'legal', 'md', 'ceo'],
+    },
+    {
+      id: 'ch_tech_eng',
+      name: 'software-engineering',
+      type: 'GROUP',
+      category: 'TECHNICAL',
+      privacy: 'PUBLIC',
+      description: 'Architecture, PR reviews, APIs & frontend engineering.',
+      projectName: null,
+      allowedRoles: [Role.STAFF, Role.INTERN, Role.PROJECT_MANAGER, Role.ADMIN, Role.SUPER_ADMIN],
+    },
+    {
+      id: 'ch_tech_qa',
+      name: 'qa-testing',
+      type: 'GROUP',
+      category: 'TECHNICAL',
+      privacy: 'PUBLIC',
+      description: 'QA coordination, test plans & release sign-off.',
+      projectName: null,
+      allowedRoles: [Role.STAFF, Role.INTERN, Role.PROJECT_MANAGER, Role.ADMIN, Role.SUPER_ADMIN],
+    },
+    {
+      id: 'ch_tech_interns',
+      name: 'interns-mentorship',
+      type: 'GROUP',
+      category: 'TECHNICAL',
+      privacy: 'PUBLIC',
+      description: 'Intern cohort, training plans & mentor Q&A.',
+      projectName: null,
+      allowedRoles: [Role.INTERN, Role.STAFF, Role.PROJECT_MANAGER, Role.ADMIN, Role.SUPER_ADMIN],
     },
   ];
 
@@ -1260,16 +1397,37 @@ export class WorkspaceService implements OnModuleInit {
     const entries = this.isManagerOrAdmin(actor)
       ? this.timeEntries
       : this.timeEntries.filter((t) => t.userId === actor.id || t.userName === actor.fullName);
+
+    const own = this.timeEntries.filter((t) => t.userId === actor.id && t.endedAt !== null);
+    const now = new Date();
+    const todayPrefix = now.toISOString().slice(0, 10);
+    const weekStartMs = now.getTime() - 7 * 86_400_000;
+    const monthPrefix = now.toISOString().slice(0, 7);
+
+    const todayMinutes = own
+      .filter((t) => t.startedAt.startsWith(todayPrefix))
+      .reduce((s, t) => s + t.durationMinutes, 0);
+    const weekMinutes = own
+      .filter((t) => new Date(t.startedAt).getTime() >= weekStartMs)
+      .reduce((s, t) => s + t.durationMinutes, 0);
+    const monthMinutes = own
+      .filter((t) => t.startedAt.startsWith(monthPrefix))
+      .reduce((s, t) => s + t.durationMinutes, 0);
+    const approvedMinutes = own
+      .filter((t) => t.status === 'APPROVED')
+      .reduce((s, t) => s + t.durationMinutes, 0);
+
     return {
       activeTimer,
       entries,
+      summary: { todayMinutes, weekMinutes, monthMinutes, approvedMinutes },
     };
   }
 
   startTimer(actor: AuthUser, body: Record<string, unknown>) {
     const existing = this.timeEntries.find((t) => t.userId === actor.id && t.endedAt === null);
     if (existing) {
-      throw new BadRequestException('You already have a running timer. Stop it before starting a new one.');
+      throw new BadRequestException('You already have a running timer. Stop or switch it before starting a new one.');
     }
     const project = this.projects.find((p) => p.id === body.projectId) ?? null;
     const task = this.tasks.find((t) => t.id === body.taskId) ?? null;
@@ -1281,12 +1439,17 @@ export class WorkspaceService implements OnModuleInit {
       projectName: project?.name ?? 'General project work',
       taskId: task?.id ?? null,
       taskTitle: task?.title ?? 'General project work',
+      workCategory: String(body.workCategory ?? 'Development').trim(),
       source: 'TIMER',
       startedAt: new Date().toISOString(),
       endedAt: null,
+      pausedAt: null,
+      pauseDurationSeconds: 0,
       durationMinutes: 0,
       billable: body.billable !== false,
       note: String(body.note ?? '').trim() || 'Active timer session',
+      status: 'RUNNING',
+      approvedByName: null,
     };
     this.timeEntries.unshift(entry);
     this.persistState(actor.organizationId);
@@ -1311,6 +1474,36 @@ export class WorkspaceService implements OnModuleInit {
     return entry;
   }
 
+  pauseTimer(actor: AuthUser) {
+    const running = this.timeEntries.find((t) => t.userId === actor.id && t.endedAt === null);
+    if (!running) throw new BadRequestException('No running timer found.');
+    if (running.pausedAt) throw new BadRequestException('Timer is already paused.');
+    running.pausedAt = new Date().toISOString();
+    running.status = 'PAUSED';
+    this.persistState(actor.organizationId);
+    return running;
+  }
+
+  resumeTimer(actor: AuthUser) {
+    const running = this.timeEntries.find((t) => t.userId === actor.id && t.endedAt === null);
+    if (!running) throw new BadRequestException('No active timer found.');
+    if (!running.pausedAt) throw new BadRequestException('Timer is not paused.');
+    const addedPauseSec = Math.max(0, Math.round((Date.now() - new Date(running.pausedAt).getTime()) / 1000));
+    running.pauseDurationSeconds = (running.pauseDurationSeconds ?? 0) + addedPauseSec;
+    running.pausedAt = null;
+    running.status = 'RUNNING';
+    this.persistState(actor.organizationId);
+    return running;
+  }
+
+  switchTimer(actor: AuthUser, body: Record<string, unknown>) {
+    const existing = this.timeEntries.find((t) => t.userId === actor.id && t.endedAt === null);
+    if (existing) {
+      this.stopTimer(actor);
+    }
+    return this.startTimer(actor, body);
+  }
+
   stopTimer(actor: AuthUser) {
     const running = this.timeEntries.find((t) => t.userId === actor.id && t.endedAt === null);
     if (!running) {
@@ -1318,9 +1511,17 @@ export class WorkspaceService implements OnModuleInit {
     }
     const endedAt = new Date();
     const startedAt = new Date(running.startedAt);
-    const elapsedMinutes = Math.max(1, Math.round((endedAt.getTime() - startedAt.getTime()) / 60000));
+    let totalPauseSec = running.pauseDurationSeconds ?? 0;
+    if (running.pausedAt) {
+      totalPauseSec += Math.max(0, Math.round((endedAt.getTime() - new Date(running.pausedAt).getTime()) / 1000));
+      running.pausedAt = null;
+    }
+    running.pauseDurationSeconds = totalPauseSec;
+    const netMs = Math.max(0, endedAt.getTime() - startedAt.getTime() - totalPauseSec * 1000);
+    const elapsedMinutes = Math.max(1, Math.round(netMs / 60000));
     running.endedAt = endedAt.toISOString();
     running.durationMinutes = elapsedMinutes;
+    running.status = 'SAVED';
     if (running.taskId) {
       const task = this.tasks.find((t) => t.id === running.taskId);
       if (task) {
@@ -1333,6 +1534,26 @@ export class WorkspaceService implements OnModuleInit {
       data: { endedAt },
     }).catch(() => undefined);
     return running;
+  }
+
+  submitTimeEntry(actor: AuthUser, id: string) {
+    const entry = this.timeEntries.find((t) => t.id === id && t.userId === actor.id);
+    if (!entry) throw new NotFoundException('Time entry not found.');
+    if (entry.endedAt === null) throw new BadRequestException('Stop the active timer before submitting.');
+    if (entry.status === 'APPROVED') throw new BadRequestException('Approved timesheets cannot be modified.');
+    entry.status = 'SUBMITTED';
+    this.approvals.unshift({
+      id: `apr_ts_${entry.id}`,
+      type: 'TIMESHEET',
+      title: `${actor.fullName} · ${entry.projectName} (${entry.durationMinutes}m)`,
+      description: `${entry.workCategory || 'Work'}: ${entry.note}`,
+      requestedById: actor.id,
+      requestedByName: actor.fullName,
+      status: 'PENDING',
+      createdAt: new Date().toISOString(),
+    });
+    this.persistState(actor.organizationId);
+    return entry;
   }
 
   logManualTime(actor: AuthUser, body: Record<string, unknown>) {
@@ -1355,9 +1576,12 @@ export class WorkspaceService implements OnModuleInit {
       source: 'MANUAL',
       startedAt: startedAt.toISOString(),
       endedAt: endedAt.toISOString(),
+      workCategory: String(body.workCategory ?? 'Development').trim(),
       durationMinutes: minutes,
       billable: body.billable !== false,
       note: String(body.note ?? '').trim() || 'Manual time entry',
+      status: 'SAVED',
+      approvedByName: null,
     };
     this.timeEntries.unshift(entry);
     if (task) {
@@ -1698,25 +1922,71 @@ export class WorkspaceService implements OnModuleInit {
     return intern;
   }
 
-  // ─── Chat ─────────────────────────────────────────────────────────────────
-  listChatChannels() {
-    return this.channels;
+  // ─── Chat (Role-Based Enterprise Communication) ───────────────────────────
+  private canAccessChannel(actor: AuthUser | undefined, ch: ChatChannelItem): boolean {
+    if (!actor) return true;
+    if (ch.ownerId === actor.id || ch.memberIds?.includes(actor.id)) return true;
+
+    // Direct messages & private/confidential groups with explicit memberIds are strictly restricted
+    if (ch.type === 'DIRECT') {
+      return Boolean(ch.memberIds?.includes(actor.id));
+    }
+    if (ch.privacy === 'PUBLIC' || (!ch.allowedRoles && !ch.allowedTitleKeywords && ch.privacy !== 'CONFIDENTIAL')) {
+      return true;
+    }
+
+    const titleLower = String((actor as AuthUser & { title?: string | null }).title ?? '').toLowerCase();
+    const companyUpper = String(actor.companyId ?? '').toUpperCase();
+
+    // Super Admin cannot read CONFIDENTIAL groups unless explicitly matched/invited
+    if (actor.role === Role.SUPER_ADMIN && ch.privacy !== 'CONFIDENTIAL') {
+      return true;
+    }
+
+    if (ch.allowedRoles?.includes(actor.role)) return true;
+    if (ch.allowedTitleKeywords?.some((kw) => titleLower.includes(kw))) return true;
+    if (companyUpper.includes('-SEC-') && ch.id === 'ch_dept_legal') return true;
+    if (companyUpper.includes('-CFO-') && ch.id === 'ch_dept_finance') return true;
+    if (companyUpper.includes('-ACC-') && ch.id === 'ch_dept_finance') return true;
+    if (companyUpper.includes('-HR-') && ch.id === 'ch_dept_hr') return true;
+    return false;
   }
 
-  listChatMessages(channelId: string) {
-    return this.messages.filter((m) => m.channelId === channelId);
+  listChatChannels(actor?: AuthUser) {
+    return this.channels.filter((ch) => this.canAccessChannel(actor, ch));
+  }
+
+  listChatMessages(channelId: string, actor?: AuthUser) {
+    const ch = this.channels.find((c) => c.id === channelId);
+    if (ch && actor && !this.canAccessChannel(actor, ch)) {
+      throw new ForbiddenException('You do not have permission to view this channel.');
+    }
+    return this.messages.filter((m) => m.channelId === channelId && !m.deleted);
   }
 
   postChatMessage(actor: AuthUser, channelId: string, body: Record<string, unknown>) {
+    const ch = this.channels.find((c) => c.id === channelId);
+    if (ch && !this.canAccessChannel(actor, ch)) {
+      throw new ForbiddenException('You do not have permission to post in this channel.');
+    }
     const text = String(body.body ?? '').trim();
-    if (!text) throw new BadRequestException('Message cannot be empty.');
+    if (!text && !body.attachmentUrl) throw new BadRequestException('Message cannot be empty.');
+    const replyTo = body.replyToId ? this.messages.find((m) => m.id === body.replyToId) : null;
     const msg: ChatMessageItem = {
       id: `msg_${randomUUID().slice(0, 8)}`,
       channelId,
       senderId: actor.id,
-      senderName: actor.fullName,
+      senderName: actor.companyId ? `${actor.fullName.trim().split(/\s+/).pop() || actor.fullName} · ${actor.companyId}` : actor.fullName,
       senderRole: actor.role,
       body: text,
+      replyToId: replyTo?.id ?? null,
+      replyPreview: replyTo ? `${replyTo.senderName}: ${replyTo.body.slice(0, 60)}` : null,
+      pinned: false,
+      editedAt: null,
+      deleted: false,
+      attachmentUrl: body.attachmentUrl ? String(body.attachmentUrl) : null,
+      attachmentName: body.attachmentName ? String(body.attachmentName) : null,
+      reactions: {},
       createdAt: new Date().toISOString(),
     };
     this.messages.push(msg);
@@ -1751,22 +2021,47 @@ export class WorkspaceService implements OnModuleInit {
     return msg;
   }
 
-  createChatChannel(body: Record<string, unknown>) {
+  createChatChannel(actorOrBody: AuthUser | Record<string, unknown>, maybeBody?: Record<string, unknown>) {
+    const actor = maybeBody ? (actorOrBody as AuthUser) : undefined;
+    const body = maybeBody ?? (actorOrBody as Record<string, unknown>);
     const rawName = String(body.name ?? '').trim().toLowerCase().replace(/\s+/g, '-');
     if (rawName.length < 2) throw new BadRequestException('Channel name is required.');
+    const type = ((body.type as ChatChannelItem['type']) || 'GROUP').toUpperCase() as ChatChannelItem['type'];
+    const privacy = ((body.privacy as ChatChannelItem['privacy']) || 'PUBLIC').toUpperCase() as ChatChannelItem['privacy'];
+    const memberIds = Array.isArray(body.memberIds) ? body.memberIds.map(String) : [];
+    if (actor && !memberIds.includes(actor.id)) memberIds.push(actor.id);
+
     const created: ChatChannelItem = {
       id: `ch_${randomUUID().slice(0, 8)}`,
       name: rawName,
-      type: (body.type as ChatChannelItem['type']) || 'GROUP',
+      type,
+      category:
+        (body.category as ChatChannelItem['category']) ||
+        (type === 'MANAGEMENT'
+          ? 'MANAGEMENT'
+          : type === 'DEPARTMENT'
+            ? 'DEPARTMENTS'
+            : type === 'PROJECT'
+              ? 'PROJECTS'
+              : type === 'ANNOUNCEMENT'
+                ? 'ANNOUNCEMENTS'
+                : privacy !== 'PUBLIC'
+                  ? 'PRIVATE'
+                  : 'TECHNICAL'),
+      privacy,
       description: String(body.description ?? '').trim() || 'Team discussion channel',
       projectName: body.projectName ? String(body.projectName) : null,
+      department: body.department ? String(body.department) : null,
+      memberIds: memberIds.length > 0 ? memberIds : undefined,
+      ownerId: actor?.id ?? null,
+      allowInvites: body.allowInvites !== false,
     };
     this.channels.push(created);
-    this.persistState();
+    this.persistState(actor?.organizationId);
 
     void (async () => {
       try {
-        const orgId = await this.resolveOrgId();
+        const orgId = await this.resolveOrgId(actor?.organizationId);
         if (!orgId) return;
         await this.prisma.chatChannel?.upsert?.({
           where: { id: created.id },
@@ -1784,6 +2079,107 @@ export class WorkspaceService implements OnModuleInit {
     })();
 
     return created;
+  }
+
+  startDirectChat(actor: AuthUser, targetUserId: string, targetUserName?: string) {
+    if (!targetUserId || targetUserId === actor.id) {
+      throw new BadRequestException('Select another employee to message.');
+    }
+    const existing = this.channels.find(
+      (c) =>
+        c.type === 'DIRECT' &&
+        c.memberIds?.includes(actor.id) &&
+        c.memberIds?.includes(targetUserId),
+    );
+    if (existing) return existing;
+
+    const dm: ChatChannelItem = {
+      id: `dm_${randomUUID().slice(0, 8)}`,
+      name: targetUserName ? `DM: ${targetUserName}` : 'Direct Message',
+      type: 'DIRECT',
+      category: 'DIRECT',
+      privacy: 'PRIVATE',
+      description: `Private conversation with ${targetUserName || 'colleague'}`,
+      projectName: null,
+      memberIds: [actor.id, targetUserId],
+      ownerId: actor.id,
+    };
+    this.channels.push(dm);
+    this.persistState(actor.organizationId);
+    return dm;
+  }
+
+  editChatMessage(actor: AuthUser, messageId: string, newBody: string) {
+    const msg = this.messages.find((m) => m.id === messageId && !m.deleted);
+    if (!msg) throw new NotFoundException('Message not found.');
+    if (msg.senderId !== actor.id) throw new ForbiddenException('You can only edit your own messages.');
+    const trimmed = String(newBody ?? '').trim();
+    if (!trimmed) throw new BadRequestException('Message cannot be empty.');
+    msg.body = trimmed;
+    msg.editedAt = new Date().toISOString();
+    this.persistState(actor.organizationId);
+    return msg;
+  }
+
+  deleteChatMessage(actor: AuthUser, messageId: string) {
+    const msg = this.messages.find((m) => m.id === messageId);
+    if (!msg) throw new NotFoundException('Message not found.');
+    if (msg.senderId !== actor.id && !this.isManagerOrAdmin(actor)) {
+      throw new ForbiddenException('You can only delete your own messages.');
+    }
+    msg.deleted = true;
+    msg.body = 'Message deleted';
+    this.persistState(actor.organizationId);
+    return { ok: true, id: messageId };
+  }
+
+  reactChatMessage(actor: AuthUser, messageId: string, emoji: string) {
+    const msg = this.messages.find((m) => m.id === messageId && !m.deleted);
+    if (!msg) throw new NotFoundException('Message not found.');
+    const map = msg.reactions ?? {};
+    const list = new Set(map[emoji] ?? []);
+    if (list.has(actor.id)) list.delete(actor.id);
+    else list.add(actor.id);
+    map[emoji] = [...list];
+    msg.reactions = map;
+    this.persistState(actor.organizationId);
+    return msg;
+  }
+
+  togglePinChatMessage(actor: AuthUser, messageId: string) {
+    const msg = this.messages.find((m) => m.id === messageId && !m.deleted);
+    if (!msg) throw new NotFoundException('Message not found.');
+    msg.pinned = !msg.pinned;
+    this.persistState(actor.organizationId);
+    return msg;
+  }
+
+  async convertMessageToTask(actor: AuthUser, messageId: string, body: Record<string, unknown>) {
+    const msg = this.messages.find((m) => m.id === messageId && !m.deleted);
+    if (!msg) throw new NotFoundException('Source message not found.');
+    const created = await this.createTask(actor, {
+      title: String(body.title ?? '').trim() || msg.body.slice(0, 80),
+      description: `Converted from Chat (${msg.senderName}): ${msg.body}`,
+      projectId: body.projectId,
+      priority: body.priority || 'MEDIUM',
+      status: 'TODO',
+    });
+    msg.linkedTaskId = created.id;
+    this.persistState(actor.organizationId);
+    return { task: created, message: msg };
+  }
+
+  async createMeetingFromChannel(actor: AuthUser, channelId: string, body: Record<string, unknown>) {
+    const ch = this.channels.find((c) => c.id === channelId);
+    const mtg = await this.scheduleMeeting(actor, {
+      title: String(body.title ?? '').trim() || `${ch?.name ?? 'Team'} Sync`,
+      agenda: String(body.agenda ?? '').trim() || `Instant sync launched from #${ch?.name ?? 'chat'}`,
+      instant: true,
+    });
+    this.postChatMessage(actor, channelId, {
+      body: `Started a live meeting (${mtg.roomCode}): ${mtg.title}`,
+    });
+    return mtg;
   }
 
   // ─── Meetings (Built-in Yakunex Hub Meet Engine + WebRTC Signaling) ──────
@@ -2779,6 +3175,20 @@ export class WorkspaceService implements OnModuleInit {
     item.decidedByName = actor.fullName;
     item.comment = body.comment ?? null;
     item.decidedAt = new Date().toISOString();
+
+    if (item.type === 'TIMESHEET' && item.id.startsWith('apr_ts_')) {
+      const teId = item.id.replace('apr_ts_', '');
+      const te = this.timeEntries.find((t) => t.id === teId);
+      if (te) {
+        te.status =
+          body.status === 'APPROVED'
+            ? 'APPROVED'
+            : body.status === 'REJECTED'
+              ? 'REJECTED'
+              : 'REVISION_REQUIRED';
+        te.approvedByName = actor.fullName;
+      }
+    }
 
     if (body.status === 'APPROVED' && item.type === 'PROFILE_CHANGE' && item.meta?.targetUserId && item.meta?.field && item.meta?.newValue !== undefined) {
       const uid = item.meta.targetUserId;

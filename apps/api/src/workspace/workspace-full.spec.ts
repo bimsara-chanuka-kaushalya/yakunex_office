@@ -338,5 +338,85 @@ describe('WorkspaceService Full-System Coverage (All 14 Modules)', () => {
     await svc.markNotificationRead(staffActor, ann.id);
     expect(svc.listNotifications(staffActor).find((n) => n.id === ann.id)?.read).toBe(true);
   });
+
+  it('covers upgraded Time Tracker (pause/resume/switch/submit & approval sync)', async () => {
+    const { svc } = makeService();
+    const prj = await svc.createProject(adminActor, { name: 'Core API', code: 'CORE' });
+
+    const started = svc.startTimer(staffActor, {
+      projectId: prj.id,
+      workCategory: 'Development',
+      note: 'Auth endpoints',
+      billable: true,
+    });
+    expect(started.status).toBe('RUNNING');
+    expect(started.workCategory).toBe('Development');
+
+    const paused = svc.pauseTimer(staffActor);
+    expect(paused.status).toBe('PAUSED');
+    expect(paused.pausedAt).toBeTruthy();
+
+    const resumed = svc.resumeTimer(staffActor);
+    expect(resumed.status).toBe('RUNNING');
+    expect(resumed.pausedAt).toBeNull();
+
+    const switched = svc.switchTimer(staffActor, {
+      projectId: prj.id,
+      workCategory: 'Testing / QA',
+      note: 'Integration tests',
+    });
+    expect(switched.status).toBe('RUNNING');
+    expect(switched.workCategory).toBe('Testing / QA');
+
+    const stopped = svc.stopTimer(staffActor);
+    expect(stopped.status).toBe('SAVED');
+
+    const submitted = svc.submitTimeEntry(staffActor, stopped.id);
+    expect(submitted.status).toBe('SUBMITTED');
+    const tsApproval = svc.listApprovals(adminActor).find((a) => a.type === 'TIMESHEET');
+    expect(tsApproval).toBeDefined();
+
+    await svc.decideApproval(adminActor, tsApproval!.id, { status: 'APPROVED', comment: 'Verified' });
+    const afterList = svc.listTimeEntries(staffActor);
+    expect(afterList.summary.todayMinutes).toBeGreaterThanOrEqual(0);
+    expect(afterList.entries.find((e) => e.id === stopped.id)?.status).toBe('APPROVED');
+  });
+
+  it('covers Role-Based Team Chat, Confidential Isolation, DM, Reactions, Pin & Convert-to-Task', async () => {
+    const { svc } = makeService();
+
+    // Create a CONFIDENTIAL channel where Super Admin is NOT a member
+    const conf = svc.createChatChannel(staffActor, {
+      name: 'hr-confidential-test',
+      description: 'HR Private',
+      type: 'GROUP',
+      category: 'CONFIDENTIAL',
+      privacy: 'CONFIDENTIAL',
+      memberIds: [staffActor.id],
+    });
+
+    // Super Admin cannot automatically see or read uninvited CONFIDENTIAL channels
+    const adminChannels = svc.listChatChannels(adminActor);
+    expect(adminChannels.some((c) => c.id === conf.id)).toBe(false);
+    expect(() => svc.listChatMessages(conf.id, adminActor)).toThrow(ForbiddenException);
+
+    // Staff can access and post
+    const msg = svc.postChatMessage(staffActor, conf.id, { body: 'Prepare onboarding checklist' });
+    const reacted = svc.reactChatMessage(staffActor, msg.id, '👍');
+    expect(reacted.reactions?.['👍']).toContain(staffActor.id);
+
+    const pinned = svc.togglePinChatMessage(staffActor, msg.id);
+    expect(pinned.pinned).toBe(true);
+
+    const converted = await svc.convertMessageToTask(staffActor, msg.id, {});
+    expect(converted.task.title).toContain('Prepare onboarding checklist');
+
+    const dm = svc.startDirectChat(staffActor, internActor.id, internActor.fullName);
+    expect(dm.type).toBe('DIRECT');
+    expect(svc.listChatChannels(internActor).some((c) => c.id === dm.id)).toBe(true);
+
+    const mt = await svc.createMeetingFromChannel(staffActor, 'ch_general', { title: 'Quick Sync' });
+    expect(mt.roomCode).toBeTruthy();
+  });
 });
 

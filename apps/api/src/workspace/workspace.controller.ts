@@ -150,6 +150,26 @@ export class WorkspaceController {
     return this.workspace.stopTimer(actor);
   }
 
+  @Post('time-entries/pause')
+  pauseTimer(@CurrentUser() actor: AuthUser) {
+    return this.workspace.pauseTimer(actor);
+  }
+
+  @Post('time-entries/resume')
+  resumeTimer(@CurrentUser() actor: AuthUser) {
+    return this.workspace.resumeTimer(actor);
+  }
+
+  @Post('time-entries/switch')
+  switchTimer(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.switchTimer(actor, body);
+  }
+
+  @Post('time-entries/:id/submit')
+  submitTimeEntry(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.submitTimeEntry(actor, id);
+  }
+
   @Post('time-entries/manual')
   logManualTime(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
     return this.workspace.logManualTime(actor, body);
@@ -224,20 +244,29 @@ export class WorkspaceController {
   // ─── Chat ─────────────────────────────────────────────────────────────────
   @Get('chat/channels')
   @RequirePermissions(PERMISSIONS.CHAT_USE)
-  listChatChannels() {
-    return this.workspace.listChatChannels();
+  listChatChannels(@CurrentUser() actor: AuthUser) {
+    return this.workspace.listChatChannels(actor);
   }
 
   @Post('chat/channels')
   @RequirePermissions(PERMISSIONS.CHAT_USE)
-  createChatChannel(@Body() body: Record<string, unknown>) {
-    return this.workspace.createChatChannel(body);
+  createChatChannel(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.createChatChannel(actor, body);
+  }
+
+  @Post('chat/direct')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  startDirectChat(
+    @CurrentUser() actor: AuthUser,
+    @Body() body: { targetUserId: string; targetUserName?: string },
+  ) {
+    return this.workspace.startDirectChat(actor, body.targetUserId, body.targetUserName);
   }
 
   @Get('chat/channels/:id/messages')
   @RequirePermissions(PERMISSIONS.CHAT_USE)
-  listChatMessages(@Param('id') id: string) {
-    return this.workspace.listChatMessages(id);
+  listChatMessages(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.listChatMessages(id, actor);
   }
 
   @Post('chat/channels/:id/messages')
@@ -248,6 +277,58 @@ export class WorkspaceController {
     @Body() body: Record<string, unknown>,
   ) {
     return this.workspace.postChatMessage(actor, id, body);
+  }
+
+  @Patch('chat/messages/:id')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  editChatMessage(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: { body: string },
+  ) {
+    return this.workspace.editChatMessage(actor, id, body.body);
+  }
+
+  @Delete('chat/messages/:id')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  deleteChatMessage(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.deleteChatMessage(actor, id);
+  }
+
+  @Post('chat/messages/:id/react')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  reactChatMessage(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: { emoji: string },
+  ) {
+    return this.workspace.reactChatMessage(actor, id, body.emoji);
+  }
+
+  @Patch('chat/messages/:id/pin')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  togglePinChatMessage(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.togglePinChatMessage(actor, id);
+  }
+
+  @Post('chat/messages/:id/to-task')
+  @RequirePermissions(PERMISSIONS.TASKS_WRITE)
+  convertMessageToTask(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.workspace.convertMessageToTask(actor, id, body);
+  }
+
+  @Post('chat/channels/:id/meeting')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  createMeetingFromChannel(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.workspace.createMeetingFromChannel(actor, id, body);
   }
 
   // ─── Meetings (Built-in Yakunex Hub Meet Engine) ──────────────────────────
