@@ -1917,6 +1917,8 @@ export class WorkspaceService implements OnModuleInit {
       if (existing) {
         if (actor.companyId) existing.companyId = actor.companyId;
         existing.fullName = actor.fullName;
+        existing.screenSharing = false;
+        existing.screenStreamId = null;
         if (body?.micOn !== undefined) existing.micOn = micOn;
         if (body?.camOn !== undefined) existing.camOn = camOn;
         existing.joinedAt = joinedAt;
@@ -2195,10 +2197,12 @@ export class WorkspaceService implements OnModuleInit {
     if (!mtg) throw new NotFoundException('Meeting not found.');
     const text = String(body.body ?? '').trim();
     if (!text) throw new BadRequestException('Message cannot be empty.');
+    const senderParts = actor.fullName.trim().split(/\s+/).filter(Boolean);
+    const senderLast = senderParts[senderParts.length - 1] || actor.fullName;
     mtg.chatMessages.push({
       id: `mc_${randomUUID().slice(0, 8)}`,
       senderId: actor.id,
-      senderName: actor.companyId ? `${actor.companyId} · ${actor.fullName}` : actor.fullName,
+      senderName: actor.companyId ? `${senderLast} · ${actor.companyId}` : senderLast,
       body: text,
       createdAt: new Date().toISOString(),
     });
@@ -2479,9 +2483,11 @@ export class WorkspaceService implements OnModuleInit {
       };
     }
 
+    const nameParts = actor.fullName.trim().split(/\s+/).filter(Boolean);
+    const lastName = nameParts[nameParts.length - 1] || actor.fullName;
     const at = new AccessToken(apiKey, apiSecret, {
       identity: actor.id,
-      name: actor.companyId ? `${actor.companyId} · ${actor.fullName}` : actor.fullName,
+      name: actor.companyId ? `${lastName} · ${actor.companyId}` : lastName,
       ttl: '4h',
       metadata: JSON.stringify({ role: actor.role, companyId: actor.companyId ?? null }),
     });

@@ -118,7 +118,10 @@ interface CurrentUserInfo {
 }
 
 function formatParticipantDisplay(p: { companyId?: string | null; fullName: string }): string {
-  return p.companyId ? `${p.companyId} · ${p.fullName}` : p.fullName;
+  const parts = String(p.fullName ?? '').trim().split(/\s+/).filter(Boolean);
+  const lastName = parts[parts.length - 1] ?? '';
+  if (lastName && p.companyId) return `${lastName} · ${p.companyId}`;
+  return p.companyId || lastName || 'Member';
 }
 
 type QualityTier = 'hd' | 'balanced' | 'low-signal' | '3g-ultra';
@@ -1684,8 +1687,23 @@ export function MeetingStudio({
 
   // Sync peer connections & screen-share state whenever participants enter, share, or leave
   useEffect(() => {
-    if (sfuModeRef.current) return;
     const activeIds = new Set(room.participants.map((p) => p.userId));
+    for (const stalePeerId of Object.keys(remoteScreenStreamsRef.current)) {
+      const p = room.participants.find((item) => item.userId === stalePeerId);
+      if (!p || !p.screenSharing) {
+        delete remoteScreenStreamsRef.current[stalePeerId];
+        delete remoteScreenStreamIdsRef.current[stalePeerId];
+        delete remoteScreenTrackIdsRef.current[stalePeerId];
+        delete remoteScreenAudioTrackIdsRef.current[stalePeerId];
+        setRemoteScreenStreams((prev) => {
+          if (!(stalePeerId in prev)) return prev;
+          const next = { ...prev };
+          delete next[stalePeerId];
+          return next;
+        });
+      }
+    }
+    if (sfuModeRef.current) return;
     for (const peerId of Array.from(pcsRef.current.keys())) {
       if (!activeIds.has(peerId)) {
         closePeer(peerId);
@@ -3215,7 +3233,10 @@ export function MeetingStudio({
 
   // Resolve current active presenter screen share (local OR remote)
   const activeScreenShare = useMemo(() => {
-    if (screenStream) {
+    const hasLiveScreenVideo = (s?: MediaStream | null) =>
+      Boolean(s?.getVideoTracks().some((t) => t.readyState === 'live'));
+
+    if (screenStream && hasLiveScreenVideo(screenStream)) {
       return {
         userId: currentUser.id,
         presenterName: `${formatParticipantDisplay(currentUser)} (You)`,
@@ -3224,9 +3245,10 @@ export function MeetingStudio({
     }
     for (const [peerId, stream] of Object.entries(remoteScreenStreams)) {
       const p = room.participants.find((item) => item.userId === peerId);
+      if (!p || !p.screenSharing || !hasLiveScreenVideo(stream)) continue;
       return {
         userId: peerId,
-        presenterName: p ? formatParticipantDisplay(p) : 'Teammate',
+        presenterName: formatParticipantDisplay(p),
         stream,
       };
     }
