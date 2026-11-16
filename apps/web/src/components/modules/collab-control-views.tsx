@@ -317,6 +317,22 @@ export function MeetingsView() {
     }
   }, [loading, meetings]);
 
+  const openMeetingPopup = (params: Record<string, string>): boolean => {
+    if (typeof window === 'undefined') return false;
+    const qs = new URLSearchParams(params).toString();
+    const winName = `yakunex-meet-${params.room || 'instant'}`;
+    const win = window.open(
+      `/meet?${qs}`,
+      winName,
+      'popup=yes,width=1360,height=860,resizable=yes',
+    );
+    if (win) {
+      win.focus();
+      return true;
+    }
+    return false;
+  };
+
   const confirmPreJoin = async ({ micOn, camOn }: { micOn: boolean; camOn: boolean }) => {
     if (!preJoin) return;
     setJoining(true);
@@ -338,8 +354,17 @@ export function MeetingsView() {
         });
       }
       setPreJoin(null);
-      setActiveSession({ room: joined, micOn, camOn });
       void load();
+      if (
+        !openMeetingPopup({
+          room: joined.roomCode,
+          mic: String(micOn),
+          cam: String(camOn),
+          autojoin: '1',
+        })
+      ) {
+        setActiveSession({ room: joined, micOn, camOn });
+      }
     } catch (err) {
       setJoinError(err instanceof Error ? err.message : 'Unable to enter meeting room.');
     } finally {
@@ -357,7 +382,9 @@ export function MeetingsView() {
     );
     if (localMatch) {
       setRoomCodeInput('');
-      setPreJoin({ mode: 'existing', meeting: localMatch });
+      if (!openMeetingPopup({ room: localMatch.roomCode })) {
+        setPreJoin({ mode: 'existing', meeting: localMatch });
+      }
       return;
     }
     setJoining(true);
@@ -368,8 +395,17 @@ export function MeetingsView() {
         camOn: true,
       });
       setRoomCodeInput('');
-      setActiveSession({ room: joined, micOn: true, camOn: true });
       void load();
+      if (
+        !openMeetingPopup({
+          room: joined.roomCode,
+          mic: 'true',
+          cam: 'true',
+          autojoin: '1',
+        })
+      ) {
+        setActiveSession({ room: joined, micOn: true, camOn: true });
+      }
     } catch (err) {
       setJoinError(err instanceof Error ? err.message : 'Invalid meeting room code.');
     } finally {
@@ -398,7 +434,7 @@ export function MeetingsView() {
   };
 
   const copyInvite = async (mtg: MeetingRow) => {
-    const url = `${window.location.origin}/meetings?room=${mtg.roomCode}`;
+    const url = `${window.location.origin}/meet?room=${mtg.roomCode}`;
     await navigator.clipboard.writeText(url).catch(() => undefined);
     setCopiedId(mtg.id);
     setTimeout(() => setCopiedId(null), 2000);
@@ -494,13 +530,16 @@ export function MeetingsView() {
 
           <Button
             variant="primary"
-            onClick={() =>
-              setPreJoin({
-                mode: 'instant',
-                title: `${user?.fullName ?? 'Team'}'s Instant Meeting`,
-                agenda: 'Live video sync & screen share huddle',
-              })
-            }
+            onClick={() => {
+              const titleText = `${user?.fullName ?? 'Team'}'s Instant Meeting`;
+              if (!openMeetingPopup({ instant: '1', title: titleText })) {
+                setPreJoin({
+                  mode: 'instant',
+                  title: titleText,
+                  agenda: 'Live video sync & screen share huddle',
+                });
+              }
+            }}
           >
             <Video className="h-4 w-4" /> New Meeting
           </Button>
@@ -638,7 +677,11 @@ export function MeetingsView() {
                   <Button
                     variant={isLive ? 'primary' : 'secondary'}
                     size="sm"
-                    onClick={() => setPreJoin({ mode: 'existing', meeting: mtg })}
+                    onClick={() => {
+                      if (!openMeetingPopup({ room: mtg.roomCode })) {
+                        setPreJoin({ mode: 'existing', meeting: mtg });
+                      }
+                    }}
                   >
                     <Video className="h-3.5 w-3.5" />{' '}
                     {mtg.status === 'COMPLETED' ? 'Reopen & Join' : 'Join Meeting'}

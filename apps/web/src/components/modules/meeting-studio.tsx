@@ -613,6 +613,7 @@ export function MeetingStudio({
   currentUser,
   onExited,
   onMeetingUpdated,
+  standalone = false,
 }: {
   initialRoom: MeetingRow;
   initialMicOn: boolean;
@@ -620,6 +621,7 @@ export function MeetingStudio({
   currentUser: CurrentUserInfo;
   onExited: (endedForAll?: boolean) => void;
   onMeetingUpdated?: (room: MeetingRow) => void;
+  standalone?: boolean;
 }) {
   const [room, setRoom] = useState<MeetingRow>(initialRoom);
   const [micOn, setMicOn] = useState(initialMicOn);
@@ -3065,7 +3067,7 @@ export function MeetingStudio({
   };
 
   const copyInviteLink = async () => {
-    const url = `${window.location.origin}/meetings?room=${room.roomCode}`;
+    const url = `${window.location.origin}/meet?room=${room.roomCode}`;
     await navigator.clipboard.writeText(url).catch(() => undefined);
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 2000);
@@ -3343,7 +3345,7 @@ export function MeetingStudio({
       ref={studioRef}
       className={cn(
         'relative flex flex-col overflow-hidden bg-[#0B0F17] text-white shadow-2xl',
-        isFullscreen
+        standalone || isFullscreen
           ? 'fixed inset-0 z-50 h-screen w-screen rounded-none border-0'
           : 'h-[calc(100vh-110px)] min-h-[640px] rounded-3xl border border-white/10',
       )}
