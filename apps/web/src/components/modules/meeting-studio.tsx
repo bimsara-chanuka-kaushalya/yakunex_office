@@ -12,6 +12,8 @@ import {
   Camera,
   CameraOff,
   Check,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   Copy,
   Download,
@@ -38,6 +40,16 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/field';
+import {
+  Room,
+  RoomEvent,
+  Track,
+  VideoPresets,
+  VideoQuality,
+  type RemoteParticipant,
+  type RemoteTrack,
+  type RemoteTrackPublication,
+} from 'livekit-client';
 import { liveGet, patch, post } from '@/lib/api';
 import { cn } from '@/lib/cn';
 
@@ -636,8 +648,12 @@ export function MeetingStudio({
   const [iceTurnConfigured, setIceTurnConfigured] = useState<boolean>(() =>
     hasTurnServers(buildInitialIceConfig().iceServers ?? []),
   );
+  const [sfuActive, setSfuActive] = useState(false);
+  const [galleryPage, setGalleryPage] = useState(0);
 
   // Refs for WebRTC stability across closures & async signal callbacks
+  const sfuModeRef = useRef(false);
+  const sfuRoomRef = useRef<Room | null>(null);
   const iceConfigRef = useRef<RTCConfiguration>(buildInitialIceConfig());
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
@@ -845,11 +861,200 @@ export function MeetingStudio({
     };
   }, []);
 
+  // Connect to LiveKit SFU if configured on backend (enables 100+ simultaneous cameras & mics with zero lag)
+  const syncSfuLocalTracks = useCallback(async () => {
+    const lkRoom = sfuRoomRef.current;
+    if (!lkRoom || lkRoom.state !== 'connected') return;
+    const local = localStreamRef.current;
+    if (!local) return;
+
+    const audioTrack = local.getAudioTracks().find((t) => t.readyState === 'live');
+    const videoTrack = local.getVideoTracks().find((t) => t.readyState === 'live');
+
+    if (audioTrack) {
+      const existingAudio = lkRoom.localParticipant.getTrackPublication(Track.Source.Microphone);
+      if (existingAudio?.track && existingAudio.track.mediaStreamTrack.id !== audioTrack.id) {
+        await lkRoom.localParticipant.unpublishTrack(existingAudio.track).catch(() => undefined);
+      }
+      if (!lkRoom.localParticipant.getTrackPublication(Track.Source.Microphone)) {
+        await lkRoom.localParticipant
+          .publishTrack(audioTrack, {
+            source: Track.Source.Microphone,
+            dtx: true,
+            red: true,
+          })
+          .catch(() => undefined);
+      }
+    }
+
+    if (videoTrack) {
+      const existingVideo = lkRoom.localParticipant.getTrackPublication(Track.Source.Camera);
+      if (existingVideo?.track && existingVideo.track.mediaStreamTrack.id !== videoTrack.id) {
+        await lkRoom.localParticipant.unpublishTrack(existingVideo.track).catch(() => undefined);
+      }
+      if (!lkRoom.localParticipant.getTrackPublication(Track.Source.Camera)) {
+        await lkRoom.localParticipant
+          .publishTrack(videoTrack, {
+            source: Track.Source.Camera,
+            simulcast: true,
+            videoSimulcastLayers: [VideoPresets.h90, VideoPresets.h180, VideoPresets.h360],
+          })
+          .catch(() => undefined);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    let connectedRoom: Room | null = null;
+
+    async function initSfu() {
+      try {
+        const res = await liveGet<{
+          enabled?: boolean;
+          url?: string | null;
+          token?: string | null;
+        }>(`/meetings/${room.id}/sfu-token`);
+        if (!active || !res?.enabled || !res.url || !res.token) return;
+
+        // Switch engine to SFU and tear down any P2P mesh connections
+        sfuModeRef.current = true;
+        setSfuActive(true);
+        pcsRef.current.forEach((pc) => pc.close());
+        pcsRef.current.clear();
+
+        const lkRoom = new Room({
+          adaptiveStream: true,
+          dynacast: true,
+          publishDefaults: {
+            simulcast: true,
+            videoSimulcastLayers: [VideoPresets.h90, VideoPresets.h180, VideoPresets.h360],
+            dtx: true,
+            red: true,
+          },
+        });
+        connectedRoom = lkRoom;
+        sfuRoomRef.current = lkRoom;
+
+        const upsertRemoteTrack = (
+          track: RemoteTrack,
+          pub: RemoteTrackPublication,
+          participant: RemoteParticipant,
+        ) => {
+          const peerId = participant.identity;
+          if (!peerId || peerId === currentUser.id) return;
+          const isScreen =
+            pub.source === Track.Source.ScreenShare || pub.source === Track.Source.ScreenShareAudio;
+          const targetRef = isScreen ? remoteScreenStreamsRef : remoteCamStreamsRef;
+          const stream = targetRef.current[peerId] ?? new MediaStream();
+          const mTrack = track.mediaStreamTrack;
+          for (const old of stream.getTracks()) {
+            if (old.kind === mTrack.kind && old.id !== mTrack.id) {
+              stream.removeTrack(old);
+            }
+          }
+          if (!stream.getTracks().some((t) => t.id === mTrack.id)) {
+            stream.addTrack(mTrack);
+          }
+          const cloned = new MediaStream(stream.getTracks());
+          targetRef.current[peerId] = cloned;
+          if (isScreen) {
+            setRemoteScreenStreams((prev) => ({ ...prev, [peerId]: cloned }));
+          } else {
+            setRemoteCamStreams((prev) => ({ ...prev, [peerId]: cloned }));
+            peerConnStatesRef.current.set(peerId, 'connected');
+            setPeerConnStates((prev) => ({ ...prev, [peerId]: 'connected' }));
+          }
+        };
+
+        const removeRemoteTrack = (
+          track: RemoteTrack,
+          pub: RemoteTrackPublication,
+          participant: RemoteParticipant,
+        ) => {
+          const peerId = participant.identity;
+          const isScreen =
+            pub.source === Track.Source.ScreenShare || pub.source === Track.Source.ScreenShareAudio;
+          const targetRef = isScreen ? remoteScreenStreamsRef : remoteCamStreamsRef;
+          const stream = targetRef.current[peerId];
+          if (!stream) return;
+          stream.removeTrack(track.mediaStreamTrack);
+          if (stream.getTracks().length === 0) {
+            delete targetRef.current[peerId];
+            if (isScreen) {
+              setRemoteScreenStreams((prev) => {
+                const next = { ...prev };
+                delete next[peerId];
+                return next;
+              });
+            } else {
+              setRemoteCamStreams((prev) => {
+                const next = { ...prev };
+                delete next[peerId];
+                return next;
+              });
+            }
+          } else {
+            const cloned = new MediaStream(stream.getTracks());
+            targetRef.current[peerId] = cloned;
+            if (isScreen) {
+              setRemoteScreenStreams((prev) => ({ ...prev, [peerId]: cloned }));
+            } else {
+              setRemoteCamStreams((prev) => ({ ...prev, [peerId]: cloned }));
+            }
+          }
+        };
+
+        lkRoom
+          .on(RoomEvent.TrackSubscribed, upsertRemoteTrack)
+          .on(RoomEvent.TrackUnsubscribed, removeRemoteTrack)
+          .on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+            const nextMap: Record<string, boolean> = {};
+            for (const sp of speakers) {
+              if (sp.identity) nextMap[sp.identity] = true;
+            }
+            speakingRef.current = nextMap;
+            setSpeakingUsers(nextMap);
+          })
+          .on(RoomEvent.ParticipantConnected, (p) => {
+            if (p.identity && p.identity !== currentUser.id) {
+              peerConnStatesRef.current.set(p.identity, 'connected');
+              setPeerConnStates((prev) => ({ ...prev, [p.identity]: 'connected' }));
+            }
+          });
+
+        await lkRoom.connect(res.url, res.token);
+        if (!active) {
+          await lkRoom.disconnect();
+          return;
+        }
+        await syncSfuLocalTracks();
+      } catch {
+        // Fallback cleanly to built-in P2P Mesh + Gallery Pagination
+        sfuModeRef.current = false;
+        setSfuActive(false);
+      }
+    }
+
+    void initSfu();
+    return () => {
+      active = false;
+      sfuModeRef.current = false;
+      if (connectedRoom) {
+        void connectedRoom.disconnect();
+      }
+      sfuRoomRef.current = null;
+    };
+  }, [currentUser.id, room.id, syncSfuLocalTracks]);
+
   // Sync localStreamRef state cleanly
   const commitLocalStream = useCallback((stream: MediaStream | null) => {
     localStreamRef.current = stream;
     setLocalStream(stream ? new MediaStream(stream.getTracks()) : null);
-  }, []);
+    if (sfuModeRef.current) {
+      void syncSfuLocalTracks();
+    }
+  }, [syncSfuLocalTracks]);
 
   // Capture initial local media on mount (camera + mic according to pre-join settings)
   useEffect(() => {
@@ -1419,6 +1624,7 @@ export function MeetingStudio({
 
   // Sync peer connections & screen-share state whenever participants enter, share, or leave
   useEffect(() => {
+    if (sfuModeRef.current) return;
     const activeIds = new Set(room.participants.map((p) => p.userId));
     for (const peerId of Array.from(pcsRef.current.keys())) {
       if (!activeIds.has(peerId)) {
@@ -2120,7 +2326,7 @@ export function MeetingStudio({
   useEffect(() => {
     let active = true;
     const healPeers = async () => {
-      if (!active) return;
+      if (!active || sfuModeRef.current) return;
       const now = Date.now();
       for (const p of room.participants) {
         if (!active || p.userId === currentUser.id) continue;
@@ -2466,6 +2672,13 @@ export function MeetingStudio({
         peerRenegotiations.push(renegotiatePeer(peerId));
       }
       await Promise.all(peerRenegotiations);
+      const lkRoom = sfuRoomRef.current;
+      if (lkRoom && lkRoom.state === 'connected') {
+        const scrPub = lkRoom.localParticipant.getTrackPublication(Track.Source.ScreenShare);
+        if (scrPub?.track) await lkRoom.localParticipant.unpublishTrack(scrPub.track).catch(() => undefined);
+        const scrAudioPub = lkRoom.localParticipant.getTrackPublication(Track.Source.ScreenShareAudio);
+        if (scrAudioPub?.track) await lkRoom.localParticipant.unpublishTrack(scrAudioPub.track).catch(() => undefined);
+      }
       tracks.forEach((t) => t.stop());
     }
   }, [renegotiatePeer, room.id, sendSignal]);
@@ -2594,6 +2807,19 @@ export function MeetingStudio({
       peerOffers.push(renegotiatePeer(peerId));
     }
     await Promise.all(peerOffers);
+    const lkRoom = sfuRoomRef.current;
+    if (lkRoom && lkRoom.state === 'connected') {
+      if (scrVideoTrack) {
+        await lkRoom.localParticipant
+          .publishTrack(scrVideoTrack, { source: Track.Source.ScreenShare })
+          .catch(() => undefined);
+      }
+      if (scrAudioTrack) {
+        await lkRoom.localParticipant
+          .publishTrack(scrAudioTrack, { source: Track.Source.ScreenShareAudio })
+          .catch(() => undefined);
+      }
+    }
   };
 
   const toggleHandRaise = async () => {
@@ -2758,6 +2984,10 @@ export function MeetingStudio({
     screenStreamRef.current?.getTracks().forEach((t) => t.stop());
     pcsRef.current.forEach((pc) => pc.close());
     pcsRef.current.clear();
+    if (sfuRoomRef.current) {
+      await sfuRoomRef.current.disconnect().catch(() => undefined);
+      sfuRoomRef.current = null;
+    }
 
     try {
       if (endForAll) {
@@ -2854,17 +3084,41 @@ export function MeetingStudio({
     return null;
   }, [currentUser.fullName, currentUser.id, remoteScreenStreams, room.participants, screenStream]);
 
-  // Compute grid columns in Gallery View based on participant count (supports 1 to 20+ simultaneous video tiles)
+  const GALLERY_PAGE_SIZE = 16;
+
+  const sortedGalleryParticipants = useMemo(() => {
+    return [...room.participants].sort((a, b) => {
+      if (a.userId === currentUser.id) return -1;
+      if (b.userId === currentUser.id) return 1;
+      const aSpeak = speakingUsers[a.userId] ? 1 : 0;
+      const bSpeak = speakingUsers[b.userId] ? 1 : 0;
+      if (aSpeak !== bSpeak) return bSpeak - aSpeak;
+      if (a.camOn !== b.camOn) return a.camOn ? -1 : 1;
+      return a.joinedAt.localeCompare(b.joinedAt);
+    });
+  }, [currentUser.id, room.participants, speakingUsers]);
+
+  const totalGalleryPages = Math.max(
+    1,
+    Math.ceil(sortedGalleryParticipants.length / GALLERY_PAGE_SIZE),
+  );
+  const safeGalleryPage = Math.min(galleryPage, totalGalleryPages - 1);
+
+  const visibleGalleryParticipants = useMemo(() => {
+    const start = safeGalleryPage * GALLERY_PAGE_SIZE;
+    return sortedGalleryParticipants.slice(start, start + GALLERY_PAGE_SIZE);
+  }, [safeGalleryPage, sortedGalleryParticipants]);
+
+  // Compute grid columns in Gallery View based on visible tile count (up to 16 per page for 100+ rooms)
   const gridColsClass = useMemo(() => {
-    const n = room.participants.length;
+    const n = visibleGalleryParticipants.length;
     if (n <= 1) return 'grid-cols-1 max-w-4xl mx-auto';
     if (n === 2) return 'grid-cols-1 md:grid-cols-2 max-w-6xl mx-auto';
     if (n <= 4) return 'grid-cols-1 sm:grid-cols-2 max-w-6xl mx-auto';
     if (n <= 6) return 'grid-cols-2 lg:grid-cols-3';
     if (n <= 9) return 'grid-cols-2 sm:grid-cols-3';
-    if (n <= 12) return 'grid-cols-2 sm:grid-cols-3 xl:grid-cols-4';
-    return 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5';
-  }, [room.participants.length]);
+    return 'grid-cols-2 sm:grid-cols-3 xl:grid-cols-4';
+  }, [visibleGalleryParticipants.length]);
 
   const activeSpeakerParticipant = useMemo(() => {
     const speaking = room.participants.find(
@@ -2877,6 +3131,37 @@ export function MeetingStudio({
       null
     );
   }, [currentUser.id, room.participants, speakingUsers]);
+
+  // In SFU mode, subscribe/upgrade video only for visible page tiles (+ active speakers) so 100+ cameras run with zero lag
+  useEffect(() => {
+    const lkRoom = sfuRoomRef.current;
+    if (!sfuActive || !lkRoom || lkRoom.state !== 'connected') return;
+    const visibleIds = new Set(visibleGalleryParticipants.map((p) => p.userId));
+    const n = visibleGalleryParticipants.length;
+    const targetQuality =
+      n <= 4 ? VideoQuality.HIGH : n <= 9 ? VideoQuality.MEDIUM : VideoQuality.LOW;
+
+    for (const remote of lkRoom.remoteParticipants.values()) {
+      const camPub = remote.getTrackPublication(Track.Source.Camera) as
+        | RemoteTrackPublication
+        | undefined;
+      if (!camPub) continue;
+      const shouldWatch =
+        layoutMode === 'gallery'
+          ? visibleIds.has(remote.identity) || Boolean(speakingUsers[remote.identity])
+          : remote.identity === activeSpeakerParticipant?.userId || Boolean(speakingUsers[remote.identity]);
+      try {
+        camPub.setSubscribed(shouldWatch);
+        if (shouldWatch) {
+          camPub.setVideoQuality(
+            remote.identity === activeSpeakerParticipant?.userId ? VideoQuality.HIGH : targetQuality,
+          );
+        }
+      } catch {
+        // Ignore transient track subscription errors
+      }
+    }
+  }, [activeSpeakerParticipant?.userId, layoutMode, sfuActive, speakingUsers, visibleGalleryParticipants]);
 
   return (
     <div
@@ -2936,6 +3221,11 @@ export function MeetingStudio({
               <span className="rounded-full bg-white/10 px-2.5 py-0.5 font-mono text-[11px] text-white/80">
                 {formatDuration(elapsedSec)}
               </span>
+              {sfuActive && (
+                <span className="rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-300">
+                  SFU · 100+ Ready
+                </span>
+              )}
               {recording && (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-600/90 px-2.5 py-0.5 text-[11px] font-semibold text-white">
                   <Radio className="h-3 w-3 animate-pulse" /> REC {formatDuration(recordingSec)}
@@ -3170,26 +3460,51 @@ export function MeetingStudio({
               )}
             </div>
           ) : (
-            <div className={cn('grid h-full content-center gap-4', gridColsClass)}>
-              {room.participants.map((p) => {
-                const isSelf = p.userId === currentUser.id;
-                const react = [...reactions].reverse().find((r) => r.userId === p.userId)?.emoji;
-                return (
-                  <ParticipantTile
-                    key={p.userId}
-                    participant={p}
-                    stream={isSelf ? localStream : remoteCamStreams[p.userId]}
-                    isSelf={isSelf}
-                    isSpeaking={Boolean(speakingUsers[p.userId])}
-                    reaction={react}
-                    canHostControl={canHostControl}
-                    onHostMute={hostMute}
-                    connectionStatus={peerConnStates[p.userId]}
-                    iceTurnConfigured={iceTurnConfigured}
-                    onRetryConnection={handleRetryPeerConnection}
-                  />
-                );
-              })}
+            <div className="flex h-full flex-col gap-3">
+              <div className={cn('grid flex-1 content-center gap-4', gridColsClass)}>
+                {visibleGalleryParticipants.map((p) => {
+                  const isSelf = p.userId === currentUser.id;
+                  const react = [...reactions].reverse().find((r) => r.userId === p.userId)?.emoji;
+                  return (
+                    <ParticipantTile
+                      key={p.userId}
+                      participant={p}
+                      stream={isSelf ? localStream : remoteCamStreams[p.userId]}
+                      isSelf={isSelf}
+                      isSpeaking={Boolean(speakingUsers[p.userId])}
+                      reaction={react}
+                      canHostControl={canHostControl}
+                      onHostMute={hostMute}
+                      connectionStatus={peerConnStates[p.userId]}
+                      iceTurnConfigured={iceTurnConfigured}
+                      onRetryConnection={handleRetryPeerConnection}
+                    />
+                  );
+                })}
+              </div>
+              {totalGalleryPages > 1 && (
+                <div className="flex items-center justify-center gap-3 pt-1">
+                  <button
+                    type="button"
+                    disabled={safeGalleryPage === 0}
+                    onClick={() => setGalleryPage((p) => Math.max(0, p - 1))}
+                    className="inline-flex items-center gap-1 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-medium text-white/80 transition hover:bg-white/10 disabled:opacity-40"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" /> Prev
+                  </button>
+                  <span className="text-xs font-medium text-white/70">
+                    Page {safeGalleryPage + 1} / {totalGalleryPages} ({room.participants.length} in call)
+                  </span>
+                  <button
+                    type="button"
+                    disabled={safeGalleryPage >= totalGalleryPages - 1}
+                    onClick={() => setGalleryPage((p) => Math.min(totalGalleryPages - 1, p + 1))}
+                    className="inline-flex items-center gap-1 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-medium text-white/80 transition hover:bg-white/10 disabled:opacity-40"
+                  >
+                    Next <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

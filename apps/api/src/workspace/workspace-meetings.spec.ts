@@ -130,4 +130,60 @@ describe('WorkspaceService meetings signaling & ICE config', () => {
       expect(offer).toBeDefined();
     }
   });
+
+  it('supports 100+ concurrent participants with video + mic and issues LiveKit SFU tokens when configured', async () => {
+    delete process.env.LIVEKIT_URL;
+    delete process.env.LIVEKIT_API_KEY;
+    delete process.env.LIVEKIT_API_SECRET;
+
+    const svc = makeService();
+    const host: AuthUser = {
+      id: 'usr_sfu_host',
+      organizationId: 'org_test',
+      companyId: 'YNX-0001',
+      email: 'sfu1@yakunex.local',
+      fullName: 'SFU Host',
+      role: Role.SUPER_ADMIN,
+      status: UserStatus.ACTIVE,
+      mustChangePassword: false,
+    };
+    const room = await svc.scheduleMeeting(host, { title: '100-Peer Townhall', instant: true });
+
+    const guests: AuthUser[] = Array.from({ length: 100 }, (_, idx) => {
+      const n = idx + 2;
+      return {
+        id: `usr_sfu_${n}`,
+        organizationId: 'org_test',
+        companyId: `YNX-${String(n).padStart(4, '0')}`,
+        email: `sfu${n}@yakunex.local`,
+        fullName: `Guest ${n}`,
+        role: Role.STAFF,
+        status: UserStatus.ACTIVE,
+        mustChangePassword: false,
+      };
+    });
+
+    await Promise.all(
+      guests.map((g) => svc.joinMeetingRoom(g, room.id, { micOn: true, camOn: true })),
+    );
+
+    const updated = await svc.getMeetingRoom(room.id, host.organizationId);
+    expect(updated.participants.length).toBe(101);
+    expect(updated.participants.every((p) => p.micOn && p.camOn)).toBe(true);
+
+    const fallbackSfu = await svc.getMeetingSfuToken(host, room.id);
+    expect(fallbackSfu.enabled).toBe(false);
+    expect(fallbackSfu.provider).toBe('mesh');
+
+    process.env.LIVEKIT_URL = 'wss://yakunex-test.livekit.cloud';
+    process.env.LIVEKIT_API_KEY = 'devkey_yakunex_12345';
+    process.env.LIVEKIT_API_SECRET = 'secret_yakunex_very_long_test_key_67890';
+
+    const activeSfu = await svc.getMeetingSfuToken(host, room.id);
+    expect(activeSfu.enabled).toBe(true);
+    expect(activeSfu.provider).toBe('livekit');
+    expect(activeSfu.url).toBe('wss://yakunex-test.livekit.cloud');
+    expect(typeof activeSfu.token).toBe('string');
+    expect((activeSfu.token ?? '').split('.').length).toBe(3);
+  });
 });

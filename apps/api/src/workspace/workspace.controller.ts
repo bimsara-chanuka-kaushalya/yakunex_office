@@ -264,6 +264,13 @@ export class WorkspaceController {
     return this.workspace.getMeetingIceConfig();
   }
 
+  @Get('meetings/:id/sfu-token')
+  @SkipThrottle()
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  getMeetingSfuToken(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.getMeetingSfuToken(actor, id);
+  }
+
   @Get('meetings/:id/room')
   @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)
