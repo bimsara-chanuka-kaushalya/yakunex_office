@@ -27,6 +27,7 @@ import {
   Minimize2,
   MonitorUp,
   PhoneOff,
+  PictureInPicture2,
   Radio,
   Send,
   Smile,
@@ -637,6 +638,7 @@ export function MeetingStudio({
   const [recordingSec, setRecordingSec] = useState(0);
   const [screenAudioMuted, setScreenAudioMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isPip, setIsPip] = useState(false);
   const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
 
@@ -688,6 +690,7 @@ export function MeetingStudio({
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const studioRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const pipVideoRef = useRef<HTMLVideoElement | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const lastChatCountRef = useRef<number>(initialRoom.chatMessages?.length ?? 0);
@@ -3046,6 +3049,10 @@ export function MeetingStudio({
 
   const leaveCall = async (endForAll = false) => {
     setShowLeaveMenu(false);
+    if (typeof document !== 'undefined' && document.pictureInPictureElement) {
+      await document.exitPictureInPicture().catch(() => undefined);
+    }
+    setIsPip(false);
     if (typeof document !== 'undefined' && document.fullscreenElement) {
       await document.exitFullscreen().catch(() => undefined);
     }
@@ -3134,6 +3141,71 @@ export function MeetingStudio({
       setIsFullscreen(true);
     }
   }, [isFullscreen]);
+
+  // Sync browser Picture-in-Picture state
+  useEffect(() => {
+    const vid = pipVideoRef.current;
+    if (!vid) return;
+    const onEnter = () => setIsPip(true);
+    const onLeave = () => setIsPip(false);
+    vid.addEventListener('enterpictureinpicture', onEnter);
+    vid.addEventListener('leavepictureinpicture', onLeave);
+    return () => {
+      vid.removeEventListener('enterpictureinpicture', onEnter);
+      vid.removeEventListener('leavepictureinpicture', onLeave);
+    };
+  }, []);
+
+  const togglePictureInPicture = useCallback(async () => {
+    if (typeof document === 'undefined') return;
+    if (document.pictureInPictureElement) {
+      await document.exitPictureInPicture().catch(() => undefined);
+      setIsPip(false);
+      return;
+    }
+    if (!document.pictureInPictureEnabled) {
+      showToast('Picture-in-Picture is not supported on this browser.');
+      return;
+    }
+
+    const pickLiveVideoStream = (): MediaStream | null => {
+      const hasLiveVideo = (s?: MediaStream | null) =>
+        Boolean(s?.getVideoTracks().some((t) => t.readyState === 'live' && t.enabled));
+
+      if (screenStream && hasLiveVideo(screenStream)) return screenStream;
+      for (const s of Object.values(remoteScreenStreams)) {
+        if (hasLiveVideo(s)) return s;
+      }
+      const speakerId = room.participants.find(
+        (p) => speakingUsers[p.userId] && p.micOn && p.userId !== currentUser.id,
+      )?.userId;
+      if (speakerId && hasLiveVideo(remoteCamStreams[speakerId])) {
+        return remoteCamStreams[speakerId];
+      }
+      for (const s of Object.values(remoteCamStreams)) {
+        if (hasLiveVideo(s)) return s;
+      }
+      if (hasLiveVideo(localStream)) return localStream;
+      return null;
+    };
+
+    const targetStream = pickLiveVideoStream();
+    if (!targetStream) {
+      showToast('Turn on a camera or screen share first to open Picture-in-Picture.');
+      return;
+    }
+
+    const vid = pipVideoRef.current;
+    if (!vid) return;
+    try {
+      vid.srcObject = targetStream;
+      await vid.play();
+      await vid.requestPictureInPicture();
+      setIsPip(true);
+    } catch {
+      showToast('Could not open Picture-in-Picture window.');
+    }
+  }, [currentUser.id, localStream, remoteCamStreams, remoteScreenStreams, room.participants, screenStream, showToast, speakingUsers]);
 
   // Resolve current active presenter screen share (local OR remote)
   const activeScreenShare = useMemo(() => {
@@ -3248,6 +3320,14 @@ export function MeetingStudio({
           : 'h-[calc(100vh-110px)] min-h-[640px] rounded-3xl border border-white/10',
       )}
     >
+      {/* Hidden video element powering Picture-in-Picture floating window */}
+      <video
+        ref={pipVideoRef}
+        autoPlay
+        playsInline
+        muted
+        className="pointer-events-none fixed -left-[9999px] h-px w-px opacity-0"
+      />
       {/* Hidden audio playback elements for remote mics AND shared screen audio */}
       {room.participants
         .filter((p) => p.userId !== currentUser.id)
@@ -3348,6 +3428,21 @@ export function MeetingStudio({
               </button>
             </div>
           )}
+
+          <button
+            type="button"
+            onClick={() => void togglePictureInPicture()}
+            title={isPip ? 'Exit Picture-in-Picture' : 'Enter Picture-in-Picture'}
+            className={cn(
+              'inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition',
+              isPip
+                ? 'border-emerald-400/50 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
+                : 'border-white/15 bg-white/5 text-white/85 hover:bg-white/15 hover:text-white',
+            )}
+          >
+            <PictureInPicture2 className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">{isPip ? 'Exit PiP' : 'PiP'}</span>
+          </button>
 
           <button
             type="button"
