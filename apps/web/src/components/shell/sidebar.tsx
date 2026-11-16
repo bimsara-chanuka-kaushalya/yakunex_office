@@ -25,7 +25,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           </div>
           <div className="leading-tight">
             <p className="font-display text-base font-bold tracking-tight text-white">Yakunex Hub</p>
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-gold/90">Enterprise Cloud</p>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-gold/90">Enterprise Cloud · v1.0.0.0</p>
           </div>
         </div>
       </div>
