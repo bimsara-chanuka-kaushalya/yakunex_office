@@ -5,6 +5,7 @@ import {
   Award,
   Bell,
   Building2,
+  Camera,
   Check,
   CheckCircle2,
   DollarSign,
@@ -12,6 +13,7 @@ import {
   Network,
   Plus,
   Send,
+  UserCheck,
   XCircle,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -701,6 +703,349 @@ export function NotificationsView() {
             ))
           )}
         </div>
+      </Card>
+    </div>
+  );
+}
+
+// ─── 7. Employee Personal Profile (/profile) ─────────────────────────────────
+interface EmployeeProfilePayload {
+  id: string;
+  companyId: string | null;
+  email: string;
+  fullName: string;
+  firstName: string;
+  lastName: string;
+  nicNumber: string;
+  address: string;
+  birthday: string;
+  phone: string;
+  avatarUrl: string | null;
+  role: string;
+  title: string;
+  status: string;
+  pendingRequests: Array<{
+    id: string;
+    field?: 'nicNumber' | 'phone';
+    newValue?: string;
+    createdAt: string;
+  }>;
+}
+
+export function ProfileView() {
+  const { user, can, reload } = useAuth();
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN';
+  const isHrOrSuperAdmin = isSuperAdmin || can(PERMISSIONS.USERS_WRITE);
+
+  const [selectedUserId, setSelectedUserId] = useState<string>('');
+  const [directory, setDirectory] = useState<Array<{ id: string; companyId: string | null; fullName: string }>>([]);
+  const [profile, setProfile] = useState<EmployeeProfilePayload | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Admin / HR editable fields
+  const [fullName, setFullName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [nicNumber, setNicNumber] = useState('');
+  const [address, setAddress] = useState('');
+  const [birthday, setBirthday] = useState('');
+  const [phone, setPhone] = useState('');
+  const [role, setRole] = useState('STAFF');
+  const [title, setTitle] = useState('');
+
+  // User approval-request inputs for NIC & Contact Number
+  const [reqNic, setReqNic] = useState('');
+  const [reqPhone, setReqPhone] = useState('');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const q = new URLSearchParams(window.location.search).get('userId');
+      if (q) setSelectedUserId(q);
+    }
+  }, []);
+
+  const load = useCallback(async () => {
+    const endpoint = selectedUserId ? `/profile/${selectedUserId}` : '/profile';
+    const data = await api<EmployeeProfilePayload>(endpoint);
+    setProfile(data);
+    setFullName(data.fullName);
+    setFirstName(data.firstName);
+    setLastName(data.lastName);
+    setNicNumber(data.nicNumber);
+    setAddress(data.address);
+    setBirthday(data.birthday);
+    setPhone(data.phone);
+    setRole(data.role);
+    setTitle(data.title);
+    setReqNic(data.nicNumber);
+    setReqPhone(data.phone);
+  }, [selectedUserId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (!isHrOrSuperAdmin) return;
+    api<{ employees: Array<{ id: string; companyId: string | null; fullName: string }> }>('/organization')
+      .then((res) => setDirectory(res.employees ?? []))
+      .catch(() => undefined);
+  }, [isHrOrSuperAdmin]);
+
+  async function handleDpFile(file: File | undefined) {
+    if (!file) return;
+    setError(null);
+    setNotice(null);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const dataUrl = String(reader.result ?? '');
+        await patch('/profile/dp', { avatarUrl: dataUrl });
+        setNotice('Profile picture updated!');
+        await load();
+        void reload();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to update DP.');
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function requestFieldApproval(field: 'nicNumber' | 'phone', newValue: string) {
+    setError(null);
+    setNotice(null);
+    try {
+      await post('/profile/request-change', { field, newValue });
+      setNotice(
+        `${field === 'nicNumber' ? 'NIC ID Number' : 'Contact Number'} change request sent for Super Admin / HR approval.`,
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to submit request.');
+    }
+  }
+
+  async function saveAdminFields(e: FormEvent) {
+    e.preventDefault();
+    if (!profile) return;
+    setError(null);
+    setNotice(null);
+    try {
+      const payload: Record<string, unknown> = {
+        fullName,
+        firstName,
+        lastName,
+        nicNumber,
+        address,
+        birthday,
+        phone,
+      };
+      if (isSuperAdmin) {
+        payload.role = role;
+        payload.title = title;
+      }
+      await patch(`/profile/${profile.id}`, payload);
+      setNotice('Profile updated successfully.');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update profile.');
+    }
+  }
+
+  if (!profile) return <Skeleton className="h-96 rounded-2xl" />;
+  const isViewingSelf = !selectedUserId || selectedUserId === user?.id;
+
+  return (
+    <div className="space-y-6">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 className="font-display text-3xl font-semibold">Employee Profile</h2>
+          <p className="mt-1 text-sm text-muted">
+            View personal details, update your DP, or request NIC &amp; Contact Number changes.
+          </p>
+        </div>
+        {isHrOrSuperAdmin && directory.length > 0 && (
+          <div className="w-72">
+            <Select
+              aria-label="Select employee profile"
+              value={selectedUserId || user?.id || ''}
+              onChange={(e) => setSelectedUserId(e.target.value)}
+            >
+              {directory.map((emp) => (
+                <option key={emp.id} value={emp.id}>
+                  {emp.companyId ? `${emp.companyId} · ` : ''}{emp.fullName}
+                </option>
+              ))}
+            </Select>
+          </div>
+        )}
+      </header>
+
+      {notice && (
+        <div className="rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
+          {notice}
+        </div>
+      )}
+      {error && (
+        <div className="rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
+          {error}
+        </div>
+      )}
+
+      {/* Top Identity + DP Card */}
+      <Card className="p-6">
+        <div className="flex flex-wrap items-center justify-between gap-6">
+          <div className="flex items-center gap-5">
+            <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-2xl border-2 border-gold/40 bg-canvas">
+              {profile.avatarUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={profile.avatarUrl} alt={profile.fullName} className="h-full w-full object-cover" />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center font-display text-2xl font-bold text-gold-strong">
+                  {profile.fullName.slice(0, 2).toUpperCase()}
+                </div>
+              )}
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-display text-2xl font-semibold text-ink">{profile.fullName}</h3>
+                {profile.companyId && <Badge tone="gold">{profile.companyId}</Badge>}
+              </div>
+              <p className="mt-1 text-sm text-muted">
+                {profile.title || profile.role} · {profile.email}
+              </p>
+              {isViewingSelf && (
+                <label className="mt-3 inline-flex cursor-pointer items-center gap-2 rounded-xl border border-gold/40 bg-gold/10 px-3 py-1.5 text-xs font-semibold text-gold-strong transition hover:bg-gold/20">
+                  <Camera className="h-3.5 w-3.5" /> Change Profile Picture (DP)
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => void handleDpFile(e.target.files?.[0])}
+                  />
+                </label>
+              )}
+            </div>
+          </div>
+          <Badge tone={profile.status === 'ACTIVE' ? 'success' : 'neutral'}>{profile.status}</Badge>
+        </div>
+      </Card>
+
+      {/* Self-service Approval Requests for NIC & Contact Number */}
+      {isViewingSelf && (
+        <Card>
+          <CardHeader
+            title="Self-Service Update Requests (Requires Super Admin / HR Approval)"
+            description="Submit a change request for your NIC ID Number or Contact Number."
+          />
+          <div className="grid gap-4 p-5 md:grid-cols-2">
+            <div className="space-y-2 rounded-xl border border-line bg-canvas/50 p-4">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-ink">NIC ID Number</span>
+                {profile.pendingRequests.some((p) => p.field === 'nicNumber') && (
+                  <Badge tone="gold">Pending Approval</Badge>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  value={reqNic}
+                  onChange={(e) => setReqNic(e.target.value)}
+                  placeholder="Enter NIC ID Number"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void requestFieldApproval('nicNumber', reqNic)}
+                >
+                  Request
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2 rounded-xl border border-line bg-canvas/50 p-4">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-ink">Contact Number</span>
+                {profile.pendingRequests.some((p) => p.field === 'phone') && (
+                  <Badge tone="gold">Pending Approval</Badge>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  value={reqPhone}
+                  onChange={(e) => setReqPhone(e.target.value)}
+                  placeholder="Enter Contact Number"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void requestFieldApproval('phone', reqPhone)}
+                >
+                  Request
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Full Profile Details (Editable by Super Admin & HR, Job Role by Super Admin only) */}
+      <Card>
+        <CardHeader
+          title="Personal & Employment Information"
+          description={
+            isSuperAdmin
+              ? 'Super Admin Access: You can edit all employee details including Job Role.'
+              : isHrOrSuperAdmin
+                ? 'HR Access: You can edit personal details. Job Role can only be changed by Super Admin.'
+                : 'Read-only personal record. Contact HR or Super Admin for corrections.'
+          }
+        />
+        <form onSubmit={saveAdminFields} className="grid gap-4 p-5 md:grid-cols-2">
+          <Field label="Full Name (Super Admin & HR)" htmlFor="pf-full">
+            <Input id="pf-full" disabled={!isHrOrSuperAdmin} value={fullName} onChange={(e) => setFullName(e.target.value)} />
+          </Field>
+          <Field label="Initials / First Name (මුලකුරු — Super Admin & HR)" htmlFor="pf-first">
+            <Input id="pf-first" disabled={!isHrOrSuperAdmin} value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+          </Field>
+          <Field label="Last Name (Super Admin & HR)" htmlFor="pf-last">
+            <Input id="pf-last" disabled={!isHrOrSuperAdmin} value={lastName} onChange={(e) => setLastName(e.target.value)} />
+          </Field>
+          <Field label="NIC ID Number (Approval / Super Admin & HR)" htmlFor="pf-nic">
+            <Input id="pf-nic" disabled={!isHrOrSuperAdmin} value={nicNumber} onChange={(e) => setNicNumber(e.target.value)} placeholder="e.g. 200012345678" />
+          </Field>
+          <Field label="Contact Number (Approval / Super Admin & HR)" htmlFor="pf-phone">
+            <Input id="pf-phone" disabled={!isHrOrSuperAdmin} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+94 7X XXX XXXX" />
+          </Field>
+          <Field label="Birthday (Super Admin & HR)" htmlFor="pf-dob">
+            <Input id="pf-dob" type="date" disabled={!isHrOrSuperAdmin} value={birthday} onChange={(e) => setBirthday(e.target.value)} />
+          </Field>
+          <div className="md:col-span-2">
+            <Field label="Address (Super Admin & HR)" htmlFor="pf-addr">
+              <Input id="pf-addr" disabled={!isHrOrSuperAdmin} value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Residential address" />
+            </Field>
+          </div>
+          <Field label="Job Role / Designation (Super Admin Only)" htmlFor="pf-title">
+            <Input id="pf-title" disabled={!isSuperAdmin} value={title} onChange={(e) => setTitle(e.target.value)} />
+          </Field>
+          <Field label="System Role (Super Admin Only)" htmlFor="pf-role">
+            <Select id="pf-role" disabled={!isSuperAdmin} value={role} onChange={(e) => setRole(e.target.value)}>
+              <option value="SUPER_ADMIN">Super Admin</option>
+              <option value="ADMIN">Admin / C-Level / Legal</option>
+              <option value="PROJECT_MANAGER">Management (HR / PM / BA / PO / ACC)</option>
+              <option value="STAFF">Core Staff (TL / SE / QA / UI-UX / DevOps)</option>
+              <option value="INTERN">Intern / Trainee</option>
+            </Select>
+          </Field>
+
+          {isHrOrSuperAdmin && (
+            <div className="flex justify-end md:col-span-2">
+              <Button type="submit">
+                <UserCheck className="h-4 w-4" /> Save Profile Changes
+              </Button>
+            </div>
+          )}
+        </form>
       </Card>
     </div>
   );

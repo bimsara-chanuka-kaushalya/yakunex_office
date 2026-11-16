@@ -39,6 +39,7 @@ const FinanceView = dynamic(() => import('@/components/modules/enterprise-views'
 const AssetsView = dynamic(() => import('@/components/modules/enterprise-views').then((m) => m.AssetsView), { loading: ViewLoader });
 const PerformanceView = dynamic(() => import('@/components/modules/enterprise-views').then((m) => m.PerformanceView), { loading: ViewLoader });
 const NotificationsView = dynamic(() => import('@/components/modules/enterprise-views').then((m) => m.NotificationsView), { loading: ViewLoader });
+const ProfileView = dynamic(() => import('@/components/modules/enterprise-views').then((m) => m.ProfileView), { loading: ViewLoader });
 
 export default function ModulePage({ params }: { params: Promise<{ module: string }> }) {
   const { module } = use(params);
@@ -89,6 +90,8 @@ export default function ModulePage({ params }: { params: Promise<{ module: strin
       return <PerformanceView />;
     case 'notifications':
       return <NotificationsView />;
+    case 'profile':
+      return <ProfileView />;
     default:
       notFound();
   }

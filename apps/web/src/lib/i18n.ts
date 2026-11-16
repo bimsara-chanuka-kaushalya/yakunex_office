@@ -77,6 +77,7 @@ const dictionary: Record<string, { en: string; si: string }> = {
   assets: { en: 'Assets', si: 'වත්කම්' },
   performance: { en: 'Performance', si: 'කාර්ය සාධනය' },
   notifications: { en: 'Notifications', si: 'දැනුම්දීම්' },
+  profile: { en: 'My Profile', si: 'මගේ පැතිකඩ' },
   overview: { en: 'Overview', si: 'දළ විශ්ලේෂණය' },
   roadmapNotice: { en: 'This module is part of a later release.', si: 'මෙම මොඩියුලය ඉදිරි නිකුතුවේ කොටසකි.' },
   loading: { en: 'Loading…', si: 'පූරණය වෙමින්…' },

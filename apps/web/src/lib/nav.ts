@@ -21,6 +21,7 @@ import {
   Repeat,
   Settings,
   ShieldCheck,
+  UserCircle,
   Users,
   Video,
 } from 'lucide-react';
@@ -52,6 +53,14 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
         phase: 1,
         ready: true,
         description: 'Role-based overview of your work and company.',
+      },
+      {
+        key: 'profile',
+        href: '/profile',
+        icon: UserCircle,
+        phase: 1,
+        ready: true,
+        description: 'View your personal profile, update DP, and request ID/contact updates.',
       },
       {
         key: 'organization',

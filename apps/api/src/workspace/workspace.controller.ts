@@ -520,5 +520,49 @@ export class WorkspaceController {
   markNotificationRead(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
     return this.workspace.markNotificationRead(actor, id);
   }
+
+  // ─── Employee Personal Profile ────────────────────────────────────────────
+  @Get('profile')
+  getMyProfile(@CurrentUser() actor: AuthUser) {
+    return this.workspace.getEmployeeProfile(actor);
+  }
+
+  @Get('profile/:userId')
+  getUserProfile(@CurrentUser() actor: AuthUser, @Param('userId') userId: string) {
+    return this.workspace.getEmployeeProfile(actor, userId);
+  }
+
+  @Patch('profile/dp')
+  updateOwnDp(@CurrentUser() actor: AuthUser, @Body() body: { avatarUrl: string }) {
+    return this.workspace.updateOwnDp(actor, body.avatarUrl);
+  }
+
+  @Post('profile/request-change')
+  requestProfileFieldChange(
+    @CurrentUser() actor: AuthUser,
+    @Body() body: { field: 'nicNumber' | 'phone'; newValue: string },
+  ) {
+    return this.workspace.requestProfileFieldChange(actor, body);
+  }
+
+  @Patch('profile/:userId')
+  adminUpdateProfile(
+    @CurrentUser() actor: AuthUser,
+    @Param('userId') userId: string,
+    @Body()
+    body: {
+      fullName?: string;
+      firstName?: string;
+      lastName?: string;
+      nicNumber?: string;
+      address?: string;
+      birthday?: string;
+      phone?: string;
+      role?: Role;
+      title?: string;
+    },
+  ) {
+    return this.workspace.adminUpdateProfile(actor, userId, body);
+  }
 }
 

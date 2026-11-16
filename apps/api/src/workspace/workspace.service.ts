@@ -378,6 +378,7 @@ export class WorkspaceService implements OnModuleInit {
     requestedById: string;
     requestedByName: string;
     amount?: number;
+    meta?: { targetUserId?: string; field?: 'nicNumber' | 'phone'; newValue?: string };
     status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'RETURNED';
     decidedByName?: string | null;
     comment?: string | null;
@@ -430,6 +431,18 @@ export class WorkspaceService implements OnModuleInit {
     authorName: string;
     createdAt: string;
   }> = [];
+
+  private userProfiles: Record<
+    string,
+    {
+      firstName?: string;
+      lastName?: string;
+      nicNumber?: string;
+      address?: string;
+      birthday?: string;
+      avatarDataUrl?: string;
+    }
+  > = {};
 
   private settings: OrganizationSettings = {
     name: 'Yakunex Hub',
@@ -514,6 +527,9 @@ export class WorkspaceService implements OnModuleInit {
         if (Array.isArray(snap.assets)) this.assets = snap.assets as WorkspaceService['assets'];
         if (Array.isArray(snap.performanceReviews)) this.performanceReviews = snap.performanceReviews as WorkspaceService['performanceReviews'];
         if (Array.isArray(snap.notifications)) this.notifications = snap.notifications as WorkspaceService['notifications'];
+        if (snap.userProfiles && typeof snap.userProfiles === 'object') {
+          this.userProfiles = snap.userProfiles as WorkspaceService['userProfiles'];
+        }
         if (snap.settings && typeof snap.settings === 'object') {
           this.settings = { ...this.settings, ...(snap.settings as Partial<OrganizationSettings>) };
         }
@@ -599,6 +615,7 @@ export class WorkspaceService implements OnModuleInit {
         assets: this.assets,
         performanceReviews: this.performanceReviews,
         notifications: this.notifications,
+        userProfiles: this.userProfiles,
         settings: this.settings,
       } as unknown as Prisma.InputJsonValue;
 
@@ -2762,6 +2779,19 @@ export class WorkspaceService implements OnModuleInit {
     item.decidedByName = actor.fullName;
     item.comment = body.comment ?? null;
     item.decidedAt = new Date().toISOString();
+
+    if (body.status === 'APPROVED' && item.type === 'PROFILE_CHANGE' && item.meta?.targetUserId && item.meta?.field && item.meta?.newValue !== undefined) {
+      const uid = item.meta.targetUserId;
+      const prev = this.userProfiles[uid] ?? {};
+      if (item.meta.field === 'nicNumber') {
+        this.userProfiles[uid] = { ...prev, nicNumber: item.meta.newValue };
+      } else if (item.meta.field === 'phone') {
+        await this.prisma.user?.update?.({
+          where: { id: uid },
+          data: { phone: item.meta.newValue },
+        }).catch(() => undefined);
+      }
+    }
     this.notifications.unshift({
       id: `ntf_${randomUUID().slice(0, 8)}`,
       type: 'APPROVAL',
@@ -2928,6 +2958,193 @@ export class WorkspaceService implements OnModuleInit {
       this.persistState(actor.organizationId);
     }
     return { ok: true, id };
+  }
+
+  // ─── Employee Personal Profiles & Field-Level Permissions ─────────────────
+  private isHrOrSuperAdmin(actor: AuthUser): boolean {
+    if (actor.role === Role.SUPER_ADMIN) return true;
+    const t = String((actor as AuthUser & { title?: string | null }).title ?? '').toLowerCase();
+    return (
+      /\b(hr|human\s*resources?)\b/.test(t) ||
+      Boolean(actor.companyId && /^YNX-HR-/i.test(actor.companyId))
+    );
+  }
+
+  async getEmployeeProfile(actor: AuthUser, targetUserId?: string) {
+    const uid = targetUserId || actor.id;
+    if (uid !== actor.id && !this.isHrOrSuperAdmin(actor)) {
+      throw new ForbiddenException('You can only view your own profile.');
+    }
+    const dbUser = await this.prisma.user?.findFirst?.({
+      where: { id: uid, organizationId: actor.organizationId, deletedAt: null },
+      select: {
+        id: true,
+        companyId: true,
+        email: true,
+        fullName: true,
+        title: true,
+        role: true,
+        phone: true,
+        avatarUrl: true,
+        status: true,
+      },
+    });
+    const base = dbUser ?? {
+      id: actor.id,
+      companyId: actor.companyId ?? null,
+      email: actor.email,
+      fullName: actor.fullName,
+      title: (actor as AuthUser & { title?: string | null }).title ?? null,
+      role: actor.role,
+      phone: null,
+      avatarUrl: null,
+      status: actor.status,
+    };
+    const ext = this.userProfiles[base.id] ?? {};
+    const nameParts = base.fullName.trim().split(/\s+/).filter(Boolean);
+    const derivedLast = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
+    const derivedFirst = nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : base.fullName;
+
+    const pendingRequests = this.approvals.filter(
+      (a) => a.type === 'PROFILE_CHANGE' && a.status === 'PENDING' && a.meta?.targetUserId === base.id,
+    );
+
+    return {
+      id: base.id,
+      companyId: base.companyId,
+      email: base.email,
+      fullName: base.fullName,
+      firstName: ext.firstName ?? derivedFirst,
+      lastName: ext.lastName ?? derivedLast,
+      nicNumber: ext.nicNumber ?? '',
+      address: ext.address ?? '',
+      birthday: ext.birthday ?? '',
+      phone: base.phone ?? '',
+      avatarUrl: ext.avatarDataUrl ?? base.avatarUrl ?? null,
+      role: base.role,
+      title: base.title ?? '',
+      status: base.status,
+      pendingRequests: pendingRequests.map((p) => ({
+        id: p.id,
+        field: p.meta?.field,
+        newValue: p.meta?.newValue,
+        createdAt: p.createdAt,
+      })),
+    };
+  }
+
+  async updateOwnDp(actor: AuthUser, avatarUrl: string) {
+    const clean = String(avatarUrl ?? '').trim();
+    if (!clean) throw new BadRequestException('Profile picture data or URL is required.');
+    if (clean.length > 2_000_000) {
+      throw new BadRequestException('Profile image is too large (max ~1.5 MB).');
+    }
+    const prev = this.userProfiles[actor.id] ?? {};
+    this.userProfiles[actor.id] = { ...prev, avatarDataUrl: clean };
+    this.persistState(actor.organizationId);
+    await this.prisma.user?.update?.({
+      where: { id: actor.id },
+      data: { avatarUrl: clean.startsWith('data:') ? null : clean },
+    }).catch(() => undefined);
+    return this.getEmployeeProfile(actor, actor.id);
+  }
+
+  requestProfileFieldChange(
+    actor: AuthUser,
+    body: { field: 'nicNumber' | 'phone'; newValue: string },
+  ) {
+    if (body.field !== 'nicNumber' && body.field !== 'phone') {
+      throw new BadRequestException('Only NIC ID Number and Contact Number can be requested for approval.');
+    }
+    const val = String(body.newValue ?? '').trim();
+    if (val.length < 4) {
+      throw new BadRequestException('Please provide a valid new value.');
+    }
+    const label = body.field === 'nicNumber' ? 'NIC ID Number' : 'Contact Number';
+    const item = {
+      id: `apr_${randomUUID().slice(0, 8)}`,
+      type: 'PROFILE_CHANGE',
+      title: `${actor.fullName} · Update ${label}`,
+      description: `Requested new ${label}: ${val}`,
+      requestedById: actor.id,
+      requestedByName: actor.fullName,
+      meta: { targetUserId: actor.id, field: body.field, newValue: val },
+      status: 'PENDING' as const,
+      createdAt: new Date().toISOString(),
+    };
+    this.approvals.unshift(item);
+    this.notifications.unshift({
+      id: `ntf_${randomUUID().slice(0, 8)}`,
+      type: 'APPROVAL',
+      title: `Profile Change Request: ${label}`,
+      body: `${actor.fullName} requested to update ${label} to "${val}".`,
+      targetUserId: '*',
+      readByIds: [actor.id],
+      authorName: actor.fullName,
+      createdAt: new Date().toISOString(),
+    });
+    this.persistState(actor.organizationId);
+    return item;
+  }
+
+  async adminUpdateProfile(
+    actor: AuthUser,
+    targetUserId: string,
+    body: {
+      fullName?: string;
+      firstName?: string;
+      lastName?: string;
+      nicNumber?: string;
+      address?: string;
+      birthday?: string;
+      phone?: string;
+      role?: Role;
+      title?: string;
+    },
+  ) {
+    if (!this.isHrOrSuperAdmin(actor)) {
+      throw new ForbiddenException('Only Super Admin or HR can directly update employee profile fields.');
+    }
+    if ((body.role !== undefined || body.title !== undefined) && actor.role !== Role.SUPER_ADMIN) {
+      throw new ForbiddenException('Only a Super Admin can change an employee job role or title.');
+    }
+
+    const prev = this.userProfiles[targetUserId] ?? {};
+    this.userProfiles[targetUserId] = {
+      ...prev,
+      ...(body.firstName !== undefined ? { firstName: String(body.firstName).trim() } : {}),
+      ...(body.lastName !== undefined ? { lastName: String(body.lastName).trim() } : {}),
+      ...(body.nicNumber !== undefined ? { nicNumber: String(body.nicNumber).trim() } : {}),
+      ...(body.address !== undefined ? { address: String(body.address).trim() } : {}),
+      ...(body.birthday !== undefined ? { birthday: String(body.birthday).trim() } : {}),
+    };
+    this.persistState(actor.organizationId);
+
+    const dbPatch: Record<string, unknown> = {};
+    if (body.fullName !== undefined && String(body.fullName).trim().length >= 2) {
+      dbPatch.fullName = String(body.fullName).trim();
+    }
+    if (body.phone !== undefined) dbPatch.phone = String(body.phone).trim() || null;
+    if (body.role !== undefined && actor.role === Role.SUPER_ADMIN) dbPatch.role = body.role;
+    if (body.title !== undefined && actor.role === Role.SUPER_ADMIN) dbPatch.title = String(body.title).trim() || null;
+
+    if (Object.keys(dbPatch).length > 0 && this.prisma.user?.update) {
+      await this.prisma.user.update({
+        where: { id: targetUserId },
+        data: dbPatch,
+      }).catch(() => undefined);
+    }
+
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'EMPLOYEE_PROFILE_UPDATED',
+      entityType: 'User',
+      entityId: targetUserId,
+      metadata: { fields: Object.keys(body) },
+    });
+
+    return this.getEmployeeProfile(actor, targetUserId);
   }
 }
 
