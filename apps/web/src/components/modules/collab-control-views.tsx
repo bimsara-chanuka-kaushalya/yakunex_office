@@ -120,21 +120,45 @@ export function ChatView() {
   const [dmSearch, setDmSearch] = useState('');
 
   const loadChannels = useCallback(async () => {
-    const chs = await api<ChatChannel[]>('/chat/channels');
-    setChannels(chs);
-    if (chs.length > 0) {
-      setActiveId((prev) => (chs.some((c) => c.id === prev) ? prev : chs[0].id));
+    try {
+      const chs = await api<ChatChannel[]>('/chat/channels');
+      const safe = Array.isArray(chs) ? chs : [];
+      setChannels(safe);
+      if (safe.length > 0) {
+        setActiveId((prev) => (safe.some((c) => c.id === prev) ? prev : safe[0].id));
+      }
+    } catch {
+      setChannels([]);
     }
   }, []);
 
   const loadMessages = useCallback(async (channelId: string) => {
-    setMessages(await api<ChatMessage[]>(`/chat/channels/${channelId}/messages`));
+    try {
+      const msgs = await api<ChatMessage[]>(`/chat/channels/${channelId}/messages`);
+      setMessages(Array.isArray(msgs) ? msgs : []);
+    } catch {
+      setMessages([]);
+    }
   }, []);
 
   useEffect(() => {
     void loadChannels();
-    api<OrgMember[]>('/organization')
-      .then((list) => setMembers(list))
+    api<{ items?: Array<{ id: string; fullName?: string; name?: string; email: string; role: string; title?: string; department?: string }> } | OrgMember[]>(
+      '/users?page=1&pageSize=100',
+    )
+      .then((res) => {
+        const raw = Array.isArray(res) ? res : Array.isArray(res?.items) ? res.items : [];
+        setMembers(
+          raw.map((u) => ({
+            id: u.id,
+            name: ('fullName' in u && u.fullName) ? u.fullName : ('name' in u && u.name) ? u.name : u.email,
+            email: u.email,
+            role: u.role,
+            title: u.title,
+            department: u.department,
+          })),
+        );
+      })
       .catch(() => setMembers([]));
   }, [loadChannels]);
 
@@ -392,7 +416,7 @@ export function ChatView() {
                 return (
                   <div key={msg.id} className="group flex items-start gap-3">
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gold/15 text-xs font-semibold text-gold">
-                      {msg.senderName.charAt(0).toUpperCase()}
+                      {(msg.senderName || 'U').charAt(0).toUpperCase()}
                     </span>
                     <div className="min-w-0 flex-1 rounded-2xl border border-line bg-canvas/40 px-4 py-2.5">
                       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -508,7 +532,7 @@ export function ChatView() {
                       {msg.reactions && Object.keys(msg.reactions).length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5">
                           {Object.entries(msg.reactions).map(([emoji, users]) =>
-                            users.length > 0 ? (
+                            Array.isArray(users) && users.length > 0 ? (
                               <button
                                 key={emoji}
                                 type="button"
