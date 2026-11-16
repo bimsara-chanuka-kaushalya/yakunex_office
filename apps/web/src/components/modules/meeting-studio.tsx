@@ -56,6 +56,7 @@ import { cn } from '@/lib/cn';
 
 export interface MeetingParticipant {
   userId: string;
+  companyId?: string | null;
   fullName: string;
   role: string;
   micOn: boolean;
@@ -111,8 +112,13 @@ interface FloatingReaction {
 
 interface CurrentUserInfo {
   id: string;
+  companyId?: string | null;
   fullName: string;
   role: string;
+}
+
+function formatParticipantDisplay(p: { companyId?: string | null; fullName: string }): string {
+  return p.companyId ? `${p.companyId} · ${p.fullName}` : p.fullName;
 }
 
 type QualityTier = 'hd' | 'balanced' | 'low-signal' | '3g-ultra';
@@ -582,7 +588,7 @@ function ParticipantTile({
             {participant.micOn ? <Mic className="h-3 w-3" /> : <MicOff className="h-3 w-3" />}
           </span>
           <span className="truncate text-xs font-semibold text-white">
-            {participant.fullName}
+            {formatParticipantDisplay(participant)}
             {isSelf ? ' (You)' : ''}
           </span>
         </div>
@@ -3212,7 +3218,7 @@ export function MeetingStudio({
     if (screenStream) {
       return {
         userId: currentUser.id,
-        presenterName: `${currentUser.fullName} (You)`,
+        presenterName: `${formatParticipantDisplay(currentUser)} (You)`,
         stream: screenStream,
       };
     }
@@ -3220,12 +3226,12 @@ export function MeetingStudio({
       const p = room.participants.find((item) => item.userId === peerId);
       return {
         userId: peerId,
-        presenterName: p?.fullName ?? 'Teammate',
+        presenterName: p ? formatParticipantDisplay(p) : 'Teammate',
         stream,
       };
     }
     return null;
-  }, [currentUser.fullName, currentUser.id, remoteScreenStreams, room.participants, screenStream]);
+  }, [currentUser, remoteScreenStreams, room.participants, screenStream]);
 
   const GALLERY_PAGE_SIZE = 16;
 
@@ -3732,7 +3738,7 @@ export function MeetingStudio({
                           </div>
                           <div className="min-w-0">
                             <p className="truncate text-xs font-semibold text-white">
-                              {p.fullName} {isSelf && '(You)'}
+                              {formatParticipantDisplay(p)} {isSelf && '(You)'}
                             </p>
                             <p className="text-[10px] text-white/50">{p.role}</p>
                           </div>

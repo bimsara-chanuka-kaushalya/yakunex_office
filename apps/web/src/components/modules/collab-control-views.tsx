@@ -412,6 +412,7 @@ export function MeetingsView() {
         initialCamOn={activeSession.camOn}
         currentUser={{
           id: user?.id ?? '',
+          companyId: user?.companyId ?? null,
           fullName: user?.fullName ?? 'You',
           role: user?.role ?? 'STAFF',
         }}

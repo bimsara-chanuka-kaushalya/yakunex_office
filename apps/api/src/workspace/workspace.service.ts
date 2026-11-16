@@ -228,6 +228,7 @@ export interface ChatMessageItem {
 
 export interface MeetingParticipant {
   userId: string;
+  companyId?: string | null;
   fullName: string;
   role: string;
   micOn: boolean;
@@ -1818,6 +1819,7 @@ export class WorkspaceService implements OnModuleInit {
         ? [
             {
               userId: actor.id,
+              companyId: actor.companyId ?? null,
               fullName: actor.fullName,
               role: actor.role,
               micOn,
@@ -1913,12 +1915,15 @@ export class WorkspaceService implements OnModuleInit {
       const joinedAt = new Date().toISOString();
       const existing = mtg.participants.find((p) => p.userId === actor.id);
       if (existing) {
+        if (actor.companyId) existing.companyId = actor.companyId;
+        existing.fullName = actor.fullName;
         if (body?.micOn !== undefined) existing.micOn = micOn;
         if (body?.camOn !== undefined) existing.camOn = camOn;
         existing.joinedAt = joinedAt;
       } else {
         mtg.participants.push({
           userId: actor.id,
+          companyId: actor.companyId ?? null,
           fullName: actor.fullName,
           role: actor.role,
           micOn,
@@ -1991,6 +1996,7 @@ export class WorkspaceService implements OnModuleInit {
       if (!participant) {
         participant = {
           userId: actor.id,
+          companyId: actor.companyId ?? null,
           fullName: actor.fullName,
           role: actor.role,
           micOn: true,
@@ -2192,7 +2198,7 @@ export class WorkspaceService implements OnModuleInit {
     mtg.chatMessages.push({
       id: `mc_${randomUUID().slice(0, 8)}`,
       senderId: actor.id,
-      senderName: actor.fullName,
+      senderName: actor.companyId ? `${actor.companyId} · ${actor.fullName}` : actor.fullName,
       body: text,
       createdAt: new Date().toISOString(),
     });
@@ -2475,9 +2481,9 @@ export class WorkspaceService implements OnModuleInit {
 
     const at = new AccessToken(apiKey, apiSecret, {
       identity: actor.id,
-      name: actor.fullName,
+      name: actor.companyId ? `${actor.companyId} · ${actor.fullName}` : actor.fullName,
       ttl: '4h',
-      metadata: JSON.stringify({ role: actor.role }),
+      metadata: JSON.stringify({ role: actor.role, companyId: actor.companyId ?? null }),
     });
     at.addGrant({
       roomJoin: true,
