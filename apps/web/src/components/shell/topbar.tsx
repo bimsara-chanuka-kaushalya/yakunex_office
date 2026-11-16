@@ -120,7 +120,12 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
 
         {/* User Profile Pill */}
         {user && (
-          <div className="ml-1 hidden items-center gap-2.5 rounded-xl border border-line/70 bg-surface px-2.5 py-1.5 shadow-2xs md:flex">
+          <button
+            type="button"
+            onClick={() => router.push('/profile')}
+            title="View Profile"
+            className="ml-1 hidden items-center gap-2.5 rounded-xl border border-line/70 bg-surface px-2.5 py-1.5 shadow-2xs transition hover:border-gold/40 md:flex"
+          >
             <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-gold/30 to-gold/10 font-mono text-xs font-bold text-gold">
               {user.fullName.slice(0, 1).toUpperCase()}
             </div>
@@ -137,7 +142,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
                 {ROLE_LABELS[user.role as Role]?.[lang] ?? user.role}
               </p>
             </div>
-          </div>
+          </button>
         )}
 
         <Button variant="ghost" size="sm" onClick={handleLogout} aria-label={t('signOut')} className="rounded-xl">

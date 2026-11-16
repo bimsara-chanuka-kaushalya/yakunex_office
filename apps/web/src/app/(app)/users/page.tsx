@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { Check, Copy, Eye, EyeOff, KeyRound, Search, Trash2, UserPlus, Users as UsersIcon } from 'lucide-react';
+import Link from 'next/link';
+import { Check, Copy, Eye, EyeOff, KeyRound, Search, Trash2, UserCircle, UserPlus, Users as UsersIcon } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -345,7 +346,15 @@ export default function UsersPage() {
                             : 'Never'}
                         </td>
                         <td className="px-5 py-3.5 text-right">
-                          <div className="inline-flex items-center justify-end gap-2">
+                          <div className=" inline-flex items-center justify-end gap-2">
+                            <Link
+                              href={`/profile?userId=${row.id}`}
+                              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-line bg-surface px-3 text-xs font-medium text-ink transition hover:border-gold/40 hover:bg-canvas"
+                              title="View / Edit Profile"
+                            >
+                              <UserCircle className="h-3.5 w-3.5 text-gold" />
+                              Profile
+                            </Link>
                             {can(PERMISSIONS.USERS_MANAGE_PERMISSIONS) && editable && (
                               <Button
                                 variant="ghost"

@@ -572,11 +572,15 @@ export class WorkspaceService implements OnModuleInit {
   private userProfiles: Record<
     string,
     {
+      fullName?: string;
       firstName?: string;
       lastName?: string;
       nicNumber?: string;
       address?: string;
       birthday?: string;
+      phone?: string;
+      role?: Role;
+      title?: string;
       avatarDataUrl?: string;
     }
   > = {};
@@ -3391,48 +3395,80 @@ export class WorkspaceService implements OnModuleInit {
 
   // ─── Employee Personal Profiles & Field-Level Permissions ─────────────────
   private isHrOrSuperAdmin(actor: AuthUser): boolean {
-    if (actor.role === Role.SUPER_ADMIN) return true;
+    if (actor.role === Role.SUPER_ADMIN || actor.role === Role.ADMIN) return true;
     const t = String((actor as AuthUser & { title?: string | null }).title ?? '').toLowerCase();
     return (
       /\b(hr|human\s*resources?)\b/.test(t) ||
-      Boolean(actor.companyId && /^YNX-HR-/i.test(actor.companyId))
+      Boolean(actor.companyId && /^YNX-(HR|ADM|DIR|CEO|MD)-/i.test(actor.companyId))
     );
   }
 
   async getEmployeeProfile(actor: AuthUser, targetUserId?: string) {
     const uid = targetUserId || actor.id;
-    if (uid !== actor.id && !this.isHrOrSuperAdmin(actor)) {
-      throw new ForbiddenException('You can only view your own profile.');
+    let dbUser: {
+      id: string;
+      companyId: string | null;
+      email: string;
+      fullName: string;
+      title: string | null;
+      role: Role;
+      phone?: string | null;
+      avatarUrl?: string | null;
+      status: string;
+    } | null = null;
+
+    try {
+      dbUser =
+        (await this.prisma.user?.findFirst?.({
+          where: { id: uid, organizationId: actor.organizationId, deletedAt: null },
+          select: {
+            id: true,
+            companyId: true,
+            email: true,
+            fullName: true,
+            title: true,
+            role: true,
+            phone: true,
+            avatarUrl: true,
+            status: true,
+          },
+        })) ?? null;
+    } catch {
+      try {
+        dbUser =
+          (await this.prisma.user?.findFirst?.({
+            where: { id: uid, organizationId: actor.organizationId, deletedAt: null },
+            select: {
+              id: true,
+              companyId: true,
+              email: true,
+              fullName: true,
+              title: true,
+              role: true,
+              status: true,
+            },
+          })) ?? null;
+      } catch {
+        dbUser = null;
+      }
     }
-    const dbUser = await this.prisma.user?.findFirst?.({
-      where: { id: uid, organizationId: actor.organizationId, deletedAt: null },
-      select: {
-        id: true,
-        companyId: true,
-        email: true,
-        fullName: true,
-        title: true,
-        role: true,
-        phone: true,
-        avatarUrl: true,
-        status: true,
-      },
-    });
+
     const base = dbUser ?? {
-      id: actor.id,
-      companyId: actor.companyId ?? null,
-      email: actor.email,
-      fullName: actor.fullName,
-      title: (actor as AuthUser & { title?: string | null }).title ?? null,
-      role: actor.role,
+      id: uid,
+      companyId: uid === actor.id ? (actor.companyId ?? null) : null,
+      email: uid === actor.id ? actor.email : '',
+      fullName: uid === actor.id ? actor.fullName : 'Employee',
+      title: uid === actor.id ? ((actor as AuthUser & { title?: string | null }).title ?? null) : null,
+      role: uid === actor.id ? actor.role : Role.STAFF,
       phone: null,
       avatarUrl: null,
-      status: actor.status,
+      status: uid === actor.id ? actor.status : 'ACTIVE',
     };
     const ext = this.userProfiles[base.id] ?? {};
-    const nameParts = base.fullName.trim().split(/\s+/).filter(Boolean);
+    const effectiveFullName = ext.fullName || base.fullName;
+    const nameParts = effectiveFullName.trim().split(/\s+/).filter(Boolean);
     const derivedLast = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
-    const derivedFirst = nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : base.fullName;
+    const derivedFirst = nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : effectiveFullName;
 
     const pendingRequests = this.approvals.filter(
       (a) => a.type === 'PROFILE_CHANGE' && a.status === 'PENDING' && a.meta?.targetUserId === base.id,
@@ -3442,16 +3478,16 @@ export class WorkspaceService implements OnModuleInit {
       id: base.id,
       companyId: base.companyId,
       email: base.email,
-      fullName: base.fullName,
+      fullName: effectiveFullName,
       firstName: ext.firstName ?? derivedFirst,
       lastName: ext.lastName ?? derivedLast,
       nicNumber: ext.nicNumber ?? '',
       address: ext.address ?? '',
       birthday: ext.birthday ?? '',
-      phone: base.phone ?? '',
+      phone: ext.phone ?? base.phone ?? '',
       avatarUrl: ext.avatarDataUrl ?? base.avatarUrl ?? null,
-      role: base.role,
-      title: base.title ?? '',
+      role: ext.role ?? base.role,
+      title: ext.title ?? base.title ?? '',
       status: base.status,
       pendingRequests: pendingRequests.map((p) => ({
         id: p.id,
@@ -3541,11 +3577,17 @@ export class WorkspaceService implements OnModuleInit {
     const prev = this.userProfiles[targetUserId] ?? {};
     this.userProfiles[targetUserId] = {
       ...prev,
+      ...(body.fullName !== undefined && String(body.fullName).trim().length >= 2
+        ? { fullName: String(body.fullName).trim() }
+        : {}),
       ...(body.firstName !== undefined ? { firstName: String(body.firstName).trim() } : {}),
       ...(body.lastName !== undefined ? { lastName: String(body.lastName).trim() } : {}),
       ...(body.nicNumber !== undefined ? { nicNumber: String(body.nicNumber).trim() } : {}),
       ...(body.address !== undefined ? { address: String(body.address).trim() } : {}),
       ...(body.birthday !== undefined ? { birthday: String(body.birthday).trim() } : {}),
+      ...(body.phone !== undefined ? { phone: String(body.phone).trim() } : {}),
+      ...(body.role !== undefined && actor.role === Role.SUPER_ADMIN ? { role: body.role } : {}),
+      ...(body.title !== undefined && actor.role === Role.SUPER_ADMIN ? { title: String(body.title).trim() } : {}),
     };
     this.persistState(actor.organizationId);
 

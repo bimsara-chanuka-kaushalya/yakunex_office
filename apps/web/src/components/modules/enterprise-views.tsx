@@ -765,33 +765,62 @@ export function ProfileView() {
     }
   }, []);
 
-  const load = useCallback(async () => {
-    const endpoint = selectedUserId ? `/profile/${selectedUserId}` : '/profile';
-    const data = await api<EmployeeProfilePayload>(endpoint);
+  const applyProfileState = useCallback((data: EmployeeProfilePayload) => {
     setProfile(data);
-    setFullName(data.fullName);
-    setFirstName(data.firstName);
-    setLastName(data.lastName);
-    setNicNumber(data.nicNumber);
-    setAddress(data.address);
-    setBirthday(data.birthday);
-    setPhone(data.phone);
-    setRole(data.role);
-    setTitle(data.title);
-    setReqNic(data.nicNumber);
-    setReqPhone(data.phone);
-  }, [selectedUserId]);
+    setFullName(data.fullName ?? '');
+    setFirstName(data.firstName ?? '');
+    setLastName(data.lastName ?? '');
+    setNicNumber(data.nicNumber ?? '');
+    setAddress(data.address ?? '');
+    setBirthday(data.birthday ?? '');
+    setPhone(data.phone ?? '');
+    setRole(data.role ?? 'STAFF');
+    setTitle(data.title ?? '');
+    setReqNic(data.nicNumber ?? '');
+    setReqPhone(data.phone ?? '');
+  }, []);
+
+  const load = useCallback(async () => {
+    setError(null);
+    const endpoint = selectedUserId ? `/profile/${selectedUserId}` : '/profile';
+    try {
+      const data = await api<EmployeeProfilePayload>(endpoint);
+      applyProfileState(data);
+    } catch (err) {
+      if (user && (!selectedUserId || selectedUserId === user.id)) {
+        const parts = (user.fullName || 'Employee').trim().split(/\s+/).filter(Boolean);
+        applyProfileState({
+          id: user.id,
+          companyId: user.companyId ?? null,
+          email: user.email,
+          fullName: user.fullName,
+          firstName: parts.length > 1 ? parts.slice(0, -1).join(' ') : user.fullName,
+          lastName: parts.length > 1 ? parts[parts.length - 1] : '',
+          nicNumber: '',
+          address: '',
+          birthday: '',
+          phone: '',
+          avatarUrl: null,
+          role: user.role,
+          title: '',
+          status: user.status,
+          pendingRequests: [],
+        });
+      } else {
+        setError(err instanceof Error ? err.message : 'Unable to load profile.');
+      }
+    }
+  }, [selectedUserId, user, applyProfileState]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   useEffect(() => {
-    if (!isHrOrSuperAdmin) return;
-    api<{ employees: Array<{ id: string; companyId: string | null; fullName: string }> }>('/organization')
-      .then((res) => setDirectory(res.employees ?? []))
+    api<{ employees?: Array<{ id: string; companyId: string | null; fullName: string }> }>('/organization')
+      .then((res) => setDirectory(Array.isArray(res?.employees) ? res.employees : []))
       .catch(() => undefined);
-  }, [isHrOrSuperAdmin]);
+  }, []);
 
   async function handleDpFile(file: File | undefined) {
     if (!file) return;
@@ -865,16 +894,22 @@ export function ProfileView() {
             View personal details, update your DP, or request NIC &amp; Contact Number changes.
           </p>
         </div>
-        {isHrOrSuperAdmin && directory.length > 0 && (
+        {directory.length > 0 && (
           <div className="w-72">
             <Select
               aria-label="Select employee profile"
               value={selectedUserId || user?.id || ''}
               onChange={(e) => setSelectedUserId(e.target.value)}
             >
+              {user && !directory.some((d) => d.id === user.id) && (
+                <option value={user.id}>
+                  {user.companyId ? `${user.companyId} · ` : ''}{user.fullName} (Me)
+                </option>
+              )}
               {directory.map((emp) => (
                 <option key={emp.id} value={emp.id}>
                   {emp.companyId ? `${emp.companyId} · ` : ''}{emp.fullName}
+                  {emp.id === user?.id ? ' (Me)' : ''}
                 </option>
               ))}
             </Select>
