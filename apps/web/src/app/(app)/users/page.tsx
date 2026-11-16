@@ -573,7 +573,7 @@ function CreateUserDialog({
   const [email, setEmail] = useState('');
   const [companyId, setCompanyId] = useState('');
   const [role, setRole] = useState<Role>('STAFF');
-  const [roleCode, setRoleCode] = useState<'CEO' | 'MD' | 'DIR' | 'HR' | 'PM' | 'DEV' | 'INT' | 'STF'>('STF');
+  const [roleCode, setRoleCode] = useState<string>('STF');
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -581,7 +581,29 @@ function CreateUserDialog({
   const [copied, setCopied] = useState(false);
   const [showCreatedPassword, setShowCreatedPassword] = useState(true);
 
-  function defaultCodeForRole(nextRole: Role): 'CEO' | 'MD' | 'DIR' | 'HR' | 'PM' | 'DEV' | 'INT' | 'STF' {
+  const DESIGNATION_PRESETS: Record<string, { role: Role; title: string }> = {
+    MD: { role: 'SUPER_ADMIN', title: 'Managing Director' },
+    CEO: { role: 'SUPER_ADMIN', title: 'Chief Executive Officer' },
+    SEC: { role: 'ADMIN', title: 'Company Secretary' },
+    CTO: { role: 'ADMIN', title: 'Chief Technology Officer' },
+    COO: { role: 'ADMIN', title: 'Chief Operating Officer' },
+    CFO: { role: 'ADMIN', title: 'Chief Financial Officer' },
+    DIR: { role: 'ADMIN', title: 'Director' },
+    HR: { role: 'PROJECT_MANAGER', title: 'Human Resources' },
+    PM: { role: 'PROJECT_MANAGER', title: 'Project Manager' },
+    PO: { role: 'PROJECT_MANAGER', title: 'Product Owner' },
+    BA: { role: 'PROJECT_MANAGER', title: 'Business Analyst' },
+    TL: { role: 'STAFF', title: 'Tech Lead' },
+    SE: { role: 'STAFF', title: 'Software Engineer' },
+    QA: { role: 'STAFF', title: 'QA Engineer' },
+    UIUX: { role: 'STAFF', title: 'UI/UX Designer' },
+    DEVOPS: { role: 'STAFF', title: 'DevOps Engineer' },
+    DEV: { role: 'STAFF', title: 'Software Engineer' },
+    INT: { role: 'INTERN', title: 'Intern' },
+    STF: { role: 'STAFF', title: 'Staff' },
+  };
+
+  function defaultCodeForRole(nextRole: Role): string {
     switch (nextRole) {
       case 'SUPER_ADMIN':
       case 'ADMIN':
@@ -750,20 +772,50 @@ function CreateUserDialog({
             />
           </Field>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Department / Role Code" htmlFor="new-role-code">
+            <Field label="Tier & Designation" htmlFor="new-role-code">
               <Select
                 id="new-role-code"
                 value={roleCode}
-                onChange={(e) => setRoleCode(e.target.value as 'CEO' | 'MD' | 'DIR' | 'HR' | 'PM' | 'DEV' | 'INT' | 'STF')}
+                onChange={(e) => {
+                  const code = e.target.value;
+                  setRoleCode(code);
+                  const preset = DESIGNATION_PRESETS[code];
+                  if (preset) {
+                    setRole(preset.role);
+                    setTitle(preset.title);
+                  }
+                }}
               >
-                <option value="CEO">CEO — Chief Executive Officer</option>
-                <option value="MD">MD — Managing Director</option>
-                <option value="DIR">DIR — Director / Management</option>
-                <option value="HR">HR — Human Resources</option>
-                <option value="PM">PM — Project Manager</option>
-                <option value="DEV">DEV — Developer / Software Engineer</option>
-                <option value="INT">INT — Intern / Technical Intern</option>
-                <option value="STF">STF — Staff / General Employee</option>
+                <optgroup label="Tier 1: Super Admin">
+                  <option value="MD">MD — Managing Director</option>
+                  <option value="CEO">CEO — Chief Executive Officer</option>
+                </optgroup>
+                <optgroup label="Tier 1B: Legal Admin">
+                  <option value="SEC">Company Secretary (Legal Admin)</option>
+                </optgroup>
+                <optgroup label="Tier 2: C-Level / Dept Heads">
+                  <option value="CTO">CTO — Chief Technology Officer</option>
+                  <option value="COO">COO — Chief Operating Officer</option>
+                  <option value="CFO">CFO — Chief Financial Officer</option>
+                  <option value="DIR">DIR — Dept Head / Director</option>
+                </optgroup>
+                <optgroup label="Tier 3: Management">
+                  <option value="HR">HR — Human Resources</option>
+                  <option value="PM">PM — Project Manager</option>
+                  <option value="PO">PO — Product Owner</option>
+                  <option value="BA">BA — Business Analyst</option>
+                </optgroup>
+                <optgroup label="Tier 4: Core Staff">
+                  <option value="TL">Tech Lead</option>
+                  <option value="SE">SE — Software Engineer</option>
+                  <option value="QA">QA — Quality Assurance</option>
+                  <option value="UIUX">UI/UX Designer</option>
+                  <option value="DEVOPS">DevOps Engineer</option>
+                  <option value="STF">STF — General Core Staff</option>
+                </optgroup>
+                <optgroup label="Tier 5: Trainees">
+                  <option value="INT">Interns / Trainees</option>
+                </optgroup>
               </Select>
             </Field>
             <Field label="Company Mail (Auto if blank)" htmlFor="new-email">

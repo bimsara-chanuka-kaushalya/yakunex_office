@@ -20,7 +20,13 @@ import { AccessToken } from 'livekit-server-sdk';
 import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../common/types';
 import { PrismaService } from '../prisma/prisma.service';
-import { ALL_PERMISSION_KEYS, DEFAULT_ROLE_PERMISSIONS, isPermissionKey } from '../rbac/permissions';
+import {
+  ALL_PERMISSION_KEYS,
+  DEFAULT_ROLE_PERMISSIONS,
+  DESIGNATION_TIER_PRESETS,
+  TIER_ACCESS_MATRIX,
+  isPermissionKey,
+} from '../rbac/permissions';
 
 export interface ClientItem {
   id: string;
@@ -2268,6 +2274,8 @@ export class WorkspaceService implements OnModuleInit {
       settings: this.settings,
       roleMatrix: this.roleMatrix,
       permissionCatalog: ALL_PERMISSION_KEYS,
+      tierAccessMatrix: TIER_ACCESS_MATRIX,
+      designationPresets: DESIGNATION_TIER_PRESETS,
     };
   }
 

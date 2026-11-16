@@ -1044,6 +1044,16 @@ interface SettingsPayload {
   };
   roleMatrix: Record<Role, string[]>;
   permissionCatalog: string[];
+  tierAccessMatrix?: Array<{
+    tier: string;
+    roles: string;
+    legalGovernance: string;
+    systemSettings: string;
+    financialsPayroll: string;
+    hrAttendance: string;
+    projectsTasks: string;
+    codeDeployments: string;
+  }>;
 }
 
 const ROLES_ORDER: Role[] = ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF', 'INTERN'];
@@ -1172,6 +1182,45 @@ export function SettingsView() {
           </div>
         </form>
       </Card>
+
+      {data.tierAccessMatrix && data.tierAccessMatrix.length > 0 && (
+        <Card>
+          <CardHeader
+            title="6-Tier Enterprise Access Control Matrix"
+            description="Role hierarchy and domain access rules across Legal, System, Financials, HR, Projects, and Code & Deployments."
+          />
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[920px] text-left text-xs">
+              <thead className="bg-canvas/60 uppercase tracking-wider text-muted">
+                <tr>
+                  <th className="px-4 py-3">Tier / Level</th>
+                  <th className="px-4 py-3">Roles</th>
+                  <th className="px-4 py-3">Legal & Governance</th>
+                  <th className="px-4 py-3">System & Settings</th>
+                  <th className="px-4 py-3">Financials & Payroll</th>
+                  <th className="px-4 py-3">HR & Attendance</th>
+                  <th className="px-4 py-3">Projects & Tasks</th>
+                  <th className="px-4 py-3">Code & Deployments</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {data.tierAccessMatrix.map((row) => (
+                  <tr key={row.tier} className="hover:bg-canvas/40">
+                    <td className="px-4 py-3 font-semibold text-ink">{row.tier}</td>
+                    <td className="px-4 py-3 font-medium text-gold-strong">{row.roles}</td>
+                    <td className="px-4 py-3 text-muted">{row.legalGovernance}</td>
+                    <td className="px-4 py-3 text-muted">{row.systemSettings}</td>
+                    <td className="px-4 py-3 text-muted">{row.financialsPayroll}</td>
+                    <td className="px-4 py-3 text-muted">{row.hrAttendance}</td>
+                    <td className="px-4 py-3 text-muted">{row.projectsTasks}</td>
+                    <td className="px-4 py-3 text-muted">{row.codeDeployments}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       <Card>
         <CardHeader

@@ -5,6 +5,7 @@ import {
   ALL_PERMISSION_KEYS,
   DEFAULT_ROLE_PERMISSIONS,
   PermissionKey,
+  resolveDesignationOverrides,
 } from './permissions';
 
 @Injectable()
@@ -46,7 +47,7 @@ export class RbacService {
       return cached.permissions;
     }
 
-    const [defaults, overrides] = await Promise.all([
+    const [defaults, overrides, userRecord] = await Promise.all([
       this.prisma.rolePermission.findMany({
         where: { organizationId, role },
         select: { permissionKey: true },
@@ -55,9 +56,18 @@ export class RbacService {
         where: { userId },
         select: { permissionKey: true, granted: true },
       }),
+      this.prisma.user?.findUnique?.({
+        where: { id: userId },
+        select: { title: true },
+      }) ?? Promise.resolve(null),
     ]);
 
     const effective = new Set<string>(defaults.map((d) => d.permissionKey));
+    const designationRules = resolveDesignationOverrides(userRecord?.title);
+    if (designationRules) {
+      for (const g of designationRules.grants) effective.add(g);
+      for (const r of designationRules.revokes) effective.delete(r);
+    }
     for (const override of overrides) {
       if (override.granted) {
         effective.add(override.permissionKey);
