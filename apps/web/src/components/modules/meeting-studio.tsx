@@ -28,6 +28,8 @@ import {
   MonitorUp,
   PhoneOff,
   PictureInPicture2,
+  Pin,
+  PinOff,
   Radio,
   Send,
   Smile,
@@ -473,6 +475,9 @@ function ParticipantTile({
   isSpeaking,
   reaction,
   compact = false,
+  fillStage = false,
+  isPinned = false,
+  onTogglePin,
   canHostControl,
   onHostMute,
   connectionStatus,
@@ -485,6 +490,9 @@ function ParticipantTile({
   isSpeaking: boolean;
   reaction?: string;
   compact?: boolean;
+  fillStage?: boolean;
+  isPinned?: boolean;
+  onTogglePin?: (userId: string) => void;
   canHostControl?: boolean;
   onHostMute?: (userId: string) => void;
   connectionStatus?: PeerConnHealth;
@@ -499,7 +507,7 @@ function ParticipantTile({
     <div
       className={cn(
         'group relative overflow-hidden rounded-2xl border bg-[#111827] transition-all duration-200',
-        compact ? 'aspect-video w-full shrink-0' : 'aspect-video w-full',
+        fillStage ? 'h-full w-full min-h-[360px]' : compact ? 'aspect-video w-full shrink-0' : 'aspect-video w-full',
         isSpeaking && participant.micOn
           ? 'border-[#10B981] ring-2 ring-[#10B981]/50 shadow-[0_0_24px_rgba(16,185,129,0.25)]'
           : 'border-white/10',
@@ -561,16 +569,41 @@ function ParticipantTile({
         )}
       </div>
 
-      {/* Host quick mute hover button */}
-      {canHostControl && !isSelf && participant.micOn && onHostMute && (
-        <button
-          type="button"
-          onClick={() => onHostMute(participant.userId)}
-          className="absolute right-3 top-3 hidden items-center gap-1 rounded-full bg-rose-600/90 px-2.5 py-1 text-[11px] font-semibold text-white shadow transition hover:bg-rose-500 group-hover:inline-flex"
-        >
-          <MicOff className="h-3 w-3" /> Mute
-        </button>
-      )}
+      {/* Pin to Main Screen & Host quick mute */}
+      <div className="absolute right-3 top-3 flex items-center gap-1.5">
+        {onTogglePin && !compact && (
+          <button
+            type="button"
+            onClick={() => onTogglePin(participant.userId)}
+            title={isPinned ? 'Unpin from Main Screen' : 'Pin to Main Screen'}
+            className={cn(
+              'items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold shadow transition',
+              isPinned
+                ? 'inline-flex bg-[#D4A843] text-slate-950 hover:bg-[#e3b955]'
+                : 'hidden bg-black/65 text-white/90 backdrop-blur hover:bg-black/85 group-hover:inline-flex',
+            )}
+          >
+            {isPinned ? (
+              <>
+                <PinOff className="h-3 w-3" /> Main
+              </>
+            ) : (
+              <>
+                <Pin className="h-3 w-3" /> Main Screen
+              </>
+            )}
+          </button>
+        )}
+        {canHostControl && !isSelf && participant.micOn && onHostMute && (
+          <button
+            type="button"
+            onClick={() => onHostMute(participant.userId)}
+            className="hidden items-center gap-1 rounded-full bg-rose-600/90 px-2.5 py-1 text-[11px] font-semibold text-white shadow transition hover:bg-rose-500 group-hover:inline-flex"
+          >
+            <MicOff className="h-3 w-3" /> Mute
+          </button>
+        )}
+      </div>
 
       {/* Floating emoji reaction */}
       {reaction && (
@@ -663,6 +696,7 @@ export function MeetingStudio({
   );
   const [sfuActive, setSfuActive] = useState(false);
   const [galleryPage, setGalleryPage] = useState(0);
+  const [pinnedUserId, setPinnedUserId] = useState<string | null>(null);
 
   // Refs for WebRTC stability across closures & async signal callbacks
   const sfuModeRef = useRef(false);
@@ -3293,17 +3327,33 @@ export function MeetingStudio({
     return 'grid-cols-2 sm:grid-cols-3 xl:grid-cols-4';
   }, [visibleGalleryParticipants.length]);
 
+  const togglePinMainScreen = useCallback((userId: string) => {
+    setPinnedUserId((prev) => {
+      const next = prev === userId ? null : userId;
+      if (next) setLayoutMode('speaker');
+      return next;
+    });
+  }, []);
+
   const activeSpeakerParticipant = useMemo(() => {
+    if (pinnedUserId) {
+      const pinned = room.participants.find((p) => p.userId === pinnedUserId);
+      if (pinned) return pinned;
+    }
     const speaking = room.participants.find(
       (p) => speakingUsers[p.userId] && p.micOn && p.userId !== currentUser.id,
     );
+    const hostParticipant = room.participants.find(
+      (p) => p.fullName === room.organizerName,
+    );
     return (
       speaking ??
+      hostParticipant ??
       room.participants.find((p) => p.userId !== currentUser.id) ??
       room.participants[0] ??
       null
     );
-  }, [currentUser.id, room.participants, speakingUsers]);
+  }, [currentUser.id, pinnedUserId, room.organizerName, room.participants, speakingUsers]);
 
   // In SFU mode, subscribe/upgrade video only for visible page tiles (+ active speakers) so 100+ cameras run with zero lag
   useEffect(() => {
@@ -3520,10 +3570,7 @@ export function MeetingStudio({
               >
                 <VideoCanvas
                   stream={activeScreenShare.stream}
-                  className={cn(
-                    'h-full w-full object-contain',
-                    isFullscreen ? 'max-h-full' : 'max-h-[76vh]',
-                  )}
+                  className="h-full w-full object-contain"
                 />
                 <div className="absolute left-3 top-3 flex flex-wrap items-center gap-2">
                   <div className="inline-flex items-center gap-2 rounded-full bg-emerald-600/95 px-3 py-1 text-xs font-semibold text-white shadow">
@@ -3610,7 +3657,7 @@ export function MeetingStudio({
             </div>
           ) : layoutMode === 'speaker' && activeSpeakerParticipant ? (
             <div className="flex h-full flex-col gap-3">
-              <div className="mx-auto flex w-full max-w-5xl flex-1 items-center">
+              <div className="flex min-h-0 w-full flex-1 items-stretch">
                 <ParticipantTile
                   participant={activeSpeakerParticipant}
                   stream={
@@ -3624,6 +3671,9 @@ export function MeetingStudio({
                     [...reactions].reverse().find((r) => r.userId === activeSpeakerParticipant.userId)
                       ?.emoji
                   }
+                  fillStage
+                  isPinned={pinnedUserId === activeSpeakerParticipant.userId}
+                  onTogglePin={togglePinMainScreen}
                   canHostControl={canHostControl}
                   onHostMute={hostMute}
                   connectionStatus={peerConnStates[activeSpeakerParticipant.userId]}
@@ -3673,6 +3723,8 @@ export function MeetingStudio({
                       isSelf={isSelf}
                       isSpeaking={Boolean(speakingUsers[p.userId])}
                       reaction={react}
+                      isPinned={pinnedUserId === p.userId}
+                      onTogglePin={togglePinMainScreen}
                       canHostControl={canHostControl}
                       onHostMute={hostMute}
                       connectionStatus={peerConnStates[p.userId]}
@@ -3773,6 +3825,19 @@ export function MeetingStudio({
                               <Hand className="h-3.5 w-3.5" />
                             </span>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => togglePinMainScreen(p.userId)}
+                            title={pinnedUserId === p.userId ? 'Unpin from Main Screen' : 'Pin to Main Screen'}
+                            className={cn(
+                              'rounded px-1.5 py-0.5 text-[10px] font-semibold transition',
+                              pinnedUserId === p.userId
+                                ? 'bg-[#D4A843] text-slate-950'
+                                : 'bg-white/10 text-white/75 hover:bg-white/20 hover:text-white',
+                            )}
+                          >
+                            {pinnedUserId === p.userId ? 'Main' : 'Pin'}
+                          </button>
                           {canHostControl && !isSelf && p.micOn && (
                             <button
                               type="button"

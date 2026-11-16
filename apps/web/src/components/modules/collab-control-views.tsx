@@ -320,12 +320,7 @@ export function MeetingsView() {
   const openMeetingPopup = (params: Record<string, string>): boolean => {
     if (typeof window === 'undefined') return false;
     const qs = new URLSearchParams(params).toString();
-    const winName = `yakunex-meet-${params.room || 'instant'}`;
-    const win = window.open(
-      `/meet?${qs}`,
-      winName,
-      'popup=yes,width=1360,height=860,resizable=yes',
-    );
+    const win = window.open(`/meet?${qs}`, '_blank');
     if (win) {
       win.focus();
       return true;
