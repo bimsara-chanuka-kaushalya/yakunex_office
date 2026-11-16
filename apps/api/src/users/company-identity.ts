@@ -7,6 +7,8 @@ export const COMPANY_ROLE_CODES = [
   'CTO',
   'COO',
   'CFO',
+  'ACC',
+  'ADM',
   'DIR',
   'HR',
   'PM',
@@ -51,6 +53,12 @@ export function resolveCompanyRoleCode(
   }
   if (/\b(cfo|chief\s*financial)\b/.test(t)) {
     return 'CFO';
+  }
+  if (/\b(accountant|accounts|finance\s*officer)\b/.test(t)) {
+    return 'ACC';
+  }
+  if (/\b(office\s*admin|\badmin\b)\b/.test(t)) {
+    return 'ADM';
   }
   if (/\b(hr|human\s*resources?|people\s*ops|talent)\b/.test(t)) {
     return 'HR';

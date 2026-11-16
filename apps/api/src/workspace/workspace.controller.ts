@@ -416,5 +416,109 @@ export class WorkspaceController {
   ) {
     return this.workspace.updateRolePermissions(actor, body.role, body.permissions ?? []);
   }
+
+  // ─── Organization & Hierarchy ─────────────────────────────────────────────
+  @Get('organization')
+  getOrganizationOverview(@CurrentUser() actor: AuthUser) {
+    return this.workspace.getOrganizationOverview(actor);
+  }
+
+  @Post('organization/departments')
+  @RequirePermissions(PERMISSIONS.SETTINGS_MANAGE)
+  createDepartment(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.createDepartment(actor, body);
+  }
+
+  @Patch('organization/assign-manager')
+  @RequirePermissions(PERMISSIONS.USERS_WRITE)
+  assignReportingManager(
+    @CurrentUser() actor: AuthUser,
+    @Body() body: { userId: string; managerId: string | null },
+  ) {
+    return this.workspace.assignReportingManager(actor, body.userId, body.managerId ?? null);
+  }
+
+  // ─── Approval Center ──────────────────────────────────────────────────────
+  @Get('approvals')
+  listApprovals(@CurrentUser() actor: AuthUser) {
+    return this.workspace.listApprovals(actor);
+  }
+
+  @Post('approvals')
+  createApproval(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.createApproval(actor, body);
+  }
+
+  @Patch('approvals/:id/decision')
+  decideApproval(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: { status: 'APPROVED' | 'REJECTED' | 'RETURNED'; comment?: string; source?: string },
+  ) {
+    return this.workspace.decideApproval(actor, id, body);
+  }
+
+  // ─── Finance & Payroll ────────────────────────────────────────────────────
+  @Get('finance')
+  @RequirePermissions(PERMISSIONS.FINANCIALS_READ)
+  getFinanceSummary() {
+    return this.workspace.getFinanceSummary();
+  }
+
+  @Post('finance/entries')
+  @RequirePermissions(PERMISSIONS.FINANCIALS_WRITE)
+  createFinanceEntry(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.createFinanceEntry(actor, body);
+  }
+
+  // ─── Assets ───────────────────────────────────────────────────────────────
+  @Get('assets')
+  listAssets() {
+    return this.workspace.listAssets();
+  }
+
+  @Post('assets')
+  @RequirePermissions(PERMISSIONS.USERS_WRITE)
+  createAsset(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.createAsset(actor, body);
+  }
+
+  @Patch('assets/:id')
+  @RequirePermissions(PERMISSIONS.USERS_WRITE)
+  updateAsset(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.workspace.updateAsset(actor, id, body);
+  }
+
+  // ─── Performance & Goals ──────────────────────────────────────────────────
+  @Get('performance')
+  listPerformanceReviews(@CurrentUser() actor: AuthUser) {
+    return this.workspace.listPerformanceReviews(actor);
+  }
+
+  @Post('performance')
+  createPerformanceReview(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.createPerformanceReview(actor, body);
+  }
+
+  // ─── Notifications & Announcements ────────────────────────────────────────
+  @Get('notifications')
+  listNotifications(@CurrentUser() actor: AuthUser) {
+    return this.workspace.listNotifications(actor);
+  }
+
+  @Post('notifications/announcements')
+  @RequirePermissions(PERMISSIONS.USERS_WRITE)
+  createAnnouncement(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.createAnnouncement(actor, body);
+  }
+
+  @Patch('notifications/:id/read')
+  markNotificationRead(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.markNotificationRead(actor, id);
+  }
 }
 

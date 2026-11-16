@@ -33,6 +33,13 @@ const ReportsView = dynamic(() => import('@/components/modules/collab-control-vi
 const AuditLogsView = dynamic(() => import('@/components/modules/collab-control-views').then((m) => m.AuditLogsView), { loading: ViewLoader });
 const SettingsView = dynamic(() => import('@/components/modules/collab-control-views').then((m) => m.SettingsView), { loading: ViewLoader });
 
+const OrganizationView = dynamic(() => import('@/components/modules/enterprise-views').then((m) => m.OrganizationView), { loading: ViewLoader });
+const ApprovalsView = dynamic(() => import('@/components/modules/enterprise-views').then((m) => m.ApprovalsView), { loading: ViewLoader });
+const FinanceView = dynamic(() => import('@/components/modules/enterprise-views').then((m) => m.FinanceView), { loading: ViewLoader });
+const AssetsView = dynamic(() => import('@/components/modules/enterprise-views').then((m) => m.AssetsView), { loading: ViewLoader });
+const PerformanceView = dynamic(() => import('@/components/modules/enterprise-views').then((m) => m.PerformanceView), { loading: ViewLoader });
+const NotificationsView = dynamic(() => import('@/components/modules/enterprise-views').then((m) => m.NotificationsView), { loading: ViewLoader });
+
 export default function ModulePage({ params }: { params: Promise<{ module: string }> }) {
   const { module } = use(params);
   const item = findNavItem(module);
@@ -70,6 +77,18 @@ export default function ModulePage({ params }: { params: Promise<{ module: strin
       return <AuditLogsView />;
     case 'settings':
       return <SettingsView />;
+    case 'organization':
+      return <OrganizationView />;
+    case 'approvals':
+      return <ApprovalsView />;
+    case 'finance':
+      return <FinanceView />;
+    case 'assets':
+      return <AssetsView />;
+    case 'performance':
+      return <PerformanceView />;
+    case 'notifications':
+      return <NotificationsView />;
     default:
       notFound();
   }

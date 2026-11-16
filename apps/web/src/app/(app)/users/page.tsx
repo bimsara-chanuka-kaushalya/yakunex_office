@@ -588,6 +588,8 @@ function CreateUserDialog({
     CTO: { role: 'ADMIN', title: 'Chief Technology Officer' },
     COO: { role: 'ADMIN', title: 'Chief Operating Officer' },
     CFO: { role: 'ADMIN', title: 'Chief Financial Officer' },
+    ACC: { role: 'PROJECT_MANAGER', title: 'Accountant' },
+    ADM: { role: 'ADMIN', title: 'Admin' },
     DIR: { role: 'ADMIN', title: 'Director' },
     HR: { role: 'PROJECT_MANAGER', title: 'Human Resources' },
     PM: { role: 'PROJECT_MANAGER', title: 'Project Manager' },
@@ -799,11 +801,13 @@ function CreateUserDialog({
                   <option value="CFO">CFO — Chief Financial Officer</option>
                   <option value="DIR">DIR — Dept Head / Director</option>
                 </optgroup>
-                <optgroup label="Tier 3: Management">
-                  <option value="HR">HR — Human Resources</option>
+                <optgroup label="Tier 3: Management & Department">
+                  <option value="HR">HR — HR Manager</option>
                   <option value="PM">PM — Project Manager</option>
                   <option value="PO">PO — Product Owner</option>
                   <option value="BA">BA — Business Analyst</option>
+                  <option value="ACC">ACC — Accountant</option>
+                  <option value="ADM">ADM — Office Admin</option>
                 </optgroup>
                 <optgroup label="Tier 4: Core Staff">
                   <option value="TL">Tech Lead</option>

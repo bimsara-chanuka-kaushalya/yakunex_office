@@ -188,6 +188,22 @@ export const DESIGNATION_TIER_PRESETS: DesignationTierPreset[] = [
     revokes: [P.CODE_DEPLOY],
   },
   {
+    code: 'ACC',
+    tier: 'Tier 3: Management',
+    title: 'Accountant',
+    baseRole: Role.PROJECT_MANAGER,
+    grants: [P.FINANCIALS_READ, P.FINANCIALS_WRITE, P.CHAT_USE, P.TIME_OWN],
+    revokes: [P.CODE_DEPLOY, P.USERS_ASSIGN_ROLES, P.SETTINGS_MANAGE],
+  },
+  {
+    code: 'ADM',
+    tier: 'Tier 3: Management',
+    title: 'Admin',
+    baseRole: Role.ADMIN,
+    grants: [P.USERS_READ, P.CHAT_USE, P.TIME_OWN],
+    revokes: [P.FINANCIALS_WRITE, P.USERS_MANAGE_PERMISSIONS],
+  },
+  {
     code: 'HR',
     tier: 'Tier 3: Management',
     title: 'Human Resources',

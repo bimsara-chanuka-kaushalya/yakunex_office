@@ -297,5 +297,46 @@ describe('WorkspaceService Full-System Coverage (All 14 Modules)', () => {
     ]);
     expect(matrixRes.permissions).toEqual([PERMISSIONS.TASKS_READ, PERMISSIONS.CHAT_USE]);
   });
+
+  it('covers Organization, Approval Center, Finance & Payroll, Assets, Performance & Notifications', async () => {
+    const { svc } = makeService();
+
+    const dept = svc.createDepartment(adminActor, { name: 'R&D Lab', code: 'RND', headTitle: 'CTO' });
+    expect(dept.code).toBe('RND');
+    const orgOverview = await svc.getOrganizationOverview(adminActor);
+    expect(orgOverview.departments.some((d) => d.code === 'RND')).toBe(true);
+    expect(orgOverview.hierarchy.length).toBeGreaterThanOrEqual(7);
+
+    const apr = svc.createApproval(staffActor, { type: 'EXPENSE', title: 'Cloud GPU', amount: 150 });
+    expect(apr.status).toBe('PENDING');
+    await svc.decideApproval(adminActor, apr.id, { status: 'APPROVED', comment: 'Approved by CEO' });
+    expect(svc.listApprovals(staffActor).find((a) => a.id === apr.id)?.status).toBe('APPROVED');
+
+    svc.createFinanceEntry(adminActor, { type: 'INCOME', category: 'Client Retainer', amount: 5000 });
+    svc.createFinanceEntry(adminActor, { type: 'EXPENSE', category: 'Cloud Hosting', amount: 800 });
+    const fin = svc.getFinanceSummary();
+    expect(fin.totalIncome).toBe(5000);
+    expect(fin.totalExpenses).toBe(800);
+    expect(fin.netProfit).toBe(4200);
+
+    const asset = svc.createAsset(adminActor, { name: 'MacBook Pro M4', category: 'LAPTOP', assignedToName: staffActor.fullName });
+    expect(asset.status).toBe('ASSIGNED');
+    expect(svc.listAssets().length).toBe(1);
+
+    const review = svc.createPerformanceReview(adminActor, {
+      employeeName: staffActor.fullName,
+      goalTitle: 'Deliver Q4 API',
+      completionPercent: 95,
+      rating: 5,
+    });
+    expect(review.rating).toBe(5);
+    expect(svc.listPerformanceReviews(staffActor).length).toBe(1);
+
+    const ann = svc.createAnnouncement(adminActor, { title: 'Townhall', body: 'Friday 4 PM' });
+    const inbox = svc.listNotifications(staffActor);
+    expect(inbox.some((n) => n.id === ann.id)).toBe(true);
+    await svc.markNotificationRead(staffActor, ann.id);
+    expect(svc.listNotifications(staffActor).find((n) => n.id === ann.id)?.read).toBe(true);
+  });
 });
 

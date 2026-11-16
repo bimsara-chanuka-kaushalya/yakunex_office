@@ -353,6 +353,84 @@ export class WorkspaceService implements OnModuleInit {
   private messages: ChatMessageItem[] = [];
   private meetings: MeetingItem[] = [];
 
+  private departments: Array<{
+    id: string;
+    name: string;
+    code: string;
+    headTitle: string;
+    description: string;
+    createdAt: string;
+  }> = [
+    { id: 'dept_exec', name: 'Executive Board', code: 'EXEC', headTitle: 'CEO / MD', description: 'Board of Directors, MD & Executive Operations', createdAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'dept_eng', name: 'Engineering & Product', code: 'ENG', headTitle: 'CTO', description: 'Tech Leads, Software Engineers, QA, UI/UX, DevOps & Interns', createdAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'dept_ops', name: 'Operations & Delivery', code: 'OPS', headTitle: 'COO', description: 'Project Managers, Business Analysts & Delivery Teams', createdAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'dept_fin', name: 'Finance & Accounting', code: 'FIN', headTitle: 'CFO', description: 'Financial Planning, Payroll, Invoices & Accounting', createdAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'dept_hr', name: 'HR & Administration', code: 'HR', headTitle: 'HR Manager', description: 'People Operations, Recruitment, Attendance & Office Admin', createdAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'dept_legal', name: 'Legal & Governance', code: 'LEGAL', headTitle: 'Company Secretary', description: 'Board Resolutions, Compliance & Governance', createdAt: '2026-01-01T00:00:00.000Z' },
+  ];
+  private reportingManagers: Record<string, string | null> = {};
+
+  private approvals: Array<{
+    id: string;
+    type: string;
+    title: string;
+    description: string;
+    requestedById: string;
+    requestedByName: string;
+    amount?: number;
+    status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'RETURNED';
+    decidedByName?: string | null;
+    comment?: string | null;
+    createdAt: string;
+    decidedAt?: string | null;
+  }> = [];
+
+  private financeEntries: Array<{
+    id: string;
+    type: 'INCOME' | 'EXPENSE' | 'INVOICE' | 'PAYROLL';
+    category: string;
+    description: string;
+    projectName?: string | null;
+    amount: number;
+    status: 'PAID' | 'PENDING' | 'APPROVED';
+    recordedByName: string;
+    recordedAt: string;
+  }> = [];
+
+  private assets: Array<{
+    id: string;
+    tag: string;
+    name: string;
+    category: 'LAPTOP' | 'MONITOR' | 'LICENSE' | 'MOBILE' | 'OFFICE';
+    assignedToName?: string | null;
+    condition: 'GOOD' | 'MAINTENANCE' | 'RETIRED';
+    status: 'ASSIGNED' | 'AVAILABLE' | 'REPAIR';
+    updatedAt: string;
+  }> = [];
+
+  private performanceReviews: Array<{
+    id: string;
+    employeeName: string;
+    period: string;
+    goalTitle: string;
+    completionPercent: number;
+    rating: number;
+    feedback: string;
+    reviewerName: string;
+    createdAt: string;
+  }> = [];
+
+  private notifications: Array<{
+    id: string;
+    type: 'ANNOUNCEMENT' | 'APPROVAL' | 'MEETING' | 'TASK' | 'SYSTEM';
+    title: string;
+    body: string;
+    targetUserId: string; // '*' for company-wide
+    readByIds: string[];
+    authorName: string;
+    createdAt: string;
+  }> = [];
+
   private settings: OrganizationSettings = {
     name: 'Yakunex Hub',
     slug: 'yakunex-hub',
@@ -429,6 +507,13 @@ export class WorkspaceService implements OnModuleInit {
         }
         if (Array.isArray(snap.messages)) this.messages = snap.messages as ChatMessageItem[];
         if (Array.isArray(snap.meetings)) this.meetings = snap.meetings as MeetingItem[];
+        if (Array.isArray(snap.departments) && snap.departments.length > 0) this.departments = snap.departments as WorkspaceService['departments'];
+        if (snap.reportingManagers && typeof snap.reportingManagers === 'object') this.reportingManagers = snap.reportingManagers as Record<string, string | null>;
+        if (Array.isArray(snap.approvals)) this.approvals = snap.approvals as WorkspaceService['approvals'];
+        if (Array.isArray(snap.financeEntries)) this.financeEntries = snap.financeEntries as WorkspaceService['financeEntries'];
+        if (Array.isArray(snap.assets)) this.assets = snap.assets as WorkspaceService['assets'];
+        if (Array.isArray(snap.performanceReviews)) this.performanceReviews = snap.performanceReviews as WorkspaceService['performanceReviews'];
+        if (Array.isArray(snap.notifications)) this.notifications = snap.notifications as WorkspaceService['notifications'];
         if (snap.settings && typeof snap.settings === 'object') {
           this.settings = { ...this.settings, ...(snap.settings as Partial<OrganizationSettings>) };
         }
@@ -507,6 +592,13 @@ export class WorkspaceService implements OnModuleInit {
         channels: this.channels,
         messages: this.messages,
         meetings: this.meetings,
+        departments: this.departments,
+        reportingManagers: this.reportingManagers,
+        approvals: this.approvals,
+        financeEntries: this.financeEntries,
+        assets: this.assets,
+        performanceReviews: this.performanceReviews,
+        notifications: this.notifications,
         settings: this.settings,
       } as unknown as Prisma.InputJsonValue;
 
@@ -2506,6 +2598,336 @@ export class WorkspaceService implements OnModuleInit {
       token,
       roomName: mtg.roomCode,
     };
+  }
+
+  // ─── Organization & Hierarchy ─────────────────────────────────────────────
+  async getOrganizationOverview(actor: AuthUser) {
+    let employees: Array<{
+      id: string;
+      companyId: string | null;
+      fullName: string;
+      email: string;
+      role: Role;
+      title: string | null;
+      status: string;
+      managerId: string | null;
+      department: { id: string; name: string } | null;
+    }> = [];
+    try {
+      if (this.prisma.user?.findMany) {
+        const rows = await this.prisma.user.findMany({
+          where: { organizationId: actor.organizationId, deletedAt: null },
+          orderBy: { fullName: 'asc' },
+          select: {
+            id: true,
+            companyId: true,
+            fullName: true,
+            email: true,
+            role: true,
+            title: true,
+            status: true,
+            department: { select: { id: true, name: true } },
+          },
+        });
+        employees = rows.map((r) => ({
+          ...r,
+          managerId: this.reportingManagers[r.id] ?? null,
+        }));
+      }
+    } catch {
+      // Non-fatal fallback
+    }
+    return {
+      departments: this.departments,
+      employees,
+      hierarchy: [
+        { level: 'Board of Directors / MD', leads: 'MD, Board', reportsTo: null },
+        { level: 'Executive Operations', leads: 'CEO', reportsTo: 'Board of Directors / MD' },
+        { level: 'Legal & Governance', leads: 'Company Secretary (External)', reportsTo: 'Board of Directors / MD' },
+        { level: 'Technology (CTO)', leads: 'Tech Lead -> SE, QA, UI/UX, DevOps, Interns', reportsTo: 'CEO' },
+        { level: 'Operations (COO)', leads: 'Project Manager, Business Analyst, Project Teams', reportsTo: 'CEO' },
+        { level: 'Finance (CFO)', leads: 'Accountant', reportsTo: 'CEO' },
+        { level: 'HR & Admin', leads: 'HR Manager -> Admin', reportsTo: 'CEO' },
+      ],
+    };
+  }
+
+  createDepartment(actor: AuthUser, body: Record<string, unknown>) {
+    const name = String(body.name ?? '').trim();
+    const code = String(body.code ?? '').trim().toUpperCase();
+    if (name.length < 2 || code.length < 2) {
+      throw new BadRequestException('Department name and code are required.');
+    }
+    const created = {
+      id: `dept_${randomUUID().slice(0, 8)}`,
+      name,
+      code,
+      headTitle: String(body.headTitle ?? '').trim() || 'Department Head',
+      description: String(body.description ?? '').trim() || 'Company department',
+      createdAt: new Date().toISOString(),
+    };
+    this.departments.push(created);
+    this.persistState(actor.organizationId);
+    return created;
+  }
+
+  async assignReportingManager(actor: AuthUser, userId: string, managerId: string | null) {
+    if (!userId) throw new BadRequestException('userId is required.');
+    if (userId === managerId) throw new BadRequestException('An employee cannot report to themselves.');
+    this.reportingManagers[userId] = managerId || null;
+    this.persistState(actor.organizationId);
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'REPORTING_MANAGER_UPDATED',
+      entityType: 'User',
+      entityId: userId,
+      metadata: { managerId },
+    });
+    return { ok: true, userId, managerId };
+  }
+
+  // ─── Approval Center ──────────────────────────────────────────────────────
+  listApprovals(actor: AuthUser) {
+    const isApprover = this.isManagerOrAdmin(actor);
+    const customApprovals = isApprover
+      ? this.approvals
+      : this.approvals.filter((a) => a.requestedById === actor.id);
+    const leaveAsApprovals = (isApprover
+      ? this.leaveRequests
+      : this.leaveRequests.filter((l) => l.userId === actor.id)
+    ).map((l) => ({
+      id: l.id,
+      source: 'LEAVE' as const,
+      type: `LEAVE (${l.type})`,
+      title: `${l.userName} · ${l.days} day(s)`,
+      description: `${l.startDate} to ${l.endDate} — ${l.reason}`,
+      requestedById: l.userId,
+      requestedByName: l.userName,
+      status: l.status as 'PENDING' | 'APPROVED' | 'REJECTED' | 'RETURNED',
+      decidedByName: l.approverName,
+      createdAt: l.startDate,
+    }));
+    return [
+      ...customApprovals.map((a) => ({ ...a, source: 'GENERAL' as const })),
+      ...leaveAsApprovals,
+    ];
+  }
+
+  createApproval(actor: AuthUser, body: Record<string, unknown>) {
+    const title = String(body.title ?? '').trim();
+    if (title.length < 2) throw new BadRequestException('Approval title is required.');
+    const item = {
+      id: `apr_${randomUUID().slice(0, 8)}`,
+      type: String(body.type ?? 'EXPENSE').toUpperCase(),
+      title,
+      description: String(body.description ?? '').trim() || title,
+      requestedById: actor.id,
+      requestedByName: actor.fullName,
+      amount: body.amount !== undefined ? Number(body.amount) : undefined,
+      status: 'PENDING' as const,
+      createdAt: new Date().toISOString(),
+    };
+    this.approvals.unshift(item);
+    this.notifications.unshift({
+      id: `ntf_${randomUUID().slice(0, 8)}`,
+      type: 'APPROVAL',
+      title: `New Approval Request: ${item.title}`,
+      body: `${actor.fullName} submitted a ${item.type} request.`,
+      targetUserId: '*',
+      readByIds: [actor.id],
+      authorName: actor.fullName,
+      createdAt: new Date().toISOString(),
+    });
+    this.persistState(actor.organizationId);
+    return item;
+  }
+
+  async decideApproval(
+    actor: AuthUser,
+    id: string,
+    body: { status: 'APPROVED' | 'REJECTED' | 'RETURNED'; comment?: string; source?: string },
+  ) {
+    if (!this.isManagerOrAdmin(actor)) {
+      throw new ForbiddenException('Only managers or admins can decide approvals.');
+    }
+    if (body.source === 'LEAVE' || this.leaveRequests.some((l) => l.id === id)) {
+      if (body.status === 'APPROVED' || body.status === 'REJECTED') {
+        return this.decideLeave(actor, id, { status: body.status });
+      }
+    }
+    const item = this.approvals.find((a) => a.id === id);
+    if (!item) throw new NotFoundException('Approval request not found.');
+    item.status = body.status;
+    item.decidedByName = actor.fullName;
+    item.comment = body.comment ?? null;
+    item.decidedAt = new Date().toISOString();
+    this.notifications.unshift({
+      id: `ntf_${randomUUID().slice(0, 8)}`,
+      type: 'APPROVAL',
+      title: `Request ${body.status}: ${item.title}`,
+      body: `${actor.fullName} marked your ${item.type} request as ${body.status}.`,
+      targetUserId: item.requestedById,
+      readByIds: [],
+      authorName: actor.fullName,
+      createdAt: new Date().toISOString(),
+    });
+    this.persistState(actor.organizationId);
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: `APPROVAL_${body.status}`,
+      entityType: 'Approval',
+      entityId: item.id,
+      metadata: { comment: body.comment },
+    });
+    return item;
+  }
+
+  // ─── Finance & Payroll ────────────────────────────────────────────────────
+  getFinanceSummary() {
+    const income = this.financeEntries
+      .filter((e) => e.type === 'INCOME' || e.type === 'INVOICE')
+      .reduce((s, e) => s + e.amount, 0);
+    const expenses = this.financeEntries
+      .filter((e) => e.type === 'EXPENSE')
+      .reduce((s, e) => s + e.amount, 0);
+    const payroll = this.financeEntries
+      .filter((e) => e.type === 'PAYROLL')
+      .reduce((s, e) => s + e.amount, 0);
+    return {
+      totalIncome: income,
+      totalExpenses: expenses,
+      totalPayroll: payroll,
+      netProfit: income - expenses - payroll,
+      entries: this.financeEntries,
+    };
+  }
+
+  createFinanceEntry(actor: AuthUser, body: Record<string, unknown>) {
+    const amount = Number(body.amount ?? 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestException('Amount must be greater than zero.');
+    }
+    const entry = {
+      id: `fin_${randomUUID().slice(0, 8)}`,
+      type: (String(body.type ?? 'EXPENSE').toUpperCase() as 'INCOME' | 'EXPENSE' | 'INVOICE' | 'PAYROLL'),
+      category: String(body.category ?? 'General').trim(),
+      description: String(body.description ?? '').trim() || 'Financial record',
+      projectName: body.projectName ? String(body.projectName).trim() : null,
+      amount,
+      status: (String(body.status ?? 'APPROVED').toUpperCase() as 'PAID' | 'PENDING' | 'APPROVED'),
+      recordedByName: actor.fullName,
+      recordedAt: new Date().toISOString(),
+    };
+    this.financeEntries.unshift(entry);
+    this.persistState(actor.organizationId);
+    return entry;
+  }
+
+  // ─── Assets ───────────────────────────────────────────────────────────────
+  listAssets() {
+    return this.assets;
+  }
+
+  createAsset(actor: AuthUser, body: Record<string, unknown>) {
+    const name = String(body.name ?? '').trim();
+    if (name.length < 2) throw new BadRequestException('Asset name is required.');
+    const item = {
+      id: `ast_${randomUUID().slice(0, 8)}`,
+      tag: String(body.tag ?? `YNX-AST-${String(this.assets.length + 1).padStart(3, '0')}`).toUpperCase(),
+      name,
+      category: (String(body.category ?? 'LAPTOP').toUpperCase() as 'LAPTOP' | 'MONITOR' | 'LICENSE' | 'MOBILE' | 'OFFICE'),
+      assignedToName: body.assignedToName ? String(body.assignedToName).trim() : null,
+      condition: (String(body.condition ?? 'GOOD').toUpperCase() as 'GOOD' | 'MAINTENANCE' | 'RETIRED'),
+      status: body.assignedToName ? ('ASSIGNED' as const) : ('AVAILABLE' as const),
+      updatedAt: new Date().toISOString(),
+    };
+    this.assets.unshift(item);
+    this.persistState(actor.organizationId);
+    return item;
+  }
+
+  updateAsset(actor: AuthUser, id: string, body: Record<string, unknown>) {
+    const item = this.assets.find((a) => a.id === id);
+    if (!item) throw new NotFoundException('Asset not found.');
+    if (body.assignedToName !== undefined) {
+      item.assignedToName = body.assignedToName ? String(body.assignedToName).trim() : null;
+      item.status = item.assignedToName ? 'ASSIGNED' : 'AVAILABLE';
+    }
+    if (body.condition) item.condition = String(body.condition).toUpperCase() as typeof item.condition;
+    if (body.status) item.status = String(body.status).toUpperCase() as typeof item.status;
+    item.updatedAt = new Date().toISOString();
+    this.persistState(actor.organizationId);
+    return item;
+  }
+
+  // ─── Performance & Goals ──────────────────────────────────────────────────
+  listPerformanceReviews(actor: AuthUser) {
+    if (this.isManagerOrAdmin(actor)) return this.performanceReviews;
+    return this.performanceReviews.filter(
+      (r) => r.employeeName === actor.fullName || r.reviewerName === actor.fullName,
+    );
+  }
+
+  createPerformanceReview(actor: AuthUser, body: Record<string, unknown>) {
+    const goalTitle = String(body.goalTitle ?? '').trim();
+    if (goalTitle.length < 2) throw new BadRequestException('Goal title is required.');
+    const item = {
+      id: `prf_${randomUUID().slice(0, 8)}`,
+      employeeName: String(body.employeeName ?? actor.fullName).trim(),
+      period: String(body.period ?? '2026-Q4').trim(),
+      goalTitle,
+      completionPercent: Math.min(100, Math.max(0, Number(body.completionPercent ?? 0))),
+      rating: Math.min(5, Math.max(1, Number(body.rating ?? 4))),
+      feedback: String(body.feedback ?? '').trim() || 'On track',
+      reviewerName: actor.fullName,
+      createdAt: new Date().toISOString(),
+    };
+    this.performanceReviews.unshift(item);
+    this.persistState(actor.organizationId);
+    return item;
+  }
+
+  // ─── Notifications & Announcements ────────────────────────────────────────
+  listNotifications(actor: AuthUser) {
+    return this.notifications
+      .filter((n) => n.targetUserId === '*' || n.targetUserId === actor.id)
+      .map((n) => ({
+        ...n,
+        read: n.readByIds.includes(actor.id),
+      }));
+  }
+
+  createAnnouncement(actor: AuthUser, body: Record<string, unknown>) {
+    const title = String(body.title ?? '').trim();
+    const message = String(body.body ?? '').trim();
+    if (title.length < 2 || !message) {
+      throw new BadRequestException('Announcement title and message are required.');
+    }
+    const item = {
+      id: `ntf_${randomUUID().slice(0, 8)}`,
+      type: 'ANNOUNCEMENT' as const,
+      title,
+      body: message,
+      targetUserId: '*',
+      readByIds: [actor.id],
+      authorName: actor.fullName,
+      createdAt: new Date().toISOString(),
+    };
+    this.notifications.unshift(item);
+    this.persistState(actor.organizationId);
+    return item;
+  }
+
+  markNotificationRead(actor: AuthUser, id: string) {
+    const item = this.notifications.find((n) => n.id === id);
+    if (!item) throw new NotFoundException('Notification not found.');
+    if (!item.readByIds.includes(actor.id)) {
+      item.readByIds.push(actor.id);
+      this.persistState(actor.organizationId);
+    }
+    return { ok: true, id };
   }
 }
 

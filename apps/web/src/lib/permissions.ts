@@ -15,6 +15,12 @@ export const PERMISSIONS = {
   TIME_APPROVE: 'time:approve',
   LEAVE_APPROVE: 'leave:approve',
   CHAT_USE: 'chat:use',
+  LEGAL_READ: 'legal:read',
+  LEGAL_WRITE: 'legal:write',
+  FINANCIALS_READ: 'financials:read',
+  FINANCIALS_WRITE: 'financials:write',
+  CODE_READ: 'code:read',
+  CODE_DEPLOY: 'code:deploy',
 } as const;
 
 export type Role = 'SUPER_ADMIN' | 'ADMIN' | 'PROJECT_MANAGER' | 'STAFF' | 'INTERN';
