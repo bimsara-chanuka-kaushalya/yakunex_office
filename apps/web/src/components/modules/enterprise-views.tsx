@@ -349,9 +349,14 @@ interface FinancePayload {
 }
 
 interface PayrollEmployeeRow {
+  userId?: string;
   userName: string;
-  hours: number;
-  entries: number;
+  totalMinutes?: number;
+  regularMinutes?: number;
+  overtimeMinutes?: number;
+  billableMinutes?: number;
+  approvedMinutes?: number;
+  hours?: number;
 }
 
 export function FinanceView() {
@@ -495,17 +500,27 @@ export function FinanceView() {
             <p className="p-6 text-sm text-muted">No timesheet hours logged yet for payroll calculation.</p>
           ) : (
             payrollRows.map((emp) => {
-              const regularHours = Math.min(emp.hours, 160);
-              const otHours = Math.max(0, emp.hours - 160);
+              const totalHours =
+                typeof emp.totalMinutes === 'number'
+                  ? emp.totalMinutes / 60
+                  : Number(emp.hours ?? 0);
+              const regularHours =
+                typeof emp.regularMinutes === 'number'
+                  ? emp.regularMinutes / 60
+                  : Math.min(totalHours, 160);
+              const otHours =
+                typeof emp.overtimeMinutes === 'number'
+                  ? emp.overtimeMinutes / 60
+                  : Math.max(0, totalHours - 160);
               const regularPay = regularHours * hourlyRate;
               const otPay = otHours * hourlyRate * 1.5;
               const grossPay = regularPay + otPay;
               return (
-                <div key={emp.userName} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 text-sm">
+                <div key={emp.userId ?? emp.userName} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 text-sm">
                   <div>
                     <p className="font-semibold text-ink">{emp.userName}</p>
                     <p className="text-xs text-muted">
-                      {emp.hours.toFixed(1)}h logged ({regularHours.toFixed(1)}h reg · {otHours.toFixed(1)}h OT) · {emp.entries} entries
+                      {totalHours.toFixed(1)}h logged ({regularHours.toFixed(1)}h reg · {otHours.toFixed(1)}h OT)
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
@@ -520,7 +535,7 @@ export function FinanceView() {
                           generatedByEmail: user?.email,
                           generatedByName: user?.fullName,
                           kpis: [
-                            { label: 'Total Hours', value: `${emp.hours.toFixed(1)}h` },
+                            { label: 'Total Hours', value: `${totalHours.toFixed(1)}h` },
                             { label: 'Regular Pay', value: `$${regularPay.toFixed(2)}` },
                             { label: 'Overtime (1.5x)', value: `$${otPay.toFixed(2)}` },
                             { label: 'Gross Payout', value: `$${grossPay.toFixed(2)}` },
@@ -529,7 +544,7 @@ export function FinanceView() {
                           rows: [
                             ['Regular Hours', `${regularHours.toFixed(1)}h`, `$${hourlyRate.toFixed(2)}/hr`, `$${regularPay.toFixed(2)}`],
                             ['Overtime Hours (1.5x)', `${otHours.toFixed(1)}h`, `$${(hourlyRate * 1.5).toFixed(2)}/hr`, `$${otPay.toFixed(2)}`],
-                            ['Total Gross Compensation', `${emp.hours.toFixed(1)}h`, '—', `$${grossPay.toFixed(2)}`],
+                            ['Total Gross Compensation', `${totalHours.toFixed(1)}h`, '—', `$${grossPay.toFixed(2)}`],
                           ],
                         })
                       }
