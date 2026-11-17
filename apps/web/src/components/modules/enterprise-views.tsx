@@ -9,6 +9,7 @@ import {
   Check,
   CheckCircle2,
   DollarSign,
+  Download,
   Laptop,
   Network,
   Plus,
@@ -23,6 +24,7 @@ import { Field, Input, Select } from '@/components/ui/field';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/components/providers';
 import { api, patch, post } from '@/lib/api';
+import { exportBrandedPdf } from '@/lib/pdf-export';
 import { PERMISSIONS } from '@/lib/permissions';
 
 // ─── 1. Organization & Hierarchy View ────────────────────────────────────────
@@ -347,7 +349,7 @@ interface FinancePayload {
 }
 
 export function FinanceView() {
-  const { can } = useAuth();
+  const { user, can } = useAuth();
   const [data, setData] = useState<FinancePayload | null>(null);
   const [type, setType] = useState<'INCOME' | 'EXPENSE' | 'INVOICE' | 'PAYROLL'>('INCOME');
   const [category, setCategory] = useState('');
@@ -376,9 +378,38 @@ export function FinanceView() {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h2 className="font-display text-3xl font-semibold">Finance &amp; Payroll</h2>
-        <p className="mt-1 text-sm text-muted">Authorized company revenue, expenses, invoices, and payroll ledger.</p>
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 className="font-display text-3xl font-semibold">Finance &amp; Payroll</h2>
+          <p className="mt-1 text-sm text-muted">Authorized company revenue, expenses, invoices, and payroll ledger.</p>
+        </div>
+        <Button
+          variant="secondary"
+          onClick={() =>
+            exportBrandedPdf({
+              title: 'Financial Summary & Ledger Report',
+              subtitle: 'Yakunex Technologies — Authorized Finance & Payroll Statement',
+              generatedByEmail: user?.email,
+              generatedByName: user?.fullName,
+              kpis: [
+                { label: 'Revenue / Invoices', value: `$${data.totalIncome.toLocaleString()}` },
+                { label: 'Expenses', value: `$${data.totalExpenses.toLocaleString()}` },
+                { label: 'Payroll', value: `$${data.totalPayroll.toLocaleString()}` },
+                { label: 'Net Profit', value: `$${data.netProfit.toLocaleString()}` },
+              ],
+              columns: ['Type', 'Category', 'Description', 'Recorded By', 'Amount'],
+              rows: data.entries.map((e) => [
+                e.type,
+                e.category,
+                e.description || '—',
+                e.recordedByName,
+                `$${e.amount.toLocaleString()}`,
+              ]),
+            })
+          }
+        >
+          <Download className="h-4 w-4" /> Export Finance PDF
+        </Button>
       </header>
 
       <div className="grid gap-4 sm:grid-cols-4">

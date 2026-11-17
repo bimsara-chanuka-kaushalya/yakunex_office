@@ -196,6 +196,12 @@ export class WorkspaceController {
     return this.workspace.clockOut(actor);
   }
 
+  @Post('attendance/kiosk')
+  @RequirePermissions(PERMISSIONS.TIME_APPROVE)
+  kioskAttendance(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.kioskClockAction(actor, body);
+  }
+
   // ─── Leave ────────────────────────────────────────────────────────────────
   @Get('leave')
   listLeave(@CurrentUser() actor: AuthUser) {

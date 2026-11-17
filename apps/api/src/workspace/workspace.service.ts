@@ -1810,6 +1810,27 @@ export class WorkspaceService implements OnModuleInit {
     return record;
   }
 
+  kioskClockAction(actor: AuthUser, body: Record<string, unknown>) {
+    const targetUserId = String(body.targetUserId ?? '').trim();
+    const targetUserName = String(body.targetUserName ?? '').trim();
+    const action = String(body.action ?? 'CLOCK_IN').toUpperCase();
+    if (!targetUserId || !targetUserName) {
+      throw new BadRequestException('Target employee is required for Kiosk attendance.');
+    }
+    const targetActor: AuthUser = {
+      ...actor,
+      id: targetUserId,
+      fullName: targetUserName,
+    };
+    if (action === 'BREAK') return this.toggleBreak(targetActor);
+    if (action === 'CLOCK_OUT') return this.clockOut(targetActor);
+    return this.clockIn(targetActor, {
+      ...body,
+      notes: String(body.notes ?? '').trim() || `Kiosk check-in by ${actor.fullName}`,
+      deviceType: 'Jibble Kiosk Terminal',
+    });
+  }
+
   // ─── Leave ────────────────────────────────────────────────────────────────
   listLeave(actor?: AuthUser) {
     if (!actor || this.isManagerOrAdmin(actor)) {

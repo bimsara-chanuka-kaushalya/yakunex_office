@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   CheckSquare,
   Clock,
+  Download,
   FileText,
   FolderKanban,
   Kanban,
@@ -32,6 +33,7 @@ import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api, del, patch, post } from '@/lib/api';
+import { exportBrandedPdf } from '@/lib/pdf-export';
 import { PERMISSIONS } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 
@@ -1819,6 +1821,7 @@ interface DocumentRow {
 }
 
 export function DocumentsView() {
+  const { user } = useAuth();
   const [docs, setDocs] = useState<DocumentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -1853,14 +1856,33 @@ export function DocumentsView() {
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h2 className="font-display text-3xl font-semibold">Documents & Specifications</h2>
+          <h2 className="font-display text-3xl font-semibold">Documents &amp; Specifications</h2>
           <p className="mt-1 text-sm text-muted">
             Versioned SRS documents, API contracts, proposals and technical deliverables.
           </p>
         </div>
-        <Button onClick={() => setModalOpen(true)}>
-          <Plus className="h-4 w-4" /> Register document
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="secondary"
+            disabled={docs.length === 0}
+            onClick={() =>
+              exportBrandedPdf({
+                title: 'Project Documents & Specifications Register',
+                subtitle: 'Official Yakunex Hub document catalog',
+                generatedByEmail: user?.email,
+                generatedByName: user?.fullName,
+                kpis: [{ label: 'Total Documents', value: String(docs.length) }],
+                columns: ['Title', 'Type', 'Version', 'Project', 'Folder', 'Uploaded By'],
+                rows: docs.map((d) => [d.title, d.type, `v${d.version}`, d.projectName, d.folder, d.uploadedByName]),
+              })
+            }
+          >
+            <Download className="h-4 w-4" /> Export Catalog PDF
+          </Button>
+          <Button onClick={() => setModalOpen(true)}>
+            <Plus className="h-4 w-4" /> Register document
+          </Button>
+        </div>
       </header>
 
       {loading ? (
@@ -1889,7 +1911,33 @@ export function DocumentsView() {
                 <span>
                   {doc.projectName} · Uploaded by {doc.uploadedByName}
                 </span>
-                <span>{(doc.sizeBytes / 1024).toFixed(0)} KB</span>
+                <div className="flex items-center gap-2">
+                  <span>{(doc.sizeBytes / 1024).toFixed(0)} KB</span>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() =>
+                      exportBrandedPdf({
+                        title: doc.title,
+                        subtitle: `${doc.type} · Version v${doc.version} · Project: ${doc.projectName}`,
+                        generatedByEmail: user?.email,
+                        generatedByName: user?.fullName,
+                        kpis: [
+                          { label: 'Document Type', value: doc.type },
+                          { label: 'Version', value: `v${doc.version}` },
+                          { label: 'Visibility', value: doc.visibility },
+                          { label: 'Author', value: doc.uploadedByName },
+                        ],
+                        sections: [
+                          { heading: 'Folder Path', body: doc.folder },
+                          { heading: 'Executive Summary & Specification', body: doc.summary },
+                        ],
+                      })
+                    }
+                  >
+                    <Download className="h-3.5 w-3.5" /> PDF
+                  </Button>
+                </div>
               </div>
             </Card>
           ))}

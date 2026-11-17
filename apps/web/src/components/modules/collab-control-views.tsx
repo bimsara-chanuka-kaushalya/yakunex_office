@@ -40,6 +40,7 @@ import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api, del, liveGet, patch, post, put } from '@/lib/api';
+import { exportBrandedPdf } from '@/lib/pdf-export';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 
@@ -1389,6 +1390,7 @@ interface ReportsData {
 }
 
 export function ReportsView() {
+  const { user } = useAuth();
   const [data, setData] = useState<ReportsData | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -1445,11 +1447,77 @@ export function ReportsView() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" onClick={exportTimesheetCsv} disabled={!data?.timesheetSummary?.length}>
-            <Download className="h-4 w-4" /> Export Timesheet CSV
+          <Button
+            variant="secondary"
+            disabled={!data?.timesheetSummary?.length}
+            onClick={() => {
+              if (!data?.timesheetSummary) return;
+              exportBrandedPdf({
+                title: 'Timesheet, Overtime & Attendance Report',
+                subtitle: 'Jibble-style Regular vs Overtime (>8h/day), Billable & GPS Verification Summary',
+                generatedByEmail: user?.email,
+                generatedByName: user?.fullName,
+                columns: ['Employee', 'Total (h)', 'Regular (h)', 'Overtime (h)', 'Billable (h)', 'Approved (h)', 'Breaks (m)', 'Late / GPS'],
+                rows: data.timesheetSummary.map((r) => [
+                  r.userName,
+                  (r.totalMinutes / 60).toFixed(1),
+                  (r.regularMinutes / 60).toFixed(1),
+                  (r.overtimeMinutes / 60).toFixed(1),
+                  (r.billableMinutes / 60).toFixed(1),
+                  (r.approvedMinutes / 60).toFixed(1),
+                  r.breakMinutes,
+                  `${r.lateCount} late / ${r.gpsVerifiedCount} GPS`,
+                ]),
+              });
+            }}
+          >
+            <Download className="h-4 w-4" /> Timesheet PDF
           </Button>
-          <Button onClick={exportCsv} disabled={!data}>
-            <Download className="h-4 w-4" /> Export Delivery CSV
+          <Button
+            disabled={!data}
+            onClick={() => {
+              if (!data) return;
+              exportBrandedPdf({
+                title: 'Executive Delivery & Utilization Report',
+                subtitle: 'Project portfolio progress, hours logged & contract budgets',
+                generatedByEmail: user?.email,
+                generatedByName: user?.fullName,
+                kpis: [
+                  {
+                    label: 'Avg Completion',
+                    value: `${Math.round(
+                      data.projectProgress.reduce((s, p) => s + p.progressPercent, 0) /
+                        Math.max(1, data.projectProgress.length),
+                    )}%`,
+                  },
+                  { label: 'Billable Hours', value: `${(data.totalBillableMinutes / 60).toFixed(1)}h` },
+                  {
+                    label: 'Total Budget',
+                    value: `LKR ${(
+                      data.projectProgress.reduce((s, p) => s + p.budget, 0) / 1_000_000
+                    ).toFixed(1)}M`,
+                  },
+                ],
+                columns: ['Code', 'Project', 'Client', 'Status', 'Tasks', 'Hours', 'Progress'],
+                rows: data.projectProgress.map((p) => [
+                  p.code,
+                  p.name,
+                  p.clientName,
+                  p.status,
+                  `${p.completedTasks}/${p.totalTasks}`,
+                  `${p.hoursLogged}h`,
+                  `${p.progressPercent}%`,
+                ]),
+              });
+            }}
+          >
+            <Download className="h-4 w-4" /> Delivery PDF
+          </Button>
+          <Button variant="secondary" onClick={exportTimesheetCsv} disabled={!data?.timesheetSummary?.length}>
+            <Download className="h-4 w-4" /> CSV
+          </Button>
+          <Button variant="secondary" onClick={exportCsv} disabled={!data}>
+            <Download className="h-4 w-4" /> Delivery CSV
           </Button>
         </div>
       </header>

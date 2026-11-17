@@ -31,6 +31,7 @@ import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api, ApiError, patch, post } from '@/lib/api';
+import { exportBrandedPdf } from '@/lib/pdf-export';
 import { PERMISSIONS } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 
@@ -132,6 +133,7 @@ async function captureBrowserGps(): Promise<{
 }
 
 export function TimeTrackerView() {
+  const { user } = useAuth();
   const [tab, setTab] = useState<'timer' | 'weekly'>('timer');
   const [activeTimer, setActiveTimer] = useState<TimeEntry | null>(null);
   const [entries, setEntries] = useState<TimeEntry[]>([]);
@@ -407,8 +409,39 @@ export function TimeTrackerView() {
               Weekly Timesheet
             </button>
           </div>
+          <Button
+            variant="secondary"
+            disabled={entries.length === 0}
+            onClick={() =>
+              exportBrandedPdf({
+                title: 'Time Tracker & Timesheet Report',
+                subtitle: 'Logged work hours, billable status & approval state',
+                generatedByEmail: user?.email,
+                generatedByName: user?.fullName,
+                kpis: [
+                  { label: 'Today', value: formatMins(summary.todayMinutes) },
+                  { label: 'This Week', value: formatMins(summary.weekMinutes) },
+                  { label: 'This Month', value: formatMins(summary.monthMinutes) },
+                  { label: 'Approved', value: formatMins(summary.approvedMinutes) },
+                ],
+                columns: ['Date', 'Person', 'Project', 'Task', 'Category', 'Status', 'Billable', 'Duration'],
+                rows: entries.map((e) => [
+                  new Date(e.startedAt).toISOString().slice(0, 10),
+                  e.userName,
+                  e.projectName,
+                  e.taskTitle,
+                  e.workCategory ?? 'Development',
+                  e.status ?? (e.endedAt ? 'SAVED' : 'RUNNING'),
+                  e.billable ? 'Yes' : 'No',
+                  `${e.durationMinutes} min`,
+                ]),
+              })
+            }
+          >
+            <Download className="h-4 w-4" /> Export PDF
+          </Button>
           <Button variant="secondary" onClick={exportCsv} disabled={entries.length === 0}>
-            <Download className="h-4 w-4" /> Export CSV
+            <Download className="h-4 w-4" /> CSV
           </Button>
           <Button variant="secondary" onClick={() => setManualOpen(true)}>
             <Plus className="h-4 w-4" /> Log manual time
@@ -506,6 +539,20 @@ export function TimeTrackerView() {
           </div>
         </div>
         {error && <p className="mt-3 text-xs text-danger">{error}</p>}
+        <div className="mt-4 border-t border-line/60 pt-3">
+          <div className="flex items-center justify-between text-xs text-muted">
+            <span>Daily Shift Target (8h Regular)</span>
+            <span className="font-mono font-semibold text-ink">
+              {formatMins(summary.todayMinutes)} / 8h 0m ({Math.min(100, Math.round((summary.todayMinutes / 480) * 100))}%)
+            </span>
+          </div>
+          <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-ink/[0.07] dark:bg-white/[0.1]">
+            <div
+              className="h-full rounded-full bg-gold transition-all duration-300"
+              style={{ width: `${Math.min(100, Math.round((summary.todayMinutes / 480) * 100))}%` }}
+            />
+          </div>
+        </div>
       </Card>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -843,26 +890,38 @@ interface LiveBoardMember {
 }
 
 export function AttendanceView() {
+  const { user, can } = useAuth();
+  const canKiosk = can(PERMISSIONS.TIME_APPROVE);
   const [todayRecord, setTodayRecord] = useState<AttendanceRow | null>(null);
   const [records, setRecords] = useState<AttendanceRow[]>([]);
   const [liveBoard, setLiveBoard] = useState<LiveBoardMember[]>([]);
+  const [employees, setEmployees] = useState<Array<{ id: string; fullName: string; companyId: string | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [notes, setNotes] = useState('');
   const [workMode, setWorkMode] = useState<'OFFICE' | 'REMOTE' | 'FIELD'>('OFFICE');
   const [gpsStatus, setGpsStatus] = useState<string>('GPS ready');
   const [error, setError] = useState<string | null>(null);
+  const [kioskOpen, setKioskOpen] = useState(false);
+  const [kioskUserId, setKioskUserId] = useState('');
+  const [kioskAction, setKioskAction] = useState<'CLOCK_IN' | 'BREAK' | 'CLOCK_OUT'>('CLOCK_IN');
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api<{
-        todayRecord: AttendanceRow | null;
-        records: AttendanceRow[];
-        liveBoard?: LiveBoardMember[];
-      }>('/attendance');
+      const [res, org] = await Promise.all([
+        api<{
+          todayRecord: AttendanceRow | null;
+          records: AttendanceRow[];
+          liveBoard?: LiveBoardMember[];
+        }>('/attendance'),
+        api<{ employees?: Array<{ id: string; fullName: string; companyId: string | null }> }>('/organization').catch(() => ({ employees: [] })),
+      ]);
       setTodayRecord(res.todayRecord);
       setRecords(res.records);
       setLiveBoard(Array.isArray(res.liveBoard) ? res.liveBoard : []);
+      const emps = Array.isArray(org?.employees) ? org.employees : [];
+      setEmployees(emps);
+      if (emps.length > 0) setKioskUserId((prev) => prev || emps[0].id);
     } finally {
       setLoading(false);
     }
@@ -922,6 +981,27 @@ export function AttendanceView() {
     }
   }
 
+  async function submitKiosk(e: FormEvent) {
+    e.preventDefault();
+    const target = employees.find((emp) => emp.id === kioskUserId);
+    if (!target) return;
+    setError(null);
+    try {
+      const gps = await captureBrowserGps();
+      await post('/attendance/kiosk', {
+        targetUserId: target.id,
+        targetUserName: target.fullName,
+        action: kioskAction,
+        workMode,
+        ...(gps ? { latitude: gps.latitude, longitude: gps.longitude, locationLabel: `${gps.latitude.toFixed(4)}, ${gps.longitude.toFixed(4)}` } : {}),
+      });
+      setKioskOpen(false);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Kiosk action failed.');
+    }
+  }
+
   const isClockedIn = Boolean(todayRecord?.clockInAt && !todayRecord?.clockOutAt);
 
   return (
@@ -930,12 +1010,52 @@ export function AttendanceView() {
         <div>
           <h2 className="font-display text-3xl font-semibold">Attendance &amp; Live Location</h2>
           <p className="mt-1 text-sm text-muted">
-            Jibble-style GPS clock-in/out, Office/Remote/Field work modes, break tracking &amp; live team board.
+            Jibble-style GPS clock-in/out, Office/Remote/Field work modes, Kiosk terminal &amp; live team board.
           </p>
         </div>
-        <div className="flex items-center gap-2 rounded-full bg-ink/[0.05] px-3 py-1.5 text-xs text-muted dark:bg-white/[0.08]">
-          <Navigation className="h-3.5 w-3.5 text-gold-strong dark:text-gold" />
-          <span>{gpsStatus}</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2 rounded-full bg-ink/[0.05] px-3 py-1.5 text-xs text-muted dark:bg-white/[0.08]">
+            <Navigation className="h-3.5 w-3.5 text-gold-strong dark:text-gold" />
+            <span>{gpsStatus}</span>
+          </div>
+          {canKiosk && employees.length > 0 && (
+            <Button variant="secondary" size="sm" onClick={() => setKioskOpen(true)}>
+              Kiosk Mode
+            </Button>
+          )}
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={records.length === 0}
+            onClick={() =>
+              exportBrandedPdf({
+                title: 'Team Attendance & Live GPS Register',
+                subtitle: 'Clock-in/out, work mode, break duration & GPS check-in coordinates',
+                generatedByEmail: user?.email,
+                generatedByName: user?.fullName,
+                kpis: [
+                  { label: 'Live Clocked In', value: String(liveBoard.length) },
+                  { label: 'Total Records', value: String(records.length) },
+                ],
+                columns: ['Employee', 'Date', 'Mode', 'Clock In', 'Clock Out', 'Location', 'Breaks'],
+                rows: records.map((r) => [
+                  r.userName,
+                  r.workDate,
+                  r.workMode ?? 'OFFICE',
+                  r.clockInAt
+                    ? new Date(r.clockInAt).toLocaleTimeString('en-LK', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Colombo' })
+                    : '—',
+                  r.clockOutAt
+                    ? new Date(r.clockOutAt).toLocaleTimeString('en-LK', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Colombo' })
+                    : 'Active',
+                  r.locationLabel ?? '—',
+                  `${r.breakMinutes}m`,
+                ]),
+              })
+            }
+          >
+            <Download className="h-3.5 w-3.5" /> Export PDF
+          </Button>
         </div>
       </header>
 
@@ -1170,6 +1290,31 @@ export function AttendanceView() {
           </div>
         )}
       </Card>
+
+      <Modal open={kioskOpen} title="Jibble Kiosk — Team Clock-In / Out" onClose={() => setKioskOpen(false)}>
+        <form onSubmit={submitKiosk} className="space-y-4">
+          <Field label="Employee" htmlFor="ksk-emp">
+            <Select id="ksk-emp" value={kioskUserId} onChange={(e) => setKioskUserId(e.target.value)}>
+              {employees.map((emp) => (
+                <option key={emp.id} value={emp.id}>
+                  {emp.companyId ? `${emp.companyId} · ` : ''}{emp.fullName}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Action" htmlFor="ksk-act">
+            <Select id="ksk-act" value={kioskAction} onChange={(e) => setKioskAction(e.target.value as typeof kioskAction)}>
+              <option value="CLOCK_IN">Clock In (GPS)</option>
+              <option value="BREAK">Toggle Break</option>
+              <option value="CLOCK_OUT">Clock Out</option>
+            </Select>
+          </Field>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setKioskOpen(false)}>Cancel</Button>
+            <Button type="submit">Confirm Kiosk Action</Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }
