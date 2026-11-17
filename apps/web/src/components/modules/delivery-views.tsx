@@ -5,26 +5,33 @@ import {
   AlertTriangle,
   Bug,
   Building2,
+  Calendar,
   CheckCircle2,
+  CheckSquare,
+  Clock,
   FileText,
   FolderKanban,
   Kanban,
   List,
+  ListChecks,
   Mail,
   MapPin,
+  MessageSquare,
   Phone,
   Plus,
   Repeat,
   Search,
+  Trash2,
 } from 'lucide-react';
 import { useAuth } from '@/components/providers';
+import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, StatCard } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
-import { api, patch, post } from '@/lib/api';
+import { api, del, patch, post } from '@/lib/api';
 import { PERMISSIONS } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 
@@ -453,6 +460,8 @@ interface TaskRow {
   assigneeName: string;
   dueDate: string;
   labels: string[];
+  subtasks?: Array<{ id: string; title: string; done: boolean }>;
+  comments?: Array<{ id: string; authorName: string; body: string; createdAt: string }>;
 }
 
 const KANBAN_COLUMNS: Array<{ key: TaskRow['status']; label: string }> = [
@@ -464,7 +473,7 @@ const KANBAN_COLUMNS: Array<{ key: TaskRow['status']; label: string }> = [
 ];
 
 export function TasksView() {
-  const { can } = useAuth();
+  const { user, can } = useAuth();
   const canWrite = can(PERMISSIONS.TASKS_WRITE);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
@@ -472,7 +481,22 @@ export function TasksView() {
   const [viewMode, setViewMode] = useState<'kanban' | 'list'>('kanban');
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
+  const [priorityFilter, setPriorityFilter] = useState('');
+  const [onlyMine, setOnlyMine] = useState(false);
+  const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+
+  // Task Detail Inspector state
+  const [selectedTask, setSelectedTask] = useState<TaskRow | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const [editAssignee, setEditAssignee] = useState('');
+  const [editPriority, setEditPriority] = useState<TaskRow['priority']>('MEDIUM');
+  const [editStatus, setEditStatus] = useState<TaskRow['status']>('TODO');
+  const [editActualHours, setEditActualHours] = useState('0');
+  const [editDueDate, setEditDueDate] = useState('');
+  const [newSubtask, setNewSubtask] = useState('');
+  const [newComment, setNewComment] = useState('');
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -489,6 +513,7 @@ export function TasksView() {
       const [t, p] = await Promise.all([api<TaskRow[]>('/tasks'), api<ProjectRow[]>('/projects')]);
       setTasks(t);
       setProjects(p);
+      setSelectedTask((prev) => (prev ? (t.find((x) => x.id === prev.id) ?? null) : null));
       if (p.length > 0) {
         setProjectId((prev) => prev || p[0].id);
       }
@@ -500,6 +525,19 @@ export function TasksView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  function openTaskDetail(task: TaskRow) {
+    setSelectedTask(task);
+    setEditTitle(task.title);
+    setEditDesc(task.description);
+    setEditAssignee(task.assigneeName);
+    setEditPriority(task.priority);
+    setEditStatus(task.status);
+    setEditActualHours(String(task.actualHours ?? 0));
+    setEditDueDate(task.dueDate ? task.dueDate.slice(0, 10) : '');
+    setNewSubtask('');
+    setNewComment('');
+  }
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -524,8 +562,74 @@ export function TasksView() {
     await load();
   }
 
+  async function saveTaskDetails(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedTask) return;
+    await patch(`/tasks/${selectedTask.id}`, {
+      title: editTitle,
+      description: editDesc,
+      assigneeName: editAssignee,
+      priority: editPriority,
+      status: editStatus,
+      actualHours: Number(editActualHours) || 0,
+      dueDate: editDueDate,
+    });
+    await load();
+  }
+
+  async function handleAddSubtask(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedTask || !newSubtask.trim()) return;
+    const next = [
+      ...(selectedTask.subtasks ?? []),
+      { id: `sub_${Date.now()}`, title: newSubtask.trim(), done: false },
+    ];
+    await patch(`/tasks/${selectedTask.id}`, { subtasks: next });
+    setNewSubtask('');
+    await load();
+  }
+
+  async function handleToggleSubtask(subId: string) {
+    if (!selectedTask) return;
+    const next = (selectedTask.subtasks ?? []).map((s) =>
+      s.id === subId ? { ...s, done: !s.done } : s,
+    );
+    await patch(`/tasks/${selectedTask.id}`, { subtasks: next });
+    await load();
+  }
+
+  async function handleAddComment(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedTask || !newComment.trim()) return;
+    const next = [
+      ...(selectedTask.comments ?? []),
+      {
+        id: `cmt_${Date.now()}`,
+        authorName: user?.fullName ?? 'Team Member',
+        body: newComment.trim(),
+        createdAt: new Date().toISOString(),
+      },
+    ];
+    await patch(`/tasks/${selectedTask.id}`, { comments: next });
+    setNewComment('');
+    await load();
+  }
+
+  async function handleDeleteTask(id: string) {
+    await del(`/tasks/${id}`);
+    setSelectedTask(null);
+    await load();
+  }
+
   const filtered = tasks.filter((t) => {
     if (projectFilter && t.projectId !== projectFilter) return false;
+    if (priorityFilter && t.priority !== priorityFilter) return false;
+    if (onlyMine && user) {
+      const meLower = user.fullName.toLowerCase();
+      if (!t.assigneeName.toLowerCase().includes(meLower) && !meLower.includes(t.assigneeName.toLowerCase())) {
+        return false;
+      }
+    }
     if (search) {
       const q = search.toLowerCase();
       return (
@@ -537,34 +641,36 @@ export function TasksView() {
     return true;
   });
 
+  const inProgressCount = tasks.filter((t) => t.status === 'IN_PROGRESS').length;
+  const reviewQaCount = tasks.filter((t) => t.status === 'IN_REVIEW' || t.status === 'TESTING').length;
+  const completedCount = tasks.filter((t) => t.status === 'COMPLETED').length;
+
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h2 className="font-display text-3xl font-semibold">Tasks & Kanban</h2>
+          <h2 className="font-display text-3xl font-semibold">Tasks &amp; Kanban</h2>
           <p className="mt-1 text-sm text-muted">
-            Track engineering tasks, story points, estimates and sprint progress.
+            Click any task to open subtasks, activity comments &amp; progress — or drag cards across columns.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="flex rounded-lg border border-line bg-surface p-0.5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="segmented" role="radiogroup" aria-label="Task view mode">
             <button
               type="button"
+              role="radio"
+              aria-checked={viewMode === 'kanban'}
               onClick={() => setViewMode('kanban')}
-              className={cn(
-                'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
-                viewMode === 'kanban' ? 'bg-gold/15 text-gold' : 'text-muted hover:text-ink',
-              )}
+              className="inline-flex items-center gap-1.5"
             >
               <Kanban className="h-3.5 w-3.5" /> Board
             </button>
             <button
               type="button"
+              role="radio"
+              aria-checked={viewMode === 'list'}
               onClick={() => setViewMode('list')}
-              className={cn(
-                'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors',
-                viewMode === 'list' ? 'bg-gold/15 text-gold' : 'text-muted hover:text-ink',
-              )}
+              className="inline-flex items-center gap-1.5"
             >
               <List className="h-3.5 w-3.5" /> List
             </button>
@@ -577,21 +683,48 @@ export function TasksView() {
         </div>
       </header>
 
+      <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4 sm:gap-4">
+        <StatCard
+          label="Total tasks"
+          value={tasks.length}
+          hint={`${filtered.length} matching current filters`}
+          icon={<ListChecks className="h-4 w-4" />}
+        />
+        <StatCard
+          label="In progress"
+          value={inProgressCount}
+          hint="Active engineering work"
+          icon={<Clock className="h-4 w-4" />}
+        />
+        <StatCard
+          label="Review & QA"
+          value={reviewQaCount}
+          hint="In review or QA testing"
+          icon={<CheckSquare className="h-4 w-4" />}
+        />
+        <StatCard
+          label="Completed"
+          value={completedCount}
+          hint={tasks.length > 0 ? `${Math.round((completedCount / tasks.length) * 100)}% completion rate` : 'No tasks yet'}
+          icon={<CheckCircle2 className="h-4 w-4" />}
+        />
+      </div>
+
       <Card className="p-4">
-        <div className="flex flex-col gap-3 md:flex-row">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center">
           <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
             <Input
               placeholder="Search tasks by title, code or assignee…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-9"
+              className="pl-10"
             />
           </div>
           <Select
             value={projectFilter}
             onChange={(e) => setProjectFilter(e.target.value)}
-            className="md:w-64"
+            className="md:w-56"
           >
             <option value="">All projects</option>
             {projects.map((p) => (
@@ -600,6 +733,25 @@ export function TasksView() {
               </option>
             ))}
           </Select>
+          <Select
+            value={priorityFilter}
+            onChange={(e) => setPriorityFilter(e.target.value)}
+            className="md:w-40"
+          >
+            <option value="">All priorities</option>
+            <option value="CRITICAL">Critical</option>
+            <option value="HIGH">High</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="LOW">Low</option>
+          </Select>
+          <Button
+            type="button"
+            variant={onlyMine ? 'primary' : 'secondary'}
+            size="sm"
+            onClick={() => setOnlyMine((v) => !v)}
+          >
+            My tasks
+          </Button>
         </div>
       </Card>
 
@@ -616,64 +768,77 @@ export function TasksView() {
             return (
               <div
                 key={col.key}
-                className="flex flex-col rounded-2xl border border-line bg-canvas/60 p-3"
+                onDragOver={(e) => {
+                  if (canWrite) e.preventDefault();
+                }}
+                onDrop={() => {
+                  if (canWrite && draggedTaskId) {
+                    void moveTask(draggedTaskId, col.key);
+                    setDraggedTaskId(null);
+                  }
+                }}
+                className="flex min-h-[260px] flex-col rounded-[20px] bg-ink/[0.03] p-3 dark:bg-white/[0.03]"
               >
-                <div className="mb-3 flex items-center justify-between px-1">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-muted">
+                <div className="mb-3 flex items-center justify-between px-1.5">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
                     {col.label}
                   </span>
                   <Badge>{colTasks.length}</Badge>
                 </div>
                 <div className="space-y-3">
-                  {colTasks.map((task) => (
-                    <Card key={task.id} className="p-3.5 shadow-sm">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-mono text-[11px] text-muted">{task.code}</span>
-                        <Badge
-                          tone={
-                            task.priority === 'CRITICAL'
-                              ? 'danger'
-                              : task.priority === 'HIGH'
-                                ? 'warning'
-                                : 'neutral'
-                          }
-                        >
-                          {task.priority}
-                        </Badge>
+                  {colTasks.map((task) => {
+                    const subs = task.subtasks ?? [];
+                    const subsDone = subs.filter((s) => s.done).length;
+                    return (
+                      <div
+                        key={task.id}
+                        draggable={canWrite}
+                        onDragStart={() => setDraggedTaskId(task.id)}
+                        onClick={() => openTaskDetail(task)}
+                        className="cursor-pointer"
+                      >
+                        <Card hoverable className="p-3.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-mono text-[11px] font-medium text-muted">{task.code}</span>
+                            <Badge
+                              tone={
+                                task.priority === 'CRITICAL'
+                                  ? 'danger'
+                                  : task.priority === 'HIGH'
+                                    ? 'warning'
+                                    : 'neutral'
+                              }
+                            >
+                              {task.priority}
+                            </Badge>
+                          </div>
+                          <p className="mt-2 text-[14px] font-semibold leading-snug text-ink">{task.title}</p>
+                          <p className="mt-1 line-clamp-2 text-xs text-muted">{task.description}</p>
+                          {subs.length > 0 && (
+                            <div className="mt-2.5 flex items-center gap-2 text-[11px] text-muted">
+                              <CheckSquare className="h-3 w-3 text-gold-strong dark:text-gold" />
+                              <span>{subsDone}/{subs.length} subtasks</span>
+                              <div className="h-1 flex-1 overflow-hidden rounded-full bg-ink/[0.07] dark:bg-white/[0.1]">
+                                <div
+                                  className="h-full rounded-full bg-gold"
+                                  style={{ width: `${Math.round((subsDone / subs.length) * 100)}%` }}
+                                />
+                              </div>
+                            </div>
+                          )}
+                          <div className="mt-3 flex items-center justify-between border-t border-line/70 pt-2.5 text-xs text-muted">
+                            <div className="flex items-center gap-1.5">
+                              <Avatar name={task.assigneeName} size="xs" />
+                              <span className="truncate max-w-[90px]">{task.assigneeName.split(' ')[0]}</span>
+                            </div>
+                            <span className="font-mono text-[11px]">
+                              {task.storyPoints} pts · {task.actualHours}/{task.estimatedHours}h
+                            </span>
+                          </div>
+                        </Card>
                       </div>
-                      <p className="mt-2 text-sm font-medium text-ink">{task.title}</p>
-                      <p className="mt-1 line-clamp-2 text-xs text-muted">{task.description}</p>
-                      <div className="mt-3 flex flex-wrap gap-1">
-                        {task.labels.map((lbl) => (
-                          <span
-                            key={lbl}
-                            className="rounded bg-canvas px-1.5 py-0.5 text-[10px] text-muted"
-                          >
-                            #{lbl}
-                          </span>
-                        ))}
-                      </div>
-                      <div className="mt-3 flex items-center justify-between border-t border-line pt-2.5 text-xs text-muted">
-                        <span>{task.assigneeName.split(' ')[0]}</span>
-                        <span>
-                          {task.storyPoints} pts · {task.actualHours}/{task.estimatedHours}h
-                        </span>
-                      </div>
-                      {canWrite && (
-                        <Select
-                          value={task.status}
-                          onChange={(e) => moveTask(task.id, e.target.value as TaskRow['status'])}
-                          className="mt-2.5 h-8 text-xs"
-                        >
-                          {KANBAN_COLUMNS.map((c) => (
-                            <option key={c.key} value={c.key}>
-                              {c.label}
-                            </option>
-                          ))}
-                        </Select>
-                      )}
-                    </Card>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -694,13 +859,22 @@ export function TasksView() {
             </thead>
             <tbody className="divide-y divide-line">
               {filtered.map((task) => (
-                <tr key={task.id} className="hover:bg-canvas/40">
+                <tr
+                  key={task.id}
+                  onClick={() => openTaskDetail(task)}
+                  className="cursor-pointer transition-colors hover:bg-ink/[0.03] dark:hover:bg-white/[0.04]"
+                >
                   <td className="px-5 py-3.5">
                     <p className="font-mono text-xs text-muted">{task.code}</p>
                     <p className="font-medium text-ink">{task.title}</p>
                   </td>
                   <td className="px-5 py-3.5 text-xs text-muted">{task.projectName}</td>
-                  <td className="px-5 py-3.5 text-xs">{task.assigneeName}</td>
+                  <td className="px-5 py-3.5 text-xs">
+                    <div className="flex items-center gap-2">
+                      <Avatar name={task.assigneeName} size="xs" />
+                      <span>{task.assigneeName}</span>
+                    </div>
+                  </td>
                   <td className="px-5 py-3.5">
                     <Badge
                       tone={
@@ -714,15 +888,15 @@ export function TasksView() {
                       {task.priority}
                     </Badge>
                   </td>
-                  <td className="px-5 py-3.5 text-xs text-muted">
+                  <td className="px-5 py-3.5 font-mono text-xs text-muted">
                     {task.actualHours}/{task.estimatedHours}h · {task.storyPoints} pts
                   </td>
-                  <td className="px-5 py-3.5">
+                  <td className="px-5 py-3.5" onClick={(e) => e.stopPropagation()}>
                     {canWrite ? (
                       <Select
                         value={task.status}
                         onChange={(e) => moveTask(task.id, e.target.value as TaskRow['status'])}
-                        className="h-8 w-36 text-xs"
+                        className="h-9 w-36 text-xs"
                       >
                         {KANBAN_COLUMNS.map((c) => (
                           <option key={c.key} value={c.key}>
@@ -740,6 +914,194 @@ export function TasksView() {
           </table>
         </Card>
       )}
+
+      {/* Task Detail Inspector Modal (Subtasks, Comments, Status & Quick Edit) */}
+      <Modal
+        open={Boolean(selectedTask)}
+        title={selectedTask ? `${selectedTask.code} · ${selectedTask.projectName}` : 'Task Details'}
+        onClose={() => setSelectedTask(null)}
+      >
+        {selectedTask && (
+          <div className="space-y-5">
+            {/* Quick Status Pills */}
+            {canWrite && (
+              <div>
+                <p className="mb-1.5 text-xs font-medium text-muted">Move Status</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {KANBAN_COLUMNS.map((c) => (
+                    <button
+                      key={c.key}
+                      type="button"
+                      onClick={() => {
+                        setEditStatus(c.key);
+                        void moveTask(selectedTask.id, c.key);
+                      }}
+                      className={cn(
+                        'rounded-full px-3 py-1 text-xs font-semibold transition-all',
+                        selectedTask.status === c.key
+                          ? 'bg-gold text-gold-ink shadow-2xs'
+                          : 'bg-ink/[0.06] text-muted hover:text-ink dark:bg-white/[0.09]',
+                      )}
+                    >
+                      {c.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <form onSubmit={saveTaskDetails} className="space-y-3.5">
+              <Field label="Title" htmlFor="ed-title">
+                <Input
+                  id="ed-title"
+                  disabled={!canWrite}
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                />
+              </Field>
+              <Field label="Description" htmlFor="ed-desc">
+                <textarea
+                  id="ed-desc"
+                  rows={3}
+                  disabled={!canWrite}
+                  value={editDesc}
+                  onChange={(e) => setEditDesc(e.target.value)}
+                  className="w-full rounded-[12px] bg-ink/[0.05] p-3 text-sm text-ink focus:bg-surface focus:outline-none focus:ring-4 focus:ring-gold/20 dark:bg-white/[0.08] dark:focus:bg-raised disabled:opacity-60"
+                />
+              </Field>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Assignee" htmlFor="ed-asgn">
+                  <Input
+                    id="ed-asgn"
+                    disabled={!canWrite}
+                    value={editAssignee}
+                    onChange={(e) => setEditAssignee(e.target.value)}
+                  />
+                </Field>
+                <Field label="Priority" htmlFor="ed-prio">
+                  <Select
+                    id="ed-prio"
+                    disabled={!canWrite}
+                    value={editPriority}
+                    onChange={(e) => setEditPriority(e.target.value as TaskRow['priority'])}
+                  >
+                    <option value="LOW">Low</option>
+                    <option value="MEDIUM">Medium</option>
+                    <option value="HIGH">High</option>
+                    <option value="CRITICAL">Critical</option>
+                  </Select>
+                </Field>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Logged Hours" htmlFor="ed-hrs">
+                  <Input
+                    id="ed-hrs"
+                    type="number"
+                    min={0}
+                    disabled={!canWrite}
+                    value={editActualHours}
+                    onChange={(e) => setEditActualHours(e.target.value)}
+                  />
+                </Field>
+                <Field label="Due Date" htmlFor="ed-due">
+                  <div className="relative">
+                    <Calendar className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" />
+                    <Input
+                      id="ed-due"
+                      type="date"
+                      disabled={!canWrite}
+                      value={editDueDate}
+                      onChange={(e) => setEditDueDate(e.target.value)}
+                      className="pl-9"
+                    />
+                  </div>
+                </Field>
+              </div>
+              {canWrite && (
+                <div className="flex items-center justify-between pt-1">
+                  <Button
+                    type="button"
+                    variant="danger"
+                    size="sm"
+                    onClick={() => void handleDeleteTask(selectedTask.id)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> Delete Task
+                  </Button>
+                  <Button type="submit" size="sm">Save Changes</Button>
+                </div>
+              )}
+            </form>
+
+            {/* Subtasks Checklist */}
+            <div className="border-t border-line/70 pt-4">
+              <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted">
+                <CheckSquare className="h-3.5 w-3.5 text-gold-strong dark:text-gold" />
+                Subtasks ({(selectedTask.subtasks ?? []).filter((s) => s.done).length}/
+                {(selectedTask.subtasks ?? []).length})
+              </p>
+              <div className="space-y-1.5">
+                {(selectedTask.subtasks ?? []).map((sub) => (
+                  <label
+                    key={sub.id}
+                    className="flex cursor-pointer items-center gap-2.5 rounded-xl bg-ink/[0.04] px-3 py-2 text-sm dark:bg-white/[0.06]"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={sub.done}
+                      disabled={!canWrite}
+                      onChange={() => void handleToggleSubtask(sub.id)}
+                    />
+                    <span className={cn(sub.done && 'line-through text-muted')}>{sub.title}</span>
+                  </label>
+                ))}
+              </div>
+              {canWrite && (
+                <form onSubmit={handleAddSubtask} className="mt-2.5 flex gap-2">
+                  <Input
+                    placeholder="Add a subtask…"
+                    value={newSubtask}
+                    onChange={(e) => setNewSubtask(e.target.value)}
+                  />
+                  <Button type="submit" size="sm" variant="secondary">Add</Button>
+                </form>
+              )}
+            </div>
+
+            {/* Comments */}
+            <div className="border-t border-line/70 pt-4">
+              <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted">
+                <MessageSquare className="h-3.5 w-3.5 text-gold-strong dark:text-gold" />
+                Comments ({(selectedTask.comments ?? []).length})
+              </p>
+              <div className="max-h-40 space-y-2 overflow-y-auto">
+                {(selectedTask.comments ?? []).map((c) => (
+                  <div key={c.id} className="rounded-xl bg-ink/[0.04] px-3 py-2 text-xs dark:bg-white/[0.06]">
+                    <div className="flex items-center justify-between text-muted">
+                      <strong className="text-ink">{c.authorName}</strong>
+                      <span>
+                        {new Date(c.createdAt).toLocaleTimeString('en-LK', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          timeZone: 'Asia/Colombo',
+                        })}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-ink">{c.body}</p>
+                  </div>
+                ))}
+              </div>
+              <form onSubmit={handleAddComment} className="mt-2.5 flex gap-2">
+                <Input
+                  placeholder="Write a comment or progress update…"
+                  value={newComment}
+                  onChange={(e) => setNewComment(e.target.value)}
+                />
+                <Button type="submit" size="sm" variant="secondary">Post</Button>
+              </form>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Modal open={modalOpen} title="Create task" onClose={() => setModalOpen(false)}>
         <form onSubmit={onCreate} className="space-y-4">

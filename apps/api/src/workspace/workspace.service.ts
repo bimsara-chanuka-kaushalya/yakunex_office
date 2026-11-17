@@ -98,6 +98,8 @@ export interface TaskItem {
   assigneeEmail: string;
   dueDate: string;
   labels: string[];
+  subtasks?: Array<{ id: string; title: string; done: boolean }>;
+  comments?: Array<{ id: string; authorName: string; body: string; createdAt: string }>;
 }
 
 export interface BugItem {
@@ -1247,7 +1249,16 @@ export class WorkspaceService implements OnModuleInit {
     if (!task) throw new NotFoundException('Task not found.');
     if (body.status) task.status = body.status as TaskItem['status'];
     if (body.priority) task.priority = body.priority as TaskItem['priority'];
-    if (body.assigneeName) task.assigneeName = String(body.assigneeName);
+    if (body.assigneeName !== undefined) task.assigneeName = String(body.assigneeName);
+    if (body.title !== undefined && String(body.title).trim()) task.title = String(body.title).trim();
+    if (body.description !== undefined) task.description = String(body.description);
+    if (body.dueDate !== undefined) task.dueDate = String(body.dueDate);
+    if (body.storyPoints !== undefined) task.storyPoints = Number(body.storyPoints) || 0;
+    if (body.estimatedHours !== undefined) task.estimatedHours = Number(body.estimatedHours) || 0;
+    if (body.actualHours !== undefined) task.actualHours = Number(body.actualHours) || 0;
+    if (Array.isArray(body.labels)) task.labels = body.labels.map(String);
+    if (Array.isArray(body.subtasks)) task.subtasks = body.subtasks as TaskItem['subtasks'];
+    if (Array.isArray(body.comments)) task.comments = body.comments as TaskItem['comments'];
     this.persistState();
     void this.prisma.task?.updateMany?.({
       where: { id: task.id },
