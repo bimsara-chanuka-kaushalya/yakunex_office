@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { ArrowLeft, ChevronRight, LogOut, Menu, Monitor, Moon, Search, Sun } from 'lucide-react';
+import { ChevronRight, LogOut, Menu, Monitor, Moon, Search, Sun } from 'lucide-react';
 import { useAuth, useLang, useTheme, type ThemeChoice } from '@/components/providers';
 import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -77,21 +77,8 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
           <Menu className="h-5 w-5" />
         </button>
 
-        {/* Back button & Breadcrumbs */}
+        {/* Breadcrumbs */}
         <div className="flex items-center gap-2.5">
-          {segment !== 'dashboard' ? (
-            <button
-              type="button"
-              onClick={() => router.push('/dashboard')}
-              className="flex items-center gap-1.5 rounded-full bg-ink/[0.05] px-3 py-1.5 text-xs font-semibold text-ink transition-all hover:bg-ink/[0.09] dark:bg-white/[0.09] dark:hover:bg-white/[0.14]"
-              title={t('backToDashboard')}
-              aria-label={t('backToDashboard')}
-            >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">{t('back')}</span>
-            </button>
-          ) : null}
-
           <div className="flex items-center gap-1.5 text-xs font-medium text-muted">
             <span className="hidden sm:inline">Yakunex</span>
             <ChevronRight className="hidden h-3 w-3 text-muted/60 sm:inline" />
