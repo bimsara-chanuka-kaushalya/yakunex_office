@@ -822,23 +822,49 @@ export function ProfileView() {
       .catch(() => undefined);
   }, []);
 
+  async function compressAvatarToDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Could not read image file.'));
+      reader.onload = () => {
+        const rawUrl = String(reader.result ?? '');
+        const img = new Image();
+        img.onerror = () => resolve(rawUrl);
+        img.onload = () => {
+          const maxSize = 256;
+          const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(rawUrl);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL('image/jpeg', 0.84));
+        };
+        img.src = rawUrl;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
   async function handleDpFile(file: File | undefined) {
     if (!file) return;
     setError(null);
     setNotice(null);
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const dataUrl = String(reader.result ?? '');
-        await patch('/profile/dp', { avatarUrl: dataUrl });
-        setNotice('Profile picture updated!');
-        await load();
-        void reload();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to update DP.');
-      }
-    };
-    reader.readAsDataURL(file);
+    try {
+      const dataUrl = await compressAvatarToDataUrl(file);
+      const updated = await patch<EmployeeProfilePayload>('/profile/dp', { avatarUrl: dataUrl });
+      applyProfileState(updated);
+      setNotice('Profile picture updated!');
+      void reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update DP.');
+    }
   }
 
   async function requestFieldApproval(field: 'nicNumber' | 'phone', newValue: string) {
@@ -957,7 +983,11 @@ export function ProfileView() {
                     type="file"
                     accept="image/*"
                     className="hidden"
-                    onChange={(e) => void handleDpFile(e.target.files?.[0])}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      e.target.value = '';
+                      void handleDpFile(f);
+                    }}
                   />
                 </label>
               )}

@@ -3506,10 +3506,10 @@ export class WorkspaceService implements OnModuleInit {
     }
     const prev = this.userProfiles[actor.id] ?? {};
     this.userProfiles[actor.id] = { ...prev, avatarDataUrl: clean };
-    this.persistState(actor.organizationId);
+    await this.persistStateNow(actor.organizationId);
     await this.prisma.user?.update?.({
       where: { id: actor.id },
-      data: { avatarUrl: clean.startsWith('data:') ? null : clean },
+      data: { avatarUrl: clean },
     }).catch(() => undefined);
     return this.getEmployeeProfile(actor, actor.id);
   }
