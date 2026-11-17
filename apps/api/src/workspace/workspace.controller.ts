@@ -338,6 +338,12 @@ export class WorkspaceController {
   }
 
   // ─── Meetings (Built-in Yakunex Hub Meet Engine) ──────────────────────────
+  @Get('meetings/access-policy')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  getMeetingAccessPolicy(@CurrentUser() actor: AuthUser) {
+    return this.workspace.resolveMeetingAccessPolicy(actor);
+  }
+
   @Get('meetings')
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   listMeetings(@CurrentUser() actor: AuthUser) {
@@ -464,7 +470,7 @@ export class WorkspaceController {
   hostMeetingAction(
     @CurrentUser() actor: AuthUser,
     @Param('id') id: string,
-    @Body() body: { action: 'mute' | 'mute-all'; targetUserId?: string },
+    @Body() body: { action: 'mute' | 'mute-all' | 'admit' | 'remove' | 'approve-screenshare'; targetUserId?: string },
   ) {
     return this.workspace.hostMeetingAction(actor, id, body);
   }

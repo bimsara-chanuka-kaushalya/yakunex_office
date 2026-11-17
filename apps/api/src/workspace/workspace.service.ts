@@ -288,12 +288,26 @@ export interface MeetingItem {
   roomCode: string;
   projectId: string | null;
   projectName: string;
+  organizerId?: string;
   organizerName: string;
   title: string;
   agenda: string;
   startsAt: string;
   endsAt: string;
   status: 'LIVE' | 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
+  meetingScope?: 'BOARD' | 'LEGAL' | 'DEPT' | 'PROJECT' | 'HR' | 'INTERNAL';
+  allowExternalGuests?: boolean;
+  recordingAllowed?: boolean;
+  waitingRoomEnabled?: boolean;
+  waitingRoom?: Array<{
+    userId: string;
+    fullName: string;
+    companyId?: string | null;
+    role: string;
+    requestedAt: string;
+  }>;
+  coHostIds?: string[];
+  screenShareApprovedIds?: string[];
   attendeeCount: number;
   notes: string;
   participants: MeetingParticipant[];
@@ -2407,6 +2421,125 @@ export class WorkspaceService implements OnModuleInit {
     return this.appendMeetingSignalsBatch(meetingId, [signal], organizationId);
   }
 
+  resolveMeetingAccessPolicy(actor: AuthUser) {
+    const titleLower = String((actor as AuthUser & { title?: string | null }).title ?? '').toLowerCase();
+    const cid = String(actor.companyId ?? '').toUpperCase();
+
+    // Tier 1: Super Admin (MD, CEO)
+    if (actor.role === Role.SUPER_ADMIN || cid.includes('-MD-') || cid.includes('-CEO-') || /\b(md|managing director|ceo)\b/.test(titleLower)) {
+      return {
+        tier: 'Tier 1: Super Admin',
+        rolesLabel: 'MD, CEO',
+        canCreate: true,
+        createLabel: 'Full Access (All Meetings)',
+        allowedScopes: ['BOARD', 'LEGAL', 'DEPT', 'PROJECT', 'HR', 'INTERNAL'] as const,
+        waitingRoomControl: 'AUTO_OVERRIDE' as const,
+        waitingRoomLabel: 'Full Control (Auto Admin Override)',
+        canInviteExternal: true,
+        recordingScope: 'ALL' as const,
+        externalAndRecordingLabel: 'External Invite + All Recordings',
+        screenShareRequiresApproval: false,
+      };
+    }
+
+    // Tier 1B: Legal Admin (Company Secretary)
+    if (cid.includes('-SEC-') || cid.includes('-LGL-') || /\b(company secretary|legal)\b/.test(titleLower)) {
+      return {
+        tier: 'Tier 1B: Legal Admin',
+        rolesLabel: 'Company Secretary',
+        canCreate: true,
+        createLabel: 'Board & Legal Meetings Only',
+        allowedScopes: ['BOARD', 'LEGAL', 'INTERNAL'] as const,
+        waitingRoomControl: 'BOARD_HOST' as const,
+        waitingRoomLabel: 'Host / Co-Host Control (Board Only)',
+        canInviteExternal: true,
+        recordingScope: 'LEGAL' as const,
+        externalAndRecordingLabel: 'Board Guests + Legal Recordings',
+        screenShareRequiresApproval: false,
+      };
+    }
+
+    // Tier 2: C-Level / Dept Heads (CTO, COO, CFO)
+    if (
+      actor.role === Role.ADMIN ||
+      cid.includes('-CTO-') ||
+      cid.includes('-COO-') ||
+      cid.includes('-CFO-') ||
+      /\b(cto|coo|cfo|department head)\b/.test(titleLower)
+    ) {
+      return {
+        tier: 'Tier 2: C-Level / Dept Heads',
+        rolesLabel: 'CTO, COO, CFO',
+        canCreate: true,
+        createLabel: 'Full Access (Dept & Cross-Dept)',
+        allowedScopes: ['DEPT', 'PROJECT', 'HR', 'INTERNAL'] as const,
+        waitingRoomControl: 'HOSTED' as const,
+        waitingRoomLabel: 'Full Control (In Hosted Meetings)',
+        canInviteExternal: true,
+        recordingScope: 'DEPT' as const,
+        externalAndRecordingLabel: 'External Invite + Dept Recordings',
+        screenShareRequiresApproval: false,
+      };
+    }
+
+    // Tier 3: Management (HR, PM, BA, PO)
+    if (
+      actor.role === Role.PROJECT_MANAGER ||
+      cid.includes('-HR-') ||
+      cid.includes('-PM-') ||
+      cid.includes('-BA-') ||
+      cid.includes('-PO-') ||
+      /\b(hr|human resource|project manager|business analyst|product owner)\b/.test(titleLower)
+    ) {
+      return {
+        tier: 'Tier 3: Management',
+        rolesLabel: 'HR, PM, BA, PO',
+        canCreate: true,
+        createLabel: 'Full Create & Host (Project / HR)',
+        allowedScopes: ['PROJECT', 'HR', 'INTERNAL'] as const,
+        waitingRoomControl: 'HOST_COHOST' as const,
+        waitingRoomLabel: 'Full Control (Host / Assigned Co-Host)',
+        canInviteExternal: true,
+        recordingScope: 'OWN' as const,
+        externalAndRecordingLabel: 'Client / Candidate Invite + Own Recordings',
+        screenShareRequiresApproval: false,
+      };
+    }
+
+    // Tier 5: Trainees (Interns)
+    if (actor.role === Role.INTERN || cid.includes('-INT-')) {
+      return {
+        tier: 'Tier 5: Trainees',
+        rolesLabel: 'Interns',
+        canCreate: false,
+        createLabel: 'Join Only (Invited Meetings)',
+        allowedScopes: [] as const,
+        waitingRoomControl: 'NONE' as const,
+        waitingRoomLabel: 'None (Cannot Admit or Remove)',
+        canInviteExternal: false,
+        recordingScope: 'NONE' as const,
+        externalAndRecordingLabel: 'Internal Join Only (Screen Share: Host Approval)',
+        screenShareRequiresApproval: true,
+      };
+    }
+
+    // Tier 4: Core Staff (Tech Lead, SE, QA, UI/UX, DevOps)
+    const isTechLead = cid.includes('-TL-') || /\btech\s*lead\b/.test(titleLower);
+    return {
+      tier: 'Tier 4: Core Staff',
+      rolesLabel: 'Tech Lead, SE, QA, UI/UX, DevOps',
+      canCreate: true,
+      createLabel: isTechLead ? 'Tech Lead: Full' : 'Internal Calls Only',
+      allowedScopes: (isTechLead ? ['PROJECT', 'INTERNAL'] : ['INTERNAL']) as readonly string[],
+      waitingRoomControl: (isTechLead ? 'HOST' : 'COHOST') as 'HOST' | 'COHOST',
+      waitingRoomLabel: isTechLead ? 'Tech Lead: Host Control' : 'Co-Host Only',
+      canInviteExternal: false,
+      recordingScope: 'NONE' as const,
+      externalAndRecordingLabel: 'Internal Only (No External / No Recording)',
+      screenShareRequiresApproval: false,
+    };
+  }
+
   async listMeetings(organizationId?: string) {
     await this.syncMeetingsFromDb(organizationId);
     return this.meetings;
@@ -2420,9 +2553,23 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   async scheduleMeeting(actor: AuthUser, body: Record<string, unknown>) {
+    const policy = this.resolveMeetingAccessPolicy(actor);
+    if (!policy.canCreate) {
+      throw new ForbiddenException('Trainees / Interns have Join Only meeting access and cannot create meetings.');
+    }
     await this.syncMeetingsFromDb(actor.organizationId, true);
     const title = String(body.title ?? '').trim();
     if (title.length < 2) throw new BadRequestException('Meeting title is required.');
+
+    const requestedScope = String(body.meetingScope ?? policy.allowedScopes[0] ?? 'INTERNAL').toUpperCase() as NonNullable<MeetingItem['meetingScope']>;
+    if (!(policy.allowedScopes as readonly string[]).includes(requestedScope)) {
+      throw new ForbiddenException(`${policy.tier} cannot create ${requestedScope} meetings (${policy.createLabel}).`);
+    }
+
+    const allowExternalGuests = Boolean(body.allowExternalGuests) && policy.canInviteExternal;
+    const recordingAllowed = Boolean(body.recordingAllowed) && policy.recordingScope !== 'NONE';
+    const waitingRoomEnabled = body.waitingRoomEnabled !== undefined ? Boolean(body.waitingRoomEnabled) : false;
+
     const project = this.projects.find((p) => p.id === body.projectId) ?? null;
     let roomCode = `YH-ROOM-${Math.floor(100 + Math.random() * 900)}`;
     while (this.meetings.some((m) => m.roomCode === roomCode)) {
@@ -2436,12 +2583,20 @@ export class WorkspaceService implements OnModuleInit {
       roomCode,
       projectId: project?.id ?? null,
       projectName: project?.name ?? 'General / All-Hands',
+      organizerId: actor.id,
       organizerName: actor.fullName,
       title,
       agenda: String(body.agenda ?? '').trim() || 'Live team sync & screen share session',
       startsAt: String(body.startsAt || new Date().toISOString()),
       endsAt: String(body.endsAt || new Date(Date.now() + 3600000).toISOString()),
       status: instant ? 'LIVE' : 'SCHEDULED',
+      meetingScope: requestedScope,
+      allowExternalGuests,
+      recordingAllowed,
+      waitingRoomEnabled,
+      waitingRoom: [],
+      coHostIds: Array.isArray(body.coHostIds) ? body.coHostIds.map(String) : [],
+      screenShareApprovedIds: [],
       attendeeCount: instant ? 1 : 0,
       notes: String(body.notes ?? '').trim(),
       participants: instant
@@ -2641,7 +2796,16 @@ export class WorkspaceService implements OnModuleInit {
       if (body.micOn !== undefined) participant.micOn = Boolean(body.micOn);
       if (body.camOn !== undefined) participant.camOn = Boolean(body.camOn);
       if (body.screenSharing !== undefined) {
-        participant.screenSharing = Boolean(body.screenSharing);
+        const wantShare = Boolean(body.screenSharing);
+        const policy = this.resolveMeetingAccessPolicy(actor);
+        if (
+          wantShare &&
+          policy.screenShareRequiresApproval &&
+          !mtg.screenShareApprovedIds?.includes(actor.id)
+        ) {
+          throw new ForbiddenException('Trainees / Interns require Host Approval before screen sharing.');
+        }
+        participant.screenSharing = wantShare;
         if (!participant.screenSharing) participant.screenStreamId = null;
       }
       if (body.screenStreamId !== undefined) {
@@ -2656,14 +2820,70 @@ export class WorkspaceService implements OnModuleInit {
   async hostMeetingAction(
     actor: AuthUser,
     id: string,
-    body: { action: 'mute' | 'mute-all'; targetUserId?: string },
+    body: { action: 'mute' | 'mute-all' | 'admit' | 'remove' | 'approve-screenshare'; targetUserId?: string },
   ) {
     await this.syncMeetingsFromDb(actor.organizationId, true);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
-    const canHost = this.isManagerOrAdmin(actor) || mtg.organizerName === actor.fullName;
+    const policy = this.resolveMeetingAccessPolicy(actor);
+    if (policy.waitingRoomControl === 'NONE') {
+      throw new ForbiddenException('Trainees cannot run host or waiting room controls.');
+    }
+    const isHostOrCoHost =
+      mtg.organizerId === actor.id ||
+      mtg.organizerName === actor.fullName ||
+      Boolean(mtg.coHostIds?.includes(actor.id));
+    const canHost =
+      policy.waitingRoomControl === 'AUTO_OVERRIDE' ||
+      (policy.waitingRoomControl === 'BOARD_HOST' &&
+        isHostOrCoHost &&
+        (mtg.meetingScope === 'BOARD' || mtg.meetingScope === 'LEGAL')) ||
+      ((policy.waitingRoomControl === 'HOSTED' ||
+        policy.waitingRoomControl === 'HOST_COHOST' ||
+        policy.waitingRoomControl === 'HOST' ||
+        policy.waitingRoomControl === 'COHOST') &&
+        isHostOrCoHost) ||
+      this.isManagerOrAdmin(actor);
     if (!canHost) {
-      throw new BadRequestException('Only the host or a manager/admin can run host controls.');
+      throw new ForbiddenException('You do not have host or waiting room control for this meeting.');
+    }
+
+    if (body.action === 'admit' && body.targetUserId) {
+      const waiting = mtg.waitingRoom ?? [];
+      const entry = waiting.find((w) => w.userId === body.targetUserId);
+      mtg.waitingRoom = waiting.filter((w) => w.userId !== body.targetUserId);
+      if (entry && !mtg.participants.some((p) => p.userId === entry.userId)) {
+        mtg.participants.push({
+          userId: entry.userId,
+          companyId: entry.companyId ?? null,
+          fullName: entry.fullName,
+          role: entry.role,
+          micOn: false,
+          camOn: true,
+          screenSharing: false,
+          handRaised: false,
+          joinedAt: new Date().toISOString(),
+        });
+        mtg.attendeeCount = mtg.participants.length;
+      }
+      await this.persistStateNow(actor.organizationId);
+      return mtg;
+    }
+
+    if (body.action === 'remove' && body.targetUserId) {
+      mtg.waitingRoom = (mtg.waitingRoom ?? []).filter((w) => w.userId !== body.targetUserId);
+      mtg.participants = mtg.participants.filter((p) => p.userId !== body.targetUserId);
+      mtg.attendeeCount = mtg.participants.length;
+      await this.persistStateNow(actor.organizationId);
+      return mtg;
+    }
+
+    if (body.action === 'approve-screenshare' && body.targetUserId) {
+      mtg.screenShareApprovedIds = Array.from(
+        new Set([...(mtg.screenShareApprovedIds ?? []), body.targetUserId]),
+      );
+      await this.persistStateNow(actor.organizationId);
+      return mtg;
     }
 
     if (body.action === 'mute') {

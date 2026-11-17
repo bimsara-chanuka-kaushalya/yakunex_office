@@ -848,9 +848,24 @@ export function ChatView() {
 
 // ─── 2. MEETINGS PAGE (/meetings) — ZOOM-GRADE WEBRTC STUDIO ───────────────
 
+interface MeetingAccessPolicy {
+  tier: string;
+  rolesLabel: string;
+  canCreate: boolean;
+  createLabel: string;
+  allowedScopes: string[];
+  waitingRoomControl: string;
+  waitingRoomLabel: string;
+  canInviteExternal: boolean;
+  recordingScope: string;
+  externalAndRecordingLabel: string;
+  screenShareRequiresApproval: boolean;
+}
+
 export function MeetingsView() {
   const { user } = useAuth();
   const [meetings, setMeetings] = useState<MeetingRow[]>([]);
+  const [policy, setPolicy] = useState<MeetingAccessPolicy | null>(null);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
 
@@ -859,6 +874,10 @@ export function MeetingsView() {
   const [agenda, setAgenda] = useState('');
   const [startsAt, setStartsAt] = useState(() => new Date(Date.now() + 3600000).toISOString().slice(0, 16));
   const [notes, setNotes] = useState('');
+  const [meetingScope, setMeetingScope] = useState('INTERNAL');
+  const [waitingRoomEnabled, setWaitingRoomEnabled] = useState(false);
+  const [allowExternalGuests, setAllowExternalGuests] = useState(false);
+  const [recordingAllowed, setRecordingAllowed] = useState(false);
 
   // Join by room code & pre-join green room state
   const [roomCodeInput, setRoomCodeInput] = useState('');
@@ -880,7 +899,17 @@ export function MeetingsView() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setMeetings(await api<MeetingRow[]>('/meetings'));
+      const [list, pol] = await Promise.all([
+        api<MeetingRow[]>('/meetings'),
+        api<MeetingAccessPolicy>('/meetings/access-policy').catch(() => null),
+      ]);
+      setMeetings(list);
+      if (pol) {
+        setPolicy(pol);
+        if (pol.allowedScopes.length > 0) {
+          setMeetingScope((prev) => (pol.allowedScopes.includes(prev) ? prev : pol.allowedScopes[0]));
+        }
+      }
     } finally {
       setLoading(false);
     }
@@ -1026,6 +1055,10 @@ export function MeetingsView() {
       agenda,
       startsAt: new Date(startsAt).toISOString(),
       notes,
+      meetingScope,
+      waitingRoomEnabled,
+      allowExternalGuests,
+      recordingAllowed,
     });
     setModalOpen(false);
     setTitle('');
@@ -1134,26 +1167,46 @@ export function MeetingsView() {
             </Button>
           </form>
 
-          <Button
-            variant="primary"
-            onClick={() => {
-              const titleText = `${user?.fullName ?? 'Team'}'s Instant Meeting`;
-              if (!openMeetingPopup({ instant: '1', title: titleText })) {
-                setPreJoin({
-                  mode: 'instant',
-                  title: titleText,
-                  agenda: 'Live video sync & screen share huddle',
-                });
-              }
-            }}
-          >
-            <Video className="h-4 w-4" /> New Meeting
-          </Button>
-          <Button variant="secondary" onClick={() => setModalOpen(true)}>
-            <Plus className="h-4 w-4" /> Schedule
-          </Button>
+          {(!policy || policy.canCreate) && (
+            <>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  const titleText = `${user?.fullName ?? 'Team'}'s Instant Meeting`;
+                  if (!openMeetingPopup({ instant: '1', title: titleText })) {
+                    setPreJoin({
+                      mode: 'instant',
+                      title: titleText,
+                      agenda: 'Live video sync & screen share huddle',
+                    });
+                  }
+                }}
+              >
+                <Video className="h-4 w-4" /> New Meeting
+              </Button>
+              <Button variant="secondary" onClick={() => setModalOpen(true)}>
+                <Plus className="h-4 w-4" /> Schedule
+              </Button>
+            </>
+          )}
         </div>
       </header>
+
+      {policy && (
+        <Card className="p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone="gold">{policy.tier}</Badge>
+              <span className="font-medium text-muted">({policy.rolesLabel})</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-4 text-muted">
+              <span><strong className="text-ink">Create &amp; Host:</strong> {policy.createLabel}</span>
+              <span><strong className="text-ink">Waiting Room:</strong> {policy.waitingRoomLabel}</span>
+              <span><strong className="text-ink">Guests &amp; Rec:</strong> {policy.externalAndRecordingLabel}</span>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {joinError && (
         <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-500">
@@ -1344,6 +1397,47 @@ export function MeetingsView() {
           <Field label="Initial notes / action items" htmlFor="mt-notes">
             <Input id="mt-notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
           </Field>
+          {policy && policy.allowedScopes.length > 0 && (
+            <Field label="Meeting Scope (Tier Access)" htmlFor="mt-scope">
+              <Select id="mt-scope" value={meetingScope} onChange={(e) => setMeetingScope(e.target.value)}>
+                {policy.allowedScopes.map((sc) => (
+                  <option key={sc} value={sc}>{sc}</option>
+                ))}
+              </Select>
+            </Field>
+          )}
+          <div className="space-y-2 rounded-xl bg-ink/[0.04] p-3 text-xs dark:bg-white/[0.06]">
+            <label className="flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={waitingRoomEnabled}
+                onChange={(e) => setWaitingRoomEnabled(e.target.checked)}
+              />
+              <span>Enable Waiting Room (Admit / Remove)</span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                disabled={!policy?.canInviteExternal}
+                checked={allowExternalGuests}
+                onChange={(e) => setAllowExternalGuests(e.target.checked)}
+              />
+              <span className={!policy?.canInviteExternal ? 'text-muted' : ''}>
+                Allow External Guests {policy && !policy.canInviteExternal ? '(Disabled for your tier)' : ''}
+              </span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                disabled={policy?.recordingScope === 'NONE'}
+                checked={recordingAllowed}
+                onChange={(e) => setRecordingAllowed(e.target.checked)}
+              />
+              <span className={policy?.recordingScope === 'NONE' ? 'text-muted' : ''}>
+                Allow Meeting Recording {policy?.recordingScope === 'NONE' ? '(Disabled for your tier)' : ''}
+              </span>
+            </label>
+          </div>
           <div className="flex justify-end gap-2">
             <Button variant="secondary" type="button" onClick={() => setModalOpen(false)}>
               Cancel
