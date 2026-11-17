@@ -46,7 +46,7 @@ export function Modal({
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-6">
       <div
-        className="absolute inset-0 bg-ink/40 backdrop-blur-[2px] animate-fade-in"
+        className="absolute inset-0 bg-black/35 backdrop-blur-[6px] animate-fade-in dark:bg-black/55"
         onClick={dismissible ? onClose : undefined}
         aria-hidden="true"
       />
@@ -55,24 +55,25 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="relative w-full max-w-lg rounded-t-2xl bg-surface shadow-pop animate-pop-in sm:rounded-2xl"
+        className="material-thick relative w-full max-w-lg rounded-t-[28px] shadow-pop animate-sheet-up sm:rounded-[24px] sm:animate-pop-in"
       >
-        <div className="flex items-center justify-between border-b border-line px-5 py-4">
-          <h2 id={titleId} className="text-lg font-semibold">
+        <div className="mx-auto mt-2 h-1.5 w-10 rounded-full bg-ink/15 sm:hidden" aria-hidden="true" />
+        <div className="flex items-center justify-between gap-4 px-6 pb-2 pt-4 sm:pt-5">
+          <h2 id={titleId} className="text-[19px] font-semibold">
             {title}
           </h2>
           {dismissible && (
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md p-1 text-muted hover:bg-canvas hover:text-ink"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink/[0.06] text-muted transition-colors hover:bg-ink/[0.1] hover:text-ink dark:bg-white/[0.1]"
               aria-label="Close"
             >
-              <X className="h-5 w-5" />
+              <X className="h-4 w-4" strokeWidth={2.5} />
             </button>
           )}
         </div>
-        <div className="max-h-[75vh] overflow-y-auto px-5 py-5">{children}</div>
+        <div className="max-h-[78vh] overflow-y-auto px-6 pb-6 pt-3">{children}</div>
       </div>
     </div>
   );

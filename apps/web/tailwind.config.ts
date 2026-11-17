@@ -3,6 +3,7 @@ import type { Config } from 'tailwindcss';
 /**
  * Colours are CSS variables so light and dark themes share one set of class names.
  * Values are RGB triplets so Tailwind opacity modifiers (bg-gold/10) keep working.
+ * Radii, shadows and easing follow Apple's Human Interface Guidelines.
  */
 const config: Config = {
   darkMode: 'class',
@@ -26,26 +27,46 @@ const config: Config = {
         success: 'rgb(var(--success) / <alpha-value>)',
         warning: 'rgb(var(--warning) / <alpha-value>)',
         danger: 'rgb(var(--danger) / <alpha-value>)',
+        info: 'rgb(var(--info) / <alpha-value>)',
       },
       fontFamily: {
-        display: ['var(--font-display)', 'var(--font-ui)', 'var(--font-sinhala)', 'system-ui', 'sans-serif'],
-        sans: ['var(--font-ui)', 'var(--font-sinhala)', 'system-ui', 'sans-serif'],
-        mono: ['var(--font-mono)', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+        display: ['var(--font-display)', 'var(--font-sinhala)'],
+        sans: ['var(--font-ui)', 'var(--font-sinhala)'],
+        mono: ['var(--font-mono)'],
+      },
+      borderRadius: {
+        '4xl': '2rem',
       },
       boxShadow: {
-        card: '0 1px 2px rgb(20 24 31 / 0.04), 0 4px 16px -8px rgb(20 24 31 / 0.08)',
-        pop: '0 12px 40px -12px rgb(20 24 31 / 0.25)',
+        '2xs': '0 0.5px 1px rgb(0 0 0 / 0.05)',
+        xs: '0 1px 2px rgb(0 0 0 / 0.06)',
+        card: '0 0 0 0.5px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.05), 0 8px 24px -12px rgb(0 0 0 / 0.08)',
+        lift: '0 0 0 0.5px rgb(0 0 0 / 0.05), 0 4px 12px rgb(0 0 0 / 0.06), 0 18px 40px -16px rgb(0 0 0 / 0.16)',
+        pop: '0 0 0 0.5px rgb(0 0 0 / 0.08), 0 24px 64px -12px rgb(0 0 0 / 0.32)',
+      },
+      transitionTimingFunction: {
+        spring: 'cubic-bezier(0.32, 0.72, 0, 1)',
       },
       keyframes: {
         'fade-in': { from: { opacity: '0' }, to: { opacity: '1' } },
         'pop-in': {
-          from: { opacity: '0', transform: 'translateY(6px) scale(0.98)' },
+          from: { opacity: '0', transform: 'translateY(8px) scale(0.97)' },
           to: { opacity: '1', transform: 'none' },
+        },
+        'sheet-up': {
+          from: { transform: 'translateY(100%)' },
+          to: { transform: 'none' },
+        },
+        'slide-in-left': {
+          from: { transform: 'translateX(-100%)' },
+          to: { transform: 'none' },
         },
       },
       animation: {
-        'fade-in': 'fade-in 180ms ease-out',
-        'pop-in': 'pop-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1)',
+        'fade-in': 'fade-in 200ms ease-out',
+        'pop-in': 'pop-in 320ms cubic-bezier(0.32, 0.72, 0, 1)',
+        'sheet-up': 'sheet-up 420ms cubic-bezier(0.32, 0.72, 0, 1)',
+        'slide-in-left': 'slide-in-left 380ms cubic-bezier(0.32, 0.72, 0, 1)',
       },
     },
   },

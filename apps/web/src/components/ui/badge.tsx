@@ -3,22 +3,23 @@ import { cn } from '@/lib/cn';
 
 type Tone = 'neutral' | 'gold' | 'success' | 'warning' | 'danger' | 'info';
 
+/** Tinted capsule labels (no border), like Apple system badges. */
 const tones: Record<Tone, string> = {
-  neutral: 'bg-canvas text-muted border-line',
-  gold: 'bg-gold/15 text-gold-strong dark:text-gold border-gold/30',
-  success: 'bg-success/15 text-success border-success/30',
-  warning: 'bg-warning/15 text-warning border-warning/30',
-  danger: 'bg-danger/15 text-danger border-danger/30',
-  info: 'bg-blue-500/15 text-blue-500 dark:text-blue-400 border-blue-500/30',
+  neutral: 'bg-ink/[0.06] text-muted dark:bg-white/[0.1]',
+  gold: 'bg-gold/15 text-gold-strong dark:text-gold',
+  success: 'bg-success/10 text-success',
+  warning: 'bg-warning/10 text-warning',
+  danger: 'bg-danger/10 text-danger',
+  info: 'bg-info/10 text-info',
 };
 
 const dotTones: Record<Tone, string> = {
   neutral: 'bg-muted',
-  gold: 'bg-gold animate-pulse',
-  success: 'bg-success animate-pulse',
-  warning: 'bg-warning animate-pulse',
-  danger: 'bg-danger animate-pulse',
-  info: 'bg-blue-500 animate-pulse',
+  gold: 'bg-gold',
+  success: 'bg-success',
+  warning: 'bg-warning',
+  danger: 'bg-danger',
+  info: 'bg-info',
 };
 
 export function Badge({
@@ -35,7 +36,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium tracking-tight shadow-2xs',
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-[3px] text-[11px] font-semibold tracking-[-0.005em]',
         tones[tone],
         className,
       )}

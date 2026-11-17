@@ -46,8 +46,8 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       {drawerOpen && (
         <div className="fixed inset-0 z-40 md:hidden">
-          <div className="absolute inset-0 bg-ink/40" onClick={() => setDrawerOpen(false)} aria-hidden="true" />
-          <aside className="relative h-full w-72 max-w-[85vw] shadow-pop animate-fade-in">
+          <div className="absolute inset-0 bg-black/35 backdrop-blur-[4px] animate-fade-in" onClick={() => setDrawerOpen(false)} aria-hidden="true" />
+          <aside className="relative h-full w-72 max-w-[85vw] shadow-pop animate-slide-in-left">
             <Sidebar onNavigate={() => setDrawerOpen(false)} />
           </aside>
         </div>

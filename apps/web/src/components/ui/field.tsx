@@ -4,9 +4,12 @@ import { forwardRef, useState, type InputHTMLAttributes, type SelectHTMLAttribut
 import { Eye, EyeOff } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
+/** Apple-style filled text field: tertiary fill, no border, tinted focus ring. */
 const controlBase =
-  'w-full rounded-xl border border-line bg-surface px-3.5 text-sm text-ink placeholder:text-muted/60 ' +
-  'transition-all duration-150 focus:border-gold focus:outline-none focus:ring-3 focus:ring-gold/20 disabled:opacity-60 shadow-2xs';
+  'w-full rounded-[12px] border border-transparent bg-ink/[0.05] px-3.5 text-[15px] text-ink placeholder:text-muted/70 ' +
+  'transition-[background-color,box-shadow,border-color] duration-200 ease-spring ' +
+  'hover:bg-ink/[0.07] focus:border-gold/60 focus:bg-surface focus:outline-none focus:ring-4 focus:ring-gold/20 ' +
+  'dark:bg-white/[0.08] dark:hover:bg-white/[0.11] dark:focus:bg-raised disabled:opacity-50';
 
 export function Field({
   label,
@@ -24,7 +27,7 @@ export function Field({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
-        <label htmlFor={htmlFor} className="block text-sm font-medium text-ink">
+        <label htmlFor={htmlFor} className="block text-[13px] font-medium text-muted">
           {label}
         </label>
         {action}
@@ -43,7 +46,7 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
   { className, ...props },
   ref,
 ) {
-  return <input ref={ref} className={cn(controlBase, 'h-10', className)} {...props} />;
+  return <input ref={ref} className={cn(controlBase, 'h-11', className)} {...props} />;
 });
 
 export const PasswordInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
@@ -54,7 +57,7 @@ export const PasswordInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HT
         <input
           ref={ref}
           type={show ? 'text' : 'password'}
-          className={cn(controlBase, 'h-10 pr-11', className)}
+          className={cn(controlBase, 'h-11 pr-11', className)}
           {...props}
         />
         <button
@@ -77,7 +80,16 @@ export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSel
   ref,
 ) {
   return (
-    <select ref={ref} className={cn(controlBase, 'h-10 pr-8', className)} {...props}>
+    <select
+      ref={ref}
+      className={cn(
+        controlBase,
+        'h-11 appearance-none bg-[length:16px] bg-[right_0.75rem_center] bg-no-repeat pr-10',
+        "bg-[url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238E8E93' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 15 5 5 5-5'/%3E%3Cpath d='m7 9 5-5 5 5'/%3E%3C/svg%3E\")]",
+        className,
+      )}
+      {...props}
+    >
       {children}
     </select>
   );

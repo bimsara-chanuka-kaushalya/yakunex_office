@@ -44,7 +44,7 @@ export default function LoginPage() {
   return (
     <main className="grid min-h-dvh lg:grid-cols-[1.1fr_1fr]">
       {/* Left Showcase Section with Deep Obsidian Gradient & Ambient Lighting */}
-      <section className="relative hidden flex-col justify-between overflow-hidden bg-gradient-to-br from-sidebar via-[#151921] to-[#0d0f13] p-12 text-white lg:flex">
+      <section className="relative hidden flex-col justify-between overflow-hidden bg-gradient-to-br from-[#1c1c1e] via-[#151517] to-[#0a0a0c] p-12 text-white lg:flex">
         {/* Ambient Gold Radial Glow Orbs */}
         <div className="pointer-events-none absolute -left-20 -top-20 h-96 w-96 rounded-full bg-gold/10 blur-[100px]" />
         <div className="pointer-events-none absolute -bottom-32 right-0 h-96 w-96 rounded-full bg-gold/15 blur-[120px]" />
@@ -86,7 +86,7 @@ export default function LoginPage() {
       <section className="flex flex-col justify-between bg-canvas px-6 py-8 sm:px-12 md:px-16">
         {/* Top Language Toggle */}
         <div className="flex justify-end">
-          <div role="radiogroup" aria-label={t('language')} className="flex items-center rounded-xl border border-line bg-surface p-0.5 text-xs font-semibold shadow-2xs">
+          <div role="radiogroup" aria-label={t('language')} className="segmented">
             {(['en', 'si'] as const).map((code) => (
               <button
                 key={code}
@@ -94,7 +94,6 @@ export default function LoginPage() {
                 role="radio"
                 aria-checked={lang === code}
                 onClick={() => setLang(code)}
-                className={`rounded-lg px-3 py-1 transition-all ${lang === code ? 'bg-canvas text-gold shadow-xs' : 'text-muted hover:text-ink'}`}
               >
                 {code === 'en' ? 'EN' : 'සිං'}
               </button>
@@ -103,7 +102,7 @@ export default function LoginPage() {
         </div>
 
         {/* Form Container */}
-        <div className="mx-auto w-full max-w-sm my-auto py-6">
+        <div className="mx-auto my-auto w-full max-w-md rounded-[28px] bg-surface p-8 shadow-card">
           <div className="mb-8 lg:hidden">
             <YakunexLogo className="w-36" />
           </div>
@@ -158,14 +157,10 @@ export default function LoginPage() {
               )}
             </div>
 
-            <Button type="submit" size="lg" className="w-full text-base font-bold shadow-sm" disabled={busy}>
+            <Button type="submit" size="lg" className="w-full" disabled={busy}>
               {busy ? t('loading') : t('signIn')}
             </Button>
           </form>
-
-          <p className="mt-8 text-center text-xs text-muted">
-            Yakunex Hub — Enterprise Workspace & Project Delivery Platform.
-          </p>
         </div>
 
         {/* Footer */}
