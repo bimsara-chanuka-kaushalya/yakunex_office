@@ -687,6 +687,7 @@ export function MeetingStudio({
   const [recording, setRecording] = useState(false);
   const [recordingSec, setRecordingSec] = useState(0);
   const [screenAudioMuted, setScreenAudioMuted] = useState(false);
+  const [shareRequests, setShareRequests] = useState<Array<{ userId: string; fullName: string }>>([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isPip, setIsPip] = useState(false);
   const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
@@ -760,6 +761,7 @@ export function MeetingStudio({
       room.organizerName === currentUser.fullName ||
       r === 'SUPER_ADMIN' ||
       r === 'ADMIN' ||
+      r === 'PROJECT_MANAGER' ||
       r === 'MANAGER' ||
       r === 'DIRECTOR' ||
       r === 'PM'
@@ -1889,6 +1891,31 @@ export function MeetingStudio({
         return;
       }
 
+      if (sig.type === 'request-screenshare') {
+        const reqUserId = String(payload.userId ?? fromId);
+        const reqName = String(payload.fullName ?? sig.fromUserName ?? 'Participant');
+        setShareRequests((prev) =>
+          prev.some((r) => r.userId === reqUserId) ? prev : [...prev, { userId: reqUserId, fullName: reqName }],
+        );
+        if (canHostControl) {
+          showToast(`${reqName} requested screen-share access.`);
+        }
+        return;
+      }
+
+      if (sig.type === 'screenshare-approved') {
+        if (String(payload.targetUserId ?? '') === currentUser.id) {
+          setRoom((prev) => ({
+            ...prev,
+            screenShareApprovedIds: Array.from(
+              new Set([...(prev.screenShareApprovedIds ?? []), currentUser.id]),
+            ),
+          }));
+          showToast('Host approved your screen-share access! Click Share Screen to present.');
+        }
+        return;
+      }
+
       if (sig.type === 'meeting-ended') {
         showToast('Host ended the meeting.');
         onExited(true);
@@ -2829,9 +2856,21 @@ export function MeetingStudio({
     }
   }, [renegotiatePeer, room.id, sendSignal]);
 
+  const isScreenShareLockedForSelf =
+    currentUser.role.toUpperCase() === 'INTERN' &&
+    !(room.screenShareApprovedIds ?? []).includes(currentUser.id);
+
   const toggleScreenShare = async () => {
     if (screenOn) {
       await stopScreenShare();
+      return;
+    }
+    if (isScreenShareLockedForSelf) {
+      await sendSignal('*', 'request-screenshare', {
+        userId: currentUser.id,
+        fullName: currentUser.fullName,
+      });
+      showToast('Screen-share access requested from Host. Once approved, click Share Screen again.');
       return;
     }
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
@@ -2930,7 +2969,11 @@ export function MeetingStudio({
         screenStreamId: scr.id,
       })
         .then((updated) => setRoom(updated))
-        .catch(() => undefined),
+        .catch(async (err) => {
+          const msg = err instanceof Error ? err.message : 'Screen share requires host approval.';
+          showToast(msg);
+          await stopScreenShare();
+        }),
     ]);
 
     const peerOffers: Promise<void>[] = [];
@@ -3122,6 +3165,10 @@ export function MeetingStudio({
         targetUserId,
       });
       setRoom(updated);
+      if (action === 'approve-screenshare') {
+        setShareRequests((prev) => prev.filter((r) => r.userId !== targetUserId));
+        void sendSignal('*', 'screenshare-approved', { targetUserId });
+      }
       const label =
         action === 'admit'
           ? 'Participant admitted from waiting room.'
@@ -3588,6 +3635,32 @@ export function MeetingStudio({
       {bannerNotice && (
         <div className="pointer-events-none absolute left-1/2 top-16 z-30 -translate-x-1/2 rounded-full border border-white/15 bg-slate-900/95 px-4 py-1.5 text-xs font-medium text-white shadow-xl backdrop-blur">
           {bannerNotice}
+        </div>
+      )}
+
+      {/* Host Screen-Share Access Request Banner */}
+      {canHostControl && shareRequests.length > 0 && (
+        <div className="absolute left-1/2 top-24 z-30 flex -translate-x-1/2 flex-wrap items-center gap-3 rounded-2xl border border-sky-400/35 bg-slate-950/95 px-4 py-2.5 text-xs text-white shadow-2xl backdrop-blur-xl">
+          <MonitorUp className="h-4 w-4 text-sky-400" />
+          <span>
+            <strong>{shareRequests[0].fullName}</strong> requested screen-share access
+          </span>
+          <button
+            type="button"
+            onClick={() => void hostAction('approve-screenshare', shareRequests[0].userId)}
+            className="rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-600"
+          >
+            Allow Share
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              setShareRequests((prev) => prev.filter((r) => r.userId !== shareRequests[0].userId))
+            }
+            className="rounded-lg bg-white/10 px-2 py-1 text-[11px] text-white/75 hover:bg-white/20"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
@@ -4224,7 +4297,9 @@ export function MeetingStudio({
             )}
           >
             <MonitorUp className="h-4 w-4" />
-            <span className="hidden sm:inline">{screenOn ? 'Stop Share' : 'Share Screen'}</span>
+            <span className="hidden sm:inline">
+              {screenOn ? 'Stop Share' : isScreenShareLockedForSelf ? 'Request Share' : 'Share Screen'}
+            </span>
           </button>
 
           <div className="relative">
