@@ -3,7 +3,9 @@
 import { use } from 'react';
 import dynamic from 'next/dynamic';
 import { notFound } from 'next/navigation';
-import { findNavItem } from '@/lib/nav';
+import { findNavItem, isModuleLockedForRole } from '@/lib/nav';
+import { useAuth } from '@/components/providers';
+import { LockedModuleNotice } from '@/components/ui/locked-module';
 import { Skeleton } from '@/components/ui/skeleton';
 
 function ViewLoader() {
@@ -43,9 +45,13 @@ const ProfileView = dynamic(() => import('@/components/modules/enterprise-views'
 
 export default function ModulePage({ params }: { params: Promise<{ module: string }> }) {
   const { module } = use(params);
+  const { user } = useAuth();
   const item = findNavItem(module);
 
   if (!item) notFound();
+  if (isModuleLockedForRole(module, user?.role)) {
+    return <LockedModuleNotice />;
+  }
 
   switch (module) {
     case 'projects':

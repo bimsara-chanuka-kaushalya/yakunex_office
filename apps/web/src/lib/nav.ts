@@ -281,6 +281,15 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
 
 export const ALL_NAV_ITEMS: NavItem[] = NAV_SECTIONS.flatMap((section) => section.items);
 
+export const INTERN_ALLOWED_MODULES = new Set(['profile', 'meetings', 'chat']);
+
+export function isModuleLockedForRole(key: string, role?: string | null): boolean {
+  if (role === 'INTERN') {
+    return !INTERN_ALLOWED_MODULES.has(key);
+  }
+  return false;
+}
+
 export function findNavItem(key: string): NavItem | undefined {
   return ALL_NAV_ITEMS.find((item) => item.key === key);
 }

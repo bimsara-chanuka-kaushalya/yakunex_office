@@ -21,7 +21,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { RoleDistributionChart } from '@/components/dashboard/role-chart';
 import { api, ApiError } from '@/lib/api';
-import { ALL_NAV_ITEMS } from '@/lib/nav';
+import { ALL_NAV_ITEMS, isModuleLockedForRole } from '@/lib/nav';
+import { LockedModuleNotice } from '@/components/ui/locked-module';
 import { PERMISSIONS, ROLE_LABELS, type Role } from '@/lib/permissions';
 
 interface WorkspaceMetrics {
@@ -153,6 +154,10 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    if (isModuleLockedForRole('dashboard', user?.role)) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -170,11 +175,15 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [isAdminView]);
+  }, [isAdminView, user?.role]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  if (isModuleLockedForRole('dashboard', user?.role)) {
+    return <LockedModuleNotice moduleName="Dashboard" />;
+  }
 
   const roleData = useMemo(() => {
     if (!summary) return [];
