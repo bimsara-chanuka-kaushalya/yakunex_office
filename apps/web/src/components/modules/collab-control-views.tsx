@@ -1295,22 +1295,6 @@ export function MeetingsView() {
         </div>
       </header>
 
-      {policy && (
-        <Card className="p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge tone="gold">{policy.tier}</Badge>
-              <span className="font-medium text-muted">({policy.rolesLabel})</span>
-            </div>
-            <div className="flex flex-wrap items-center gap-4 text-muted">
-              <span><strong className="text-ink">Create &amp; Host:</strong> {policy.createLabel}</span>
-              <span><strong className="text-ink">Waiting Room:</strong> {policy.waitingRoomLabel}</span>
-              <span><strong className="text-ink">Guests &amp; Rec:</strong> {policy.externalAndRecordingLabel}</span>
-            </div>
-          </div>
-        </Card>
-      )}
-
       {joinError && (
         <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-500">
           {joinError}

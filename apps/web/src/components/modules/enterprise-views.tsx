@@ -1170,46 +1170,40 @@ export function ProfileView() {
         </Card>
       )}
 
-      {/* Full Profile Details (Editable by Super Admin & HR, Job Role by Super Admin only) */}
+      {/* Full Profile Details */}
       <Card>
         <CardHeader
           title="Personal & Employment Information"
-          description={
-            isSuperAdmin
-              ? 'Super Admin Access: You can edit all employee details including Job Role.'
-              : isHrOrSuperAdmin
-                ? 'HR Access: You can edit personal details. Job Role can only be changed by Super Admin.'
-                : 'Read-only personal record. Contact HR or Super Admin for corrections.'
-          }
+          description="Employee personal and employment record."
         />
         <form onSubmit={saveAdminFields} className="grid gap-4 p-5 md:grid-cols-2">
-          <Field label="Full Name (Super Admin & HR)" htmlFor="pf-full">
+          <Field label="Full Name" htmlFor="pf-full">
             <Input id="pf-full" disabled={!isHrOrSuperAdmin} value={fullName} onChange={(e) => setFullName(e.target.value)} />
           </Field>
-          <Field label="Initials / First Name (මුලකුරු — Super Admin & HR)" htmlFor="pf-first">
+          <Field label="Initials / First Name" htmlFor="pf-first">
             <Input id="pf-first" disabled={!isHrOrSuperAdmin} value={firstName} onChange={(e) => setFirstName(e.target.value)} />
           </Field>
-          <Field label="Last Name (Super Admin & HR)" htmlFor="pf-last">
+          <Field label="Last Name" htmlFor="pf-last">
             <Input id="pf-last" disabled={!isHrOrSuperAdmin} value={lastName} onChange={(e) => setLastName(e.target.value)} />
           </Field>
-          <Field label="NIC ID Number (Approval / Super Admin & HR)" htmlFor="pf-nic">
+          <Field label="NIC ID Number" htmlFor="pf-nic">
             <Input id="pf-nic" disabled={!isHrOrSuperAdmin} value={nicNumber} onChange={(e) => setNicNumber(e.target.value)} placeholder="e.g. 200012345678" />
           </Field>
-          <Field label="Contact Number (Approval / Super Admin & HR)" htmlFor="pf-phone">
+          <Field label="Contact Number" htmlFor="pf-phone">
             <Input id="pf-phone" disabled={!isHrOrSuperAdmin} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+94 7X XXX XXXX" />
           </Field>
-          <Field label="Birthday (Super Admin & HR)" htmlFor="pf-dob">
+          <Field label="Birthday" htmlFor="pf-dob">
             <Input id="pf-dob" type="date" disabled={!isHrOrSuperAdmin} value={birthday} onChange={(e) => setBirthday(e.target.value)} />
           </Field>
           <div className="md:col-span-2">
-            <Field label="Address (Super Admin & HR)" htmlFor="pf-addr">
+            <Field label="Address" htmlFor="pf-addr">
               <Input id="pf-addr" disabled={!isHrOrSuperAdmin} value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Residential address" />
             </Field>
           </div>
-          <Field label="Job Role / Designation (Super Admin Only)" htmlFor="pf-title">
+          <Field label="Job Role / Designation" htmlFor="pf-title">
             <Input id="pf-title" disabled={!isSuperAdmin} value={title} onChange={(e) => setTitle(e.target.value)} />
           </Field>
-          <Field label="System Role (Super Admin Only)" htmlFor="pf-role">
+          <Field label="System Role" htmlFor="pf-role">
             <Select id="pf-role" disabled={!isSuperAdmin} value={role} onChange={(e) => setRole(e.target.value)}>
               <option value="SUPER_ADMIN">Super Admin</option>
               <option value="ADMIN">Admin / C-Level / Legal</option>

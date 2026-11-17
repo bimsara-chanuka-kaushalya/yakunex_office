@@ -831,20 +831,20 @@ function CreateUserDialog({
                   }
                 }}
               >
-                <optgroup label="Tier 1: Super Admin">
+                <optgroup label="Executive">
                   <option value="MD">MD — Managing Director</option>
                   <option value="CEO">CEO — Chief Executive Officer</option>
                 </optgroup>
-                <optgroup label="Tier 1B: Legal Admin">
+                <optgroup label="Legal & Governance">
                   <option value="SEC">Company Secretary (Legal Admin)</option>
                 </optgroup>
-                <optgroup label="Tier 2: C-Level / Dept Heads">
+                <optgroup label="C-Level & Dept Heads">
                   <option value="CTO">CTO — Chief Technology Officer</option>
                   <option value="COO">COO — Chief Operating Officer</option>
                   <option value="CFO">CFO — Chief Financial Officer</option>
                   <option value="DIR">DIR — Dept Head / Director</option>
                 </optgroup>
-                <optgroup label="Tier 3: Management & Department">
+                <optgroup label="Management & Department">
                   <option value="HR">HR — HR Manager</option>
                   <option value="PM">PM — Project Manager</option>
                   <option value="PO">PO — Product Owner</option>
@@ -852,7 +852,7 @@ function CreateUserDialog({
                   <option value="ACC">ACC — Accountant</option>
                   <option value="ADM">ADM — Office Admin</option>
                 </optgroup>
-                <optgroup label="Tier 4: Core Staff">
+                <optgroup label="Core Staff">
                   <option value="TL">Tech Lead</option>
                   <option value="SE">SE — Software Engineer</option>
                   <option value="QA">QA — Quality Assurance</option>
@@ -860,7 +860,7 @@ function CreateUserDialog({
                   <option value="DEVOPS">DevOps Engineer</option>
                   <option value="STF">STF — General Core Staff</option>
                 </optgroup>
-                <optgroup label="Tier 5: Trainees">
+                <optgroup label="Trainees">
                   <option value="INT">Interns / Trainees</option>
                 </optgroup>
               </Select>
