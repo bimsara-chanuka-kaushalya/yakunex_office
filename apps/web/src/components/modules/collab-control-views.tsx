@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   BarChart3,
   Check,
+  CheckCheck,
   CheckSquare,
   Clock,
   Copy,
@@ -31,6 +32,7 @@ import {
   type MeetingRow,
 } from '@/components/modules/meeting-studio';
 import { useAuth, useLang } from '@/components/providers';
+import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, StatCard } from '@/components/ui/card';
@@ -60,6 +62,7 @@ interface ChatMessage {
   senderId: string;
   senderName: string;
   senderRole: string;
+  senderAvatarUrl?: string | null;
   body: string;
   createdAt: string;
   replyToId?: string | null;
@@ -79,6 +82,7 @@ interface OrgMember {
   role: string;
   title?: string;
   department?: string;
+  avatarUrl?: string | null;
 }
 
 const CHANNEL_CATEGORIES: Array<{ key: string; label: string }> = [
@@ -163,6 +167,7 @@ export function ChatView() {
         email: string;
         role: string;
         title?: string | null;
+        avatarUrl?: string | null;
         department?: { id: string; name: string } | string | null;
       }>;
     }>('/organization')
@@ -175,6 +180,7 @@ export function ChatView() {
             email: u.email,
             role: u.role,
             title: u.title ?? undefined,
+            avatarUrl: u.avatarUrl ?? null,
             department:
               typeof u.department === 'object' && u.department
                 ? u.department.name
@@ -297,26 +303,9 @@ export function ChatView() {
     : messages;
 
   return (
-    <div className="space-y-6">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h2 className="font-display text-3xl font-semibold">Yakunex Hub — Team Chat</h2>
-          <p className="mt-1 text-sm text-muted">
-            Role-based organization channels, confidential groups, direct messages, threads &amp; quick actions.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" onClick={() => setDmModalOpen(true)}>
-            <MessageSquarePlus className="h-4 w-4" /> Direct message
-          </Button>
-          <Button variant="secondary" onClick={() => setModalOpen(true)}>
-            <Plus className="h-4 w-4" /> Create group
-          </Button>
-        </div>
-      </header>
-
+    <div className="space-y-4">
       {banner && (
-        <div className="flex items-center justify-between rounded-xl border border-gold/40 bg-gold/10 px-4 py-2 text-xs font-medium text-ink">
+        <div className="flex items-center justify-between rounded-2xl bg-gold/15 px-4 py-2.5 text-xs font-medium text-ink shadow-2xs">
           <span>{banner}</span>
           <button type="button" onClick={() => setBanner(null)} className="text-muted hover:text-ink">
             <X className="h-4 w-4" />
@@ -324,51 +313,98 @@ export function ChatView() {
         </div>
       )}
 
-      <Card className="grid min-h-[600px] overflow-hidden md:grid-cols-[280px_1fr]">
-        <aside className="flex flex-col border-b border-line bg-canvas/50 p-3 md:border-b-0 md:border-r">
-          <div className="relative mb-3">
-            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted" />
-            <Input
-              className="pl-8 text-xs"
-              placeholder="Filter channels…"
-              value={channelSearch}
-              onChange={(e) => setChannelSearch(e.target.value)}
-            />
+      {/* WhatsApp + Apple HIG Split Shell */}
+      <Card className="grid h-[calc(100dvh-10.5rem)] min-h-[600px] overflow-hidden md:grid-cols-[310px_1fr]">
+        {/* Left Pane: WhatsApp Chats List + macOS Source List */}
+        <aside className="flex min-h-0 flex-col border-b border-line/70 bg-sidebar/70 md:border-b-0 md:border-r">
+          <div className="flex items-center justify-between px-4 pb-2 pt-4">
+            <h2 className="font-display text-[22px] font-bold tracking-tight text-ink">Chats</h2>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setDmModalOpen(true)}
+                title="Direct message"
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-ink/[0.06] text-ink transition hover:bg-ink/[0.11] dark:bg-white/[0.1] dark:hover:bg-white/[0.16]"
+              >
+                <MessageSquarePlus className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setModalOpen(true)}
+                title="Create group"
+                className="flex h-8 w-8 items-center justify-center rounded-full bg-gold text-gold-ink shadow-2xs transition hover:brightness-105"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
           </div>
 
-          <div className="flex-1 space-y-4 overflow-y-auto pr-1">
+          <div className="px-3 pb-3 pt-1">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+              <input
+                type="text"
+                placeholder="Search chats or channels…"
+                value={channelSearch}
+                onChange={(e) => setChannelSearch(e.target.value)}
+                className="h-9 w-full rounded-full bg-ink/[0.06] pl-8 pr-3 text-[13px] text-ink placeholder:text-muted/70 focus:bg-surface focus:outline-none focus:ring-2 focus:ring-gold/30 dark:bg-white/[0.08] dark:focus:bg-raised"
+              />
+            </div>
+          </div>
+
+          <div className="flex-1 space-y-4 overflow-y-auto px-2 pb-4">
             {CHANNEL_CATEGORIES.map((cat) => {
               const items = filteredChannels.filter((c) => normalizeChannelCategory(c) === cat.key);
               if (items.length === 0) return null;
               return (
                 <div key={cat.key}>
-                  <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-muted">
-                    {cat.label} ({items.length})
+                  <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted/80">
+                    {cat.label} · {items.length}
                   </p>
                   <ul className="space-y-0.5">
-                    {items.map((ch) => (
-                      <li key={ch.id}>
-                        <button
-                          type="button"
-                          onClick={() => setActiveId(ch.id)}
-                          className={cn(
-                            'flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-left text-sm transition-colors',
-                            ch.id === activeId
-                              ? 'bg-gold/15 font-medium text-gold-strong'
-                              : 'text-ink hover:bg-surface',
-                          )}
-                        >
-                          {ch.privacy === 'CONFIDENTIAL' ? (
-                            <Lock className="h-3.5 w-3.5 shrink-0 text-gold" />
-                          ) : ch.type === 'DIRECT' ? (
-                            <Users className="h-3.5 w-3.5 shrink-0 text-gold" />
-                          ) : (
-                            <Hash className="h-3.5 w-3.5 shrink-0 text-gold" />
-                          )}
-                          <span className="truncate">{ch.name}</span>
-                        </button>
-                      </li>
-                    ))}
+                    {items.map((ch) => {
+                      const isActive = ch.id === activeId;
+                      return (
+                        <li key={ch.id}>
+                          <button
+                            type="button"
+                            onClick={() => setActiveId(ch.id)}
+                            className={cn(
+                              'flex w-full items-center gap-3 rounded-[14px] px-2.5 py-2 text-left transition-all duration-150 ease-spring',
+                              isActive
+                                ? 'bg-gold/15 text-ink shadow-2xs dark:bg-gold/20'
+                                : 'text-ink hover:bg-ink/[0.05] dark:hover:bg-white/[0.06]',
+                            )}
+                          >
+                            <span
+                              className={cn(
+                                'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
+                                isActive
+                                  ? 'bg-gold text-gold-ink'
+                                  : 'bg-ink/[0.06] text-muted dark:bg-white/[0.1]',
+                              )}
+                            >
+                              {ch.privacy === 'CONFIDENTIAL' ? (
+                                <Lock className="h-4 w-4" />
+                              ) : ch.type === 'DIRECT' ? (
+                                <Users className="h-4 w-4" />
+                              ) : (
+                                <Hash className="h-4 w-4" />
+                              )}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-1.5">
+                                <span className="truncate text-[13.5px] font-semibold">{ch.name}</span>
+                                {ch.privacy === 'CONFIDENTIAL' && (
+                                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-gold" title="Confidential" />
+                                )}
+                              </div>
+                              <p className="truncate text-[11.5px] text-muted">{ch.description}</p>
+                            </div>
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               );
@@ -376,160 +412,203 @@ export function ChatView() {
           </div>
         </aside>
 
-        <div className="flex flex-col">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3.5">
-            <div>
-              <div className="flex flex-wrap items-center gap-2">
+        {/* Right Pane: WhatsApp Wallpaper Canvas + Apple Frosted Header & Composer */}
+        <div className="flex min-h-0 flex-col bg-[#efeae2]/75 dark:bg-[#0b141a]">
+          {/* Frosted Chat Header */}
+          <div className="material flex flex-wrap items-center justify-between gap-3 border-b border-line/70 px-5 py-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gold/15 text-gold-strong dark:text-gold">
                 {activeChannel?.privacy === 'CONFIDENTIAL' ? (
-                  <Lock className="h-4 w-4 text-gold" />
+                  <Lock className="h-4 w-4" />
+                ) : activeChannel?.type === 'DIRECT' ? (
+                  <Users className="h-4 w-4" />
                 ) : (
-                  <Hash className="h-4 w-4 text-gold" />
+                  <Hash className="h-4 w-4" />
                 )}
-                <h3 className="font-semibold text-ink">{activeChannel?.name ?? 'general'}</h3>
-                {activeChannel?.privacy && activeChannel.privacy !== 'PUBLIC' && (
-                  <Badge tone="gold">{activeChannel.privacy}</Badge>
-                )}
-                {activeChannel?.projectName && (
-                  <Badge tone="neutral">{activeChannel.projectName}</Badge>
-                )}
+              </span>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="truncate text-[15px] font-semibold text-ink">
+                    {activeChannel?.name ?? 'general'}
+                  </h3>
+                  {activeChannel?.privacy && activeChannel.privacy !== 'PUBLIC' && (
+                    <Badge tone="gold">{activeChannel.privacy}</Badge>
+                  )}
+                  {activeChannel?.projectName && (
+                    <Badge tone="neutral">{activeChannel.projectName}</Badge>
+                  )}
+                </div>
+                <p className="truncate text-xs text-muted">{activeChannel?.description}</p>
               </div>
-              <p className="mt-0.5 text-xs text-muted">{activeChannel?.description}</p>
             </div>
+
             <div className="flex items-center gap-2">
-              <div className="relative w-44">
-                <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted" />
-                <Input
-                  className="pl-8 text-xs"
+              <div className="relative w-40 sm:w-48">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+                <input
+                  type="text"
                   placeholder="Search messages…"
                   value={msgSearch}
                   onChange={(e) => setMsgSearch(e.target.value)}
+                  className="h-8 w-full rounded-full bg-ink/[0.06] pl-8 pr-3 text-xs text-ink placeholder:text-muted/70 focus:bg-surface focus:outline-none focus:ring-2 focus:ring-gold/30 dark:bg-white/[0.1] dark:focus:bg-raised"
                 />
               </div>
               <Button size="sm" variant="secondary" onClick={onStartChannelMeeting}>
-                <Video className="h-3.5 w-3.5" /> Start Meeting
+                <Video className="h-3.5 w-3.5" /> Meet
               </Button>
             </div>
           </div>
 
           {pinnedMessages.length > 0 && (
-            <div className="border-b border-line bg-gold/5 px-5 py-2 text-xs">
-              <div className="flex items-center gap-1.5 font-semibold text-gold-strong">
-                <Pin className="h-3.5 w-3.5" />
+            <div className="material border-b border-line/60 px-5 py-2 text-xs">
+              <div className="flex items-center gap-1.5 font-semibold text-gold-strong dark:text-gold">
+                <Pin className="h-3.5 w-3.5 shrink-0" />
                 <span>Pinned ({pinnedMessages.length}):</span>
                 <span className="truncate font-normal text-ink">{pinnedMessages[0].body}</span>
               </div>
             </div>
           )}
 
-          <div className="flex-1 space-y-4 overflow-y-auto p-5">
+          {/* Messages Feed */}
+          <div
+            className="flex-1 space-y-3 overflow-y-auto px-4 py-5 sm:px-6"
+            style={{
+              backgroundImage:
+                'radial-gradient(rgb(120 120 128 / 0.12) 1px, transparent 1px)',
+              backgroundSize: '20px 20px',
+            }}
+          >
             {visibleMessages.length === 0 ? (
-              <div className="flex h-64 flex-col items-center justify-center text-center text-muted">
-                <MessagesSquare className="mb-2 h-8 w-8 text-muted/60" />
-                <p className="text-sm font-semibold text-ink">
-                  {msgSearch.trim()
-                    ? 'No matching messages found'
-                    : `No messages in #${activeChannel?.name ?? 'channel'} yet`}
-                </p>
-                <p className="mt-1 text-xs">Start the conversation by sending the first message below.</p>
+              <div className="flex h-full min-h-[240px] flex-col items-center justify-center text-center">
+                <div className="material rounded-2xl px-6 py-5 shadow-card">
+                  <MessagesSquare className="mx-auto mb-2 h-8 w-8 text-gold" />
+                  <p className="text-sm font-semibold text-ink">
+                    {msgSearch.trim()
+                      ? 'No matching messages found'
+                      : `No messages in #${activeChannel?.name ?? 'channel'} yet`}
+                  </p>
+                  <p className="mt-1 text-xs text-muted">
+                    Send a message below to start the conversation.
+                  </p>
+                </div>
               </div>
             ) : (
               visibleMessages.map((msg) => {
                 const isOwn = user?.id === msg.senderId;
+                const avatarSrc = isOwn ? (msg.senderAvatarUrl ?? user?.avatarUrl) : msg.senderAvatarUrl;
                 return (
-                  <div key={msg.id} className="group flex items-start gap-3">
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gold/15 text-xs font-semibold text-gold">
-                      {(msg.senderName || 'U').charAt(0).toUpperCase()}
-                    </span>
-                    <div className="min-w-0 flex-1 rounded-2xl border border-line bg-canvas/40 px-4 py-2.5">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-xs font-semibold text-ink">{msg.senderName}</span>
-                          <Badge>{ROLE_LABELS[msg.senderRole as Role]?.[lang] ?? msg.senderRole}</Badge>
-                          <span className="text-[11px] text-muted">
-                            {new Date(msg.createdAt).toLocaleTimeString('en-LK', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                              timeZone: 'Asia/Colombo',
-                            })}
-                          </span>
-                          {msg.editedAt && <span className="text-[10px] text-muted">(edited)</span>}
-                          {msg.pinned && <Badge tone="gold">Pinned</Badge>}
-                          {msg.linkedTaskId && <Badge tone="success">Task linked</Badge>}
-                          {msg.linkedMeetingCode && <Badge tone="gold">Meeting {msg.linkedMeetingCode}</Badge>}
-                        </div>
+                  <div
+                    key={msg.id}
+                    className={cn(
+                      'group flex items-end gap-2',
+                      isOwn ? 'justify-end' : 'justify-start',
+                    )}
+                  >
+                    {!isOwn && (
+                      <Avatar
+                        src={avatarSrc}
+                        name={msg.senderName}
+                        size="sm"
+                        className="mb-1"
+                      />
+                    )}
 
-                        {!msg.deleted && (
-                          <div className="flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                            {QUICK_REACTIONS.map((emoji) => (
+                    <div
+                      className={cn(
+                        'relative max-w-[82%] rounded-[18px] px-3.5 py-2 shadow-2xs sm:max-w-[70%]',
+                        isOwn
+                          ? 'rounded-tr-[4px] bg-[#d9fdd3] text-[#111b21] dark:bg-[#005c4b] dark:text-[#e9edef]'
+                          : 'rounded-tl-[4px] bg-surface text-ink',
+                      )}
+                    >
+                      {/* Floating Hover Quick-Actions Pill */}
+                      {!msg.deleted && (
+                        <div
+                          className={cn(
+                            'material-thick absolute -top-7 z-10 flex items-center gap-0.5 rounded-full px-1.5 py-0.5 shadow-card opacity-0 transition-opacity group-hover:opacity-100',
+                            isOwn ? 'right-0' : 'left-0',
+                          )}
+                        >
+                          {QUICK_REACTIONS.map((emoji) => (
+                            <button
+                              key={emoji}
+                              type="button"
+                              onClick={() => onReact(msg.id, emoji)}
+                              className="rounded-full px-1.5 py-0.5 text-xs hover:bg-ink/[0.08]"
+                              title={`React ${emoji}`}
+                            >
+                              {emoji}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => setReplyTo(msg)}
+                            className="rounded-full p-1 text-muted hover:bg-ink/[0.08] hover:text-ink"
+                            title="Reply"
+                          >
+                            <Reply className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onTogglePin(msg.id)}
+                            className="rounded-full p-1 text-muted hover:bg-ink/[0.08] hover:text-ink"
+                            title={msg.pinned ? 'Unpin' : 'Pin'}
+                          >
+                            <Pin className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onConvertToTask(msg)}
+                            className="rounded-full p-1 text-muted hover:bg-ink/[0.08] hover:text-ink"
+                            title="Convert to Task"
+                          >
+                            <CheckSquare className="h-3.5 w-3.5" />
+                          </button>
+                          {isOwn && (
+                            <>
                               <button
-                                key={emoji}
                                 type="button"
-                                onClick={() => onReact(msg.id, emoji)}
-                                className="rounded px-1.5 py-0.5 text-xs hover:bg-surface"
-                                title={`React ${emoji}`}
+                                onClick={() => {
+                                  setEditingMsg(msg);
+                                  setEditText(msg.body);
+                                }}
+                                className="rounded-full p-1 text-muted hover:bg-ink/[0.08] hover:text-ink"
+                                title="Edit"
                               >
-                                {emoji}
+                                <Edit2 className="h-3.5 w-3.5" />
                               </button>
-                            ))}
-                            <button
-                              type="button"
-                              onClick={() => setReplyTo(msg)}
-                              className="rounded p-1 text-muted hover:bg-surface hover:text-ink"
-                              title="Reply"
-                            >
-                              <Reply className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => onTogglePin(msg.id)}
-                              className="rounded p-1 text-muted hover:bg-surface hover:text-ink"
-                              title={msg.pinned ? 'Unpin' : 'Pin'}
-                            >
-                              <Pin className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => onConvertToTask(msg)}
-                              className="rounded p-1 text-muted hover:bg-surface hover:text-ink"
-                              title="Convert to Task"
-                            >
-                              <CheckSquare className="h-3.5 w-3.5" />
-                            </button>
-                            {isOwn && (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setEditingMsg(msg);
-                                    setEditText(msg.body);
-                                  }}
-                                  className="rounded p-1 text-muted hover:bg-surface hover:text-ink"
-                                  title="Edit"
-                                >
-                                  <Edit2 className="h-3.5 w-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => onDeleteMessage(msg.id)}
-                                  className="rounded p-1 text-muted hover:bg-surface hover:text-danger"
-                                  title="Delete"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        )}
-                      </div>
+                              <button
+                                type="button"
+                                onClick={() => onDeleteMessage(msg.id)}
+                                className="rounded-full p-1 text-muted hover:bg-ink/[0.08] hover:text-danger"
+                                title="Delete"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {!isOwn && (
+                        <div className="mb-0.5 flex flex-wrap items-center gap-1.5">
+                          <span className="text-[12px] font-semibold text-gold-strong dark:text-gold">
+                            {msg.senderName}
+                          </span>
+                          <span className="text-[10px] font-medium text-muted">
+                            {ROLE_LABELS[msg.senderRole as Role]?.[lang] ?? msg.senderRole}
+                          </span>
+                        </div>
+                      )}
 
                       {msg.replyPreview && (
-                        <div className="mt-1.5 rounded-lg border-l-2 border-gold bg-surface/60 px-2.5 py-1 text-xs text-muted">
+                        <div className="mb-1.5 rounded-lg border-l-3 border-gold bg-black/[0.05] px-2.5 py-1 text-[11.5px] opacity-85 dark:bg-white/[0.08]">
                           {msg.replyPreview}
                         </div>
                       )}
 
                       {editingMsg?.id === msg.id ? (
-                        <form onSubmit={onSaveEdit} className="mt-2 flex gap-2">
+                        <form onSubmit={onSaveEdit} className="mt-1 flex gap-2">
                           <Input
                             value={editText}
                             onChange={(e) => setEditText(e.target.value)}
@@ -546,29 +625,55 @@ export function ChatView() {
                           </Button>
                         </form>
                       ) : (
-                        <p className={cn('mt-1 text-sm', msg.deleted ? 'italic text-muted' : 'text-ink')}>
+                        <p className={cn('text-[14px] leading-snug', msg.deleted && 'italic opacity-60')}>
                           {msg.body}
                         </p>
                       )}
 
+                      <div className="mt-1 flex flex-wrap items-center justify-end gap-1.5 text-[10px] opacity-70">
+                        {msg.pinned && <Pin className="h-2.5 w-2.5 text-gold-strong dark:text-gold" />}
+                        {msg.linkedTaskId && <span className="font-semibold text-success">Task</span>}
+                        {msg.linkedMeetingCode && <span className="font-semibold">Meet {msg.linkedMeetingCode}</span>}
+                        {msg.editedAt && <span>edited</span>}
+                        <span>
+                          {new Date(msg.createdAt).toLocaleTimeString('en-LK', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            timeZone: 'Asia/Colombo',
+                          })}
+                        </span>
+                        {isOwn && !msg.deleted && (
+                          <CheckCheck className="h-3.5 w-3.5 text-info" />
+                        )}
+                      </div>
+
                       {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-1.5">
+                        <div className="mt-1.5 flex flex-wrap gap-1">
                           {Object.entries(msg.reactions).map(([emoji, users]) =>
                             Array.isArray(users) && users.length > 0 ? (
                               <button
                                 key={emoji}
                                 type="button"
                                 onClick={() => onReact(msg.id, emoji)}
-                                className="inline-flex items-center gap-1 rounded-full border border-line bg-surface px-2 py-0.5 text-xs hover:border-gold"
+                                className="inline-flex items-center gap-1 rounded-full bg-surface/90 px-2 py-0.5 text-[11px] shadow-2xs ring-1 ring-line/50 hover:ring-gold dark:bg-raised"
                               >
                                 <span>{emoji}</span>
-                                <span className="font-mono text-[11px] text-muted">{users.length}</span>
+                                <span className="font-mono text-[10px] text-muted">{users.length}</span>
                               </button>
                             ) : null,
                           )}
                         </div>
                       )}
                     </div>
+
+                    {isOwn && (
+                      <Avatar
+                        src={avatarSrc}
+                        name={msg.senderName}
+                        size="sm"
+                        className="mb-1"
+                      />
+                    )}
                   </div>
                 );
               })
@@ -576,7 +681,7 @@ export function ChatView() {
           </div>
 
           {replyTo && (
-            <div className="flex items-center justify-between border-t border-line bg-surface/60 px-4 py-2 text-xs">
+            <div className="material flex items-center justify-between border-t border-line/60 px-4 py-2 text-xs">
               <span className="truncate text-muted">
                 Replying to <strong className="text-ink">{replyTo.senderName}</strong>: {replyTo.body}
               </span>
@@ -586,15 +691,22 @@ export function ChatView() {
             </div>
           )}
 
-          <form onSubmit={onSend} className="flex gap-2 border-t border-line p-4">
-            <Input
+          {/* Frosted WhatsApp + Apple Composer Bar */}
+          <form onSubmit={onSend} className="material flex items-center gap-2.5 border-t border-line/70 px-4 py-3">
+            <input
+              type="text"
               placeholder={`Message #${activeChannel?.name ?? 'channel'}…`}
               value={text}
               onChange={(e) => setText(e.target.value)}
+              className="h-10 flex-1 rounded-full bg-surface px-4 text-[14px] text-ink shadow-2xs ring-1 ring-line/60 placeholder:text-muted/70 focus:outline-none focus:ring-2 focus:ring-gold/50 dark:bg-raised"
             />
-            <Button type="submit">
-              <Send className="h-4 w-4" /> Send
-            </Button>
+            <button
+              type="submit"
+              aria-label="Send message"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gold text-gold-ink shadow-xs transition-transform duration-150 ease-spring hover:brightness-105 active:scale-95"
+            >
+              <Send className="h-4 w-4" />
+            </button>
           </form>
         </div>
       </Card>
@@ -716,9 +828,12 @@ export function ChatView() {
                   onClick={() => onStartDm(m)}
                   className="flex w-full items-center justify-between rounded-xl border border-line px-3 py-2 text-left text-sm hover:border-gold hover:bg-surface"
                 >
-                  <div>
-                    <p className="font-medium text-ink">{m.name}</p>
-                    <p className="text-xs text-muted">{m.title ?? m.role}</p>
+                  <div className="flex items-center gap-2.5">
+                    <Avatar src={m.avatarUrl} name={m.name} size="md" />
+                    <div>
+                      <p className="font-medium text-ink">{m.name}</p>
+                      <p className="text-xs text-muted">{m.title ?? m.role}</p>
+                    </div>
                   </div>
                   <Badge tone="neutral">{m.department ?? m.role}</Badge>
                 </button>

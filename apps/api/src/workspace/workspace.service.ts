@@ -235,6 +235,7 @@ export interface ChatMessageItem {
   senderId: string;
   senderName: string;
   senderRole: string;
+  senderAvatarUrl?: string | null;
   body: string;
   replyToId?: string | null;
   replyPreview?: string | null;
@@ -1984,7 +1985,12 @@ export class WorkspaceService implements OnModuleInit {
     if (ch && actor && !this.canAccessChannel(actor, ch)) {
       throw new ForbiddenException('You do not have permission to view this channel.');
     }
-    return this.messages.filter((m) => m.channelId === channelId && !m.deleted);
+    return this.messages
+      .filter((m) => m.channelId === channelId && !m.deleted)
+      .map((m) => ({
+        ...m,
+        senderAvatarUrl: this.userProfiles[m.senderId]?.avatarDataUrl ?? m.senderAvatarUrl ?? null,
+      }));
   }
 
   postChatMessage(actor: AuthUser, channelId: string, body: Record<string, unknown>) {
@@ -2001,6 +2007,7 @@ export class WorkspaceService implements OnModuleInit {
       senderId: actor.id,
       senderName: actor.companyId ? `${actor.fullName.trim().split(/\s+/).pop() || actor.fullName} · ${actor.companyId}` : actor.fullName,
       senderRole: actor.role,
+      senderAvatarUrl: this.userProfiles[actor.id]?.avatarDataUrl ?? actor.avatarUrl ?? null,
       body: text,
       replyToId: replyTo?.id ?? null,
       replyPreview: replyTo ? `${replyTo.senderName}: ${replyTo.body.slice(0, 60)}` : null,
@@ -3046,6 +3053,7 @@ export class WorkspaceService implements OnModuleInit {
       role: Role;
       title: string | null;
       status: string;
+      avatarUrl?: string | null;
       managerId: string | null;
       department: { id: string; name: string } | null;
     }> = [];
@@ -3062,11 +3070,13 @@ export class WorkspaceService implements OnModuleInit {
             role: true,
             title: true,
             status: true,
+            avatarUrl: true,
             department: { select: { id: true, name: true } },
           },
         });
         employees = rows.map((r) => ({
           ...r,
+          avatarUrl: this.userProfiles[r.id]?.avatarDataUrl ?? (r as { avatarUrl?: string | null }).avatarUrl ?? null,
           managerId: this.reportingManagers[r.id] ?? null,
         }));
       }
@@ -3511,6 +3521,7 @@ export class WorkspaceService implements OnModuleInit {
       where: { id: actor.id },
       data: { avatarUrl: clean },
     }).catch(() => undefined);
+    this.prisma.invalidateUserCache?.(actor.id);
     return this.getEmployeeProfile(actor, actor.id);
   }
 

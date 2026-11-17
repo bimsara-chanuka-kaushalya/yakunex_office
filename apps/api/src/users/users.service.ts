@@ -31,6 +31,7 @@ const publicUserSelect = {
   role: true,
   status: true,
   departmentId: true,
+  avatarUrl: true,
   lastLoginAt: true,
   createdAt: true,
   mustChangePassword: true,

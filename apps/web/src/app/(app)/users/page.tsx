@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { Check, Copy, Eye, EyeOff, KeyRound, Search, Trash2, UserCircle, UserPlus, Users as UsersIcon } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
+import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -25,6 +26,7 @@ interface UserRow {
   title: string | null;
   role: Role;
   status: AccountStatus;
+  avatarUrl?: string | null;
   lastLoginAt: string | null;
   createdAt: string;
   mustChangePassword: boolean;
@@ -295,9 +297,12 @@ export default function UsersPage() {
                         </td>
                         <td className="px-5 py-3.5">
                           <div className="flex items-center gap-3">
-                            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gold/15 font-semibold text-gold">
-                              {row.fullName.charAt(0).toUpperCase()}
-                            </span>
+                            <Avatar
+                              src={row.avatarUrl}
+                              name={row.fullName}
+                              fallbackText={row.fullName.charAt(0).toUpperCase()}
+                              size="lg"
+                            />
                             <div className="min-w-0">
                               <p className="flex items-center gap-2 font-medium">
                                 <span className="truncate">{row.fullName}</span>

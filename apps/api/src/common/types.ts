@@ -10,6 +10,7 @@ export interface AuthUser {
   status: UserStatus;
   organizationId: string;
   mustChangePassword: boolean;
+  avatarUrl?: string | null;
 }
 
 export interface RequestMeta {

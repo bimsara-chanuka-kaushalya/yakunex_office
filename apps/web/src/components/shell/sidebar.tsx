@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { Lock } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { YakunexMark } from '@/components/brand/logo';
+import { Avatar } from '@/components/ui/avatar';
 import { NAV_SECTIONS } from '@/lib/nav';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
@@ -97,9 +98,13 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             onClick={onNavigate}
             className="flex items-center gap-2.5 rounded-[14px] bg-surface/80 p-2 shadow-2xs ring-1 ring-line/60 transition-all hover:bg-surface dark:bg-raised/70"
           >
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gold/15 font-mono text-[11px] font-bold text-gold-strong dark:text-gold">
-              {user.companyId ? user.companyId.slice(-4) : user.fullName.slice(0, 2).toUpperCase()}
-            </div>
+            <Avatar
+              src={user.avatarUrl}
+              name={user.fullName}
+              fallbackText={user.companyId ? user.companyId.slice(-4) : user.fullName.slice(0, 2).toUpperCase()}
+              size="md"
+              className="font-mono"
+            />
             <div className="min-w-0 flex-1 leading-tight">
               <p className="truncate text-xs font-semibold text-ink">{user.fullName}</p>
               <div className="mt-0.5 flex items-center gap-1.5">

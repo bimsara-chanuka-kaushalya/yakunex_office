@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { ArrowLeft, ChevronRight, LogOut, Menu, Monitor, Moon, Search, Sun } from 'lucide-react';
 import { useAuth, useLang, useTheme, type ThemeChoice } from '@/components/providers';
+import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
@@ -157,9 +158,12 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
               title="View Profile"
               className="ml-0.5 hidden items-center gap-2.5 rounded-full bg-ink/[0.04] py-1 pl-1.5 pr-3 transition hover:bg-ink/[0.08] dark:bg-white/[0.07] dark:hover:bg-white/[0.12] md:flex"
             >
-              <div className="flex h-7 w-7 items-center justify-center rounded-full bg-gold/20 font-mono text-xs font-bold text-gold-strong dark:text-gold">
-                {user.fullName.slice(0, 1).toUpperCase()}
-              </div>
+              <Avatar
+                src={user.avatarUrl}
+                name={user.fullName}
+                fallbackText={user.fullName.slice(0, 1).toUpperCase()}
+                size="sm"
+              />
               <div className="text-left leading-none">
                 <div className="flex items-center gap-1.5">
                   <p className="text-xs font-semibold text-ink">{user.fullName}</p>

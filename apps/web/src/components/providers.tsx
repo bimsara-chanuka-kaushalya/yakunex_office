@@ -15,6 +15,7 @@ export interface SessionUser {
   status: string;
   organizationId: string;
   mustChangePassword: boolean;
+  avatarUrl?: string | null;
 }
 
 type SessionStatus = 'loading' | 'authenticated' | 'anonymous';
