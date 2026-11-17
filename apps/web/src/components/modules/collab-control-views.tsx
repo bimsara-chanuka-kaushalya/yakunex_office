@@ -1372,6 +1372,18 @@ interface ReportsData {
   }>;
   bugsBySeverity: Array<{ severity: string; count: number }>;
   tasksByStatus: Array<{ status: string; count: number }>;
+  timesheetSummary?: Array<{
+    userId: string;
+    userName: string;
+    totalMinutes: number;
+    regularMinutes: number;
+    overtimeMinutes: number;
+    billableMinutes: number;
+    approvedMinutes: number;
+    breakMinutes: number;
+    lateCount: number;
+    gpsVerifiedCount: number;
+  }>;
   totalBillableMinutes: number;
   totalNonBillableMinutes: number;
 }
@@ -1404,18 +1416,42 @@ export function ReportsView() {
     URL.revokeObjectURL(url);
   }
 
+  function exportTimesheetCsv() {
+    const rows = data?.timesheetSummary ?? [];
+    if (rows.length === 0) return;
+    const header = 'Employee,Total Hours,Regular Hours,Overtime Hours,Billable Hours,Approved Hours,Break Minutes,Late Count,GPS Verified\n';
+    const body = rows
+      .map(
+        (r) =>
+          `"${r.userName}",${(r.totalMinutes / 60).toFixed(2)},${(r.regularMinutes / 60).toFixed(2)},${(r.overtimeMinutes / 60).toFixed(2)},${(r.billableMinutes / 60).toFixed(2)},${(r.approvedMinutes / 60).toFixed(2)},${r.breakMinutes},${r.lateCount},${r.gpsVerifiedCount}`,
+      )
+      .join('\n');
+    const blob = new Blob([header + body], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `yakunex-timesheet-attendance-report-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="font-display text-3xl font-semibold">Analytics & Reports</h2>
           <p className="mt-1 text-sm text-muted">
-            Executive delivery metrics, billable hour utilization and defect distribution.
+            Executive delivery metrics, Jibble-style timesheet/overtime utilization &amp; defect distribution.
           </p>
         </div>
-        <Button onClick={exportCsv} disabled={!data}>
-          <Download className="h-4 w-4" /> Export CSV report
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" onClick={exportTimesheetCsv} disabled={!data?.timesheetSummary?.length}>
+            <Download className="h-4 w-4" /> Export Timesheet CSV
+          </Button>
+          <Button onClick={exportCsv} disabled={!data}>
+            <Download className="h-4 w-4" /> Export Delivery CSV
+          </Button>
+        </div>
       </header>
 
       {loading || !data ? (
@@ -1505,6 +1541,64 @@ export function ReportsView() {
               </div>
             </Card>
           </div>
+
+          {data.timesheetSummary && data.timesheetSummary.length > 0 && (
+            <Card>
+              <CardHeader
+                title="Employee Timesheet, Overtime & Attendance Report"
+                description="Jibble-style Regular vs Overtime (>8h/day), Billable, Approved, Break & GPS-verified breakdown."
+              />
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[820px] text-left text-sm">
+                  <thead className="bg-canvas/60 text-xs uppercase tracking-wider text-muted">
+                    <tr>
+                      <th className="px-5 py-3">Employee</th>
+                      <th className="px-5 py-3 text-right">Total</th>
+                      <th className="px-5 py-3 text-right">Regular</th>
+                      <th className="px-5 py-3 text-right">Overtime</th>
+                      <th className="px-5 py-3 text-right">Billable</th>
+                      <th className="px-5 py-3 text-right">Approved</th>
+                      <th className="px-5 py-3 text-right">Breaks</th>
+                      <th className="px-5 py-3 text-right">Late / GPS</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                    {data.timesheetSummary.map((r) => (
+                      <tr key={r.userId} className="hover:bg-canvas/40">
+                        <td className="px-5 py-3.5 font-medium text-ink">{r.userName}</td>
+                        <td className="px-5 py-3.5 text-right font-mono text-xs font-semibold">
+                          {(r.totalMinutes / 60).toFixed(1)}h
+                        </td>
+                        <td className="px-5 py-3.5 text-right font-mono text-xs text-muted">
+                          {(r.regularMinutes / 60).toFixed(1)}h
+                        </td>
+                        <td className="px-5 py-3.5 text-right font-mono text-xs">
+                          {r.overtimeMinutes > 0 ? (
+                            <Badge tone="warning">{(r.overtimeMinutes / 60).toFixed(1)}h OT</Badge>
+                          ) : (
+                            <span className="text-muted">0.0h</span>
+                          )}
+                        </td>
+                        <td className="px-5 py-3.5 text-right font-mono text-xs text-success">
+                          {(r.billableMinutes / 60).toFixed(1)}h
+                        </td>
+                        <td className="px-5 py-3.5 text-right font-mono text-xs">
+                          {(r.approvedMinutes / 60).toFixed(1)}h
+                        </td>
+                        <td className="px-5 py-3.5 text-right font-mono text-xs text-muted">
+                          {r.breakMinutes}m
+                        </td>
+                        <td className="px-5 py-3.5 text-right text-xs">
+                          <span className="text-muted">{r.lateCount} late · </span>
+                          <span className="font-semibold text-gold-strong dark:text-gold">{r.gpsVerifiedCount} GPS</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
 
           <Card>
             <CardHeader

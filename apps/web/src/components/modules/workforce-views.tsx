@@ -11,6 +11,8 @@ import {
   GraduationCap,
   LogIn,
   LogOut,
+  MapPin,
+  Navigation,
   Pause,
   Plane,
   Play,
@@ -21,6 +23,7 @@ import {
   Star,
 } from 'lucide-react';
 import { useAuth } from '@/components/providers';
+import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, StatCard } from '@/components/ui/card';
@@ -108,7 +111,28 @@ function statusTone(status?: string): 'gold' | 'success' | 'danger' | 'neutral' 
   }
 }
 
+async function captureBrowserGps(): Promise<{
+  latitude: number;
+  longitude: number;
+  accuracyMeters: number;
+} | null> {
+  if (typeof navigator === 'undefined' || !navigator.geolocation) return null;
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) =>
+        resolve({
+          latitude: Number(pos.coords.latitude.toFixed(6)),
+          longitude: Number(pos.coords.longitude.toFixed(6)),
+          accuracyMeters: Math.round(pos.coords.accuracy),
+        }),
+      () => resolve(null),
+      { enableHighAccuracy: true, timeout: 3500, maximumAge: 60_000 },
+    );
+  });
+}
+
 export function TimeTrackerView() {
+  const [tab, setTab] = useState<'timer' | 'weekly'>('timer');
   const [activeTimer, setActiveTimer] = useState<TimeEntry | null>(null);
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [summary, setSummary] = useState<TimeSummary>({
@@ -185,12 +209,14 @@ export function TimeTrackerView() {
   async function handleStart() {
     setError(null);
     try {
+      const gps = await captureBrowserGps();
       await post('/time-entries/start', {
         projectId,
         taskId: taskId || undefined,
         workCategory,
         note: note || `${workCategory} work`,
         billable,
+        ...(gps ? { latitude: gps.latitude, longitude: gps.longitude, locationLabel: `${gps.latitude.toFixed(4)}, ${gps.longitude.toFixed(4)}` } : {}),
       });
       setNote('');
       await load();
@@ -306,16 +332,81 @@ export function TimeTrackerView() {
   const billableMinutes = entries.filter((e) => e.billable).reduce((s, e) => s + e.durationMinutes, 0);
   const isPaused = Boolean(activeTimer && (activeTimer.status === 'PAUSED' || activeTimer.pausedAt));
 
+  // Build Mon-Sun Weekly Timesheet Matrix
+  const weekDays = (() => {
+    const now = new Date();
+    const day = now.getDay();
+    const diffToMon = (day + 6) % 7;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - diffToMon);
+    monday.setHours(0, 0, 0, 0);
+    return Array.from({ length: 7 }).map((_, i) => {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      return {
+        iso: d.toISOString().slice(0, 10),
+        label: d.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' }),
+      };
+    });
+  })();
+
+  const weeklyRows = (() => {
+    const map = new Map<string, { label: string; sub: string; days: Record<string, number>; total: number }>();
+    for (const e of entries) {
+      const dIso = new Date(e.startedAt).toISOString().slice(0, 10);
+      if (!weekDays.some((w) => w.iso === dIso)) continue;
+      const key = `${e.projectId ?? 'gen'}::${e.taskTitle || 'General'}`;
+      let row = map.get(key);
+      if (!row) {
+        row = { label: e.projectName, sub: e.taskTitle || e.workCategory || 'General', days: {}, total: 0 };
+        map.set(key, row);
+      }
+      row.days[dIso] = (row.days[dIso] ?? 0) + e.durationMinutes;
+      row.total += e.durationMinutes;
+    }
+    return Array.from(map.values());
+  })();
+
+  const savedEntries = entries.filter(
+    (e) => e.endedAt && (e.status === 'SAVED' || e.status === 'REJECTED' || e.status === 'REVISION_REQUIRED' || !e.status),
+  );
+
+  async function handleSubmitAllSaved() {
+    setError(null);
+    for (const e of savedEntries) {
+      await post(`/time-entries/${e.id}/submit`).catch(() => undefined);
+    }
+    await load();
+  }
+
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h2 className="font-display text-3xl font-semibold">Time Tracker & Timesheets</h2>
+          <h2 className="font-display text-3xl font-semibold">Time Tracker &amp; Timesheets</h2>
           <p className="mt-1 text-sm text-muted">
-            Project & task timer with Pause/Resume, Task Switch, manual entries, and approval workflow.
+            Jibble-style live timer, GPS verification, weekly Mon–Sun timesheet matrix &amp; manager approvals.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="segmented" role="tablist" aria-label="Time view">
+            <button
+              type="button"
+              role="tab"
+              aria-checked={tab === 'timer'}
+              onClick={() => setTab('timer')}
+            >
+              Live Timer
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-checked={tab === 'weekly'}
+              onClick={() => setTab('weekly')}
+            >
+              Weekly Timesheet
+            </button>
+          </div>
           <Button variant="secondary" onClick={exportCsv} disabled={entries.length === 0}>
             <Download className="h-4 w-4" /> Export CSV
           </Button>
@@ -423,6 +514,94 @@ export function TimeTrackerView() {
         <StatCard label="This Month" value={formatMins(summary.monthMinutes)} hint={`${formatMins(billableMinutes)} billable`} icon={<Play className="h-4 w-4" />} />
         <StatCard label="Approved Hours" value={formatMins(summary.approvedMinutes)} hint={`${entries.length} total entries (${formatMins(totalMinutes)})`} icon={<CheckCircle2 className="h-4 w-4" />} />
       </div>
+
+      {tab === 'weekly' && (
+        <Card>
+          <CardHeader
+            title="Weekly Timesheet (Mon – Sun)"
+            description="Jibble-style daily hour breakdown by Project & Task, with Regular vs Overtime (>8h/day)."
+            action={
+              savedEntries.length > 0 ? (
+                <Button size="sm" onClick={() => void handleSubmitAllSaved()}>
+                  <Send className="h-3.5 w-3.5" /> Submit {savedEntries.length} Drafts
+                </Button>
+              ) : undefined
+            }
+          />
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[780px] text-left text-sm">
+              <thead className="bg-canvas/60 text-xs uppercase tracking-wider text-muted">
+                <tr>
+                  <th className="px-5 py-3">Project / Task</th>
+                  {weekDays.map((d) => (
+                    <th key={d.iso} className="px-3 py-3 text-center">
+                      {d.label}
+                    </th>
+                  ))}
+                  <th className="px-5 py-3 text-right">Week Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {weeklyRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="p-8 text-center text-xs text-muted">
+                      No hours logged this week yet. Start the timer or log manual time above.
+                    </td>
+                  </tr>
+                ) : (
+                  weeklyRows.map((row) => (
+                    <tr key={`${row.label}-${row.sub}`} className="hover:bg-canvas/40">
+                      <td className="px-5 py-3.5">
+                        <p className="font-medium text-ink">{row.label}</p>
+                        <p className="text-xs text-muted">{row.sub}</p>
+                      </td>
+                      {weekDays.map((d) => {
+                        const mins = row.days[d.iso] ?? 0;
+                        return (
+                          <td key={d.iso} className="px-3 py-3.5 text-center font-mono text-xs">
+                            {mins > 0 ? (
+                              <span className="rounded-md bg-gold/15 px-2 py-0.5 font-semibold text-gold-strong dark:text-gold">
+                                {formatMins(mins)}
+                              </span>
+                            ) : (
+                              <span className="text-muted/50">—</span>
+                            )}
+                          </td>
+                        );
+                      })}
+                      <td className="px-5 py-3.5 text-right font-mono text-xs font-bold text-ink">
+                        {formatMins(row.total)}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+              {weeklyRows.length > 0 && (
+                <tfoot className="border-t-2 border-line bg-canvas/50 text-xs font-semibold">
+                  <tr>
+                    <td className="px-5 py-3 text-muted">Daily Total (OT &gt; 8h)</td>
+                    {weekDays.map((d) => {
+                      const daySum = weeklyRows.reduce((s, r) => s + (r.days[d.iso] ?? 0), 0);
+                      const ot = Math.max(0, daySum - 480);
+                      return (
+                        <td key={d.iso} className="px-3 py-3 text-center font-mono">
+                          <span className="text-ink">{daySum > 0 ? formatMins(daySum) : '—'}</span>
+                          {ot > 0 && (
+                            <span className="block text-[10px] text-warning">+{formatMins(ot)} OT</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                    <td className="px-5 py-3 text-right font-mono text-gold-strong dark:text-gold">
+                      {formatMins(weeklyRows.reduce((s, r) => s + r.total, 0))}
+                    </td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        </Card>
+      )}
 
       <Card>
         <CardHeader
@@ -643,23 +822,47 @@ interface AttendanceRow {
   breakMinutes: number;
   isLate: boolean;
   notes: string;
+  workMode?: 'OFFICE' | 'REMOTE' | 'FIELD';
+  latitude?: number | null;
+  longitude?: number | null;
+  accuracyMeters?: number | null;
+  locationLabel?: string | null;
+  deviceType?: string | null;
+}
+
+interface LiveBoardMember {
+  userId: string;
+  userName: string;
+  userRole: string;
+  clockInAt: string | null;
+  onBreak: boolean;
+  workMode: 'OFFICE' | 'REMOTE' | 'FIELD';
+  latitude: number | null;
+  longitude: number | null;
+  locationLabel: string | null;
 }
 
 export function AttendanceView() {
   const [todayRecord, setTodayRecord] = useState<AttendanceRow | null>(null);
   const [records, setRecords] = useState<AttendanceRow[]>([]);
+  const [liveBoard, setLiveBoard] = useState<LiveBoardMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [notes, setNotes] = useState('');
+  const [workMode, setWorkMode] = useState<'OFFICE' | 'REMOTE' | 'FIELD'>('OFFICE');
+  const [gpsStatus, setGpsStatus] = useState<string>('GPS ready');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api<{ todayRecord: AttendanceRow | null; records: AttendanceRow[] }>(
-        '/attendance',
-      );
+      const res = await api<{
+        todayRecord: AttendanceRow | null;
+        records: AttendanceRow[];
+        liveBoard?: LiveBoardMember[];
+      }>('/attendance');
       setTodayRecord(res.todayRecord);
       setRecords(res.records);
+      setLiveBoard(Array.isArray(res.liveBoard) ? res.liveBoard : []);
     } finally {
       setLoading(false);
     }
@@ -671,8 +874,27 @@ export function AttendanceView() {
 
   async function doClockIn() {
     setError(null);
+    setGpsStatus('Capturing GPS location…');
     try {
-      await post('/attendance/clock-in', { notes });
+      const gps = await captureBrowserGps();
+      setGpsStatus(
+        gps
+          ? `GPS verified (±${gps.accuracyMeters}m): ${gps.latitude.toFixed(4)}, ${gps.longitude.toFixed(4)}`
+          : 'Location permission skipped — clocked in with workspace mode',
+      );
+      await post('/attendance/clock-in', {
+        notes,
+        workMode,
+        deviceType: typeof navigator !== 'undefined' && /Mobi|Android|iPhone/i.test(navigator.userAgent) ? 'Mobile Web' : 'Desktop Web',
+        ...(gps
+          ? {
+              latitude: gps.latitude,
+              longitude: gps.longitude,
+              accuracyMeters: gps.accuracyMeters,
+              locationLabel: `${gps.latitude.toFixed(4)}, ${gps.longitude.toFixed(4)}`,
+            }
+          : {}),
+      });
       setNotes('');
       await load();
     } catch (err) {
@@ -704,18 +926,25 @@ export function AttendanceView() {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h2 className="font-display text-3xl font-semibold">Attendance & Working Hours</h2>
-        <p className="mt-1 text-sm text-muted">
-          Daily clock-in/out, break tracking and Colombo standard working schedule.
-        </p>
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 className="font-display text-3xl font-semibold">Attendance &amp; Live Location</h2>
+          <p className="mt-1 text-sm text-muted">
+            Jibble-style GPS clock-in/out, Office/Remote/Field work modes, break tracking &amp; live team board.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 rounded-full bg-ink/[0.05] px-3 py-1.5 text-xs text-muted dark:bg-white/[0.08]">
+          <Navigation className="h-3.5 w-3.5 text-gold-strong dark:text-gold" />
+          <span>{gpsStatus}</span>
+        </div>
       </header>
 
       <Card className="p-6">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Badge
+                dot
                 tone={
                   todayRecord?.onBreak
                     ? 'warning'
@@ -730,6 +959,10 @@ export function AttendanceView() {
                     ? 'Clocked In'
                     : 'Clocked Out'}
               </Badge>
+              {todayRecord?.workMode && (
+                <Badge tone="gold">{todayRecord.workMode}</Badge>
+              )}
+              {todayRecord?.isLate && <Badge tone="danger">Late</Badge>}
               <span className="text-xs text-muted">Standard hours: 08:30 – 17:30 (Asia/Colombo)</span>
             </div>
             <h3 className="mt-2 font-display text-xl font-semibold">
@@ -743,20 +976,34 @@ export function AttendanceView() {
                     timeZone: 'Asia/Colombo',
                   })}`
                 : 'You have not clocked in yet today.'}
+              {todayRecord?.locationLabel ? ` · 📍 ${todayRecord.locationLabel}` : ''}
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5">
             {!isClockedIn ? (
               <>
+                <div className="segmented" role="radiogroup" aria-label="Work mode">
+                  {(['OFFICE', 'REMOTE', 'FIELD'] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      role="radio"
+                      aria-checked={workMode === m}
+                      onClick={() => setWorkMode(m)}
+                    >
+                      {m === 'OFFICE' ? 'Office' : m === 'REMOTE' ? 'Remote' : 'Field'}
+                    </button>
+                  ))}
+                </div>
                 <Input
                   placeholder="Shift note (optional)…"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  className="w-56"
+                  className="w-48"
                 />
                 <Button onClick={doClockIn}>
-                  <LogIn className="h-4 w-4" /> Clock In
+                  <LogIn className="h-4 w-4" /> Clock In (GPS)
                 </Button>
               </>
             ) : (
@@ -775,21 +1022,83 @@ export function AttendanceView() {
         {error && <p className="mt-3 text-xs text-danger">{error}</p>}
       </Card>
 
+      {/* Jibble Live Who's In & Location Board */}
       <Card>
-        <CardHeader title="Team attendance log" description="Daily clock-in, break and clock-out register." />
+        <CardHeader
+          title={`Live Who's In (${liveBoard.length})`}
+          description="Real-time team attendance, work mode, and GPS check-in locations."
+          badge={<Badge dot tone="success">Live</Badge>}
+        />
+        {liveBoard.length === 0 ? (
+          <div className="px-6 pb-6 text-xs text-muted">
+            No team members are currently clocked in today.
+          </div>
+        ) : (
+          <div className="grid gap-3 px-5 pb-5 sm:grid-cols-2 lg:grid-cols-3 sm:px-6">
+            {liveBoard.map((m) => (
+              <div
+                key={m.userId}
+                className="flex items-center justify-between gap-3 rounded-2xl bg-ink/[0.04] p-3.5 dark:bg-white/[0.06]"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <Avatar name={m.userName} size="md" />
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-ink">{m.userName}</p>
+                    <p className="text-[11px] text-muted">
+                      In{' '}
+                      {m.clockInAt
+                        ? new Date(m.clockInAt).toLocaleTimeString('en-LK', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            timeZone: 'Asia/Colombo',
+                          })
+                        : '—'}{' '}
+                      · {m.workMode}
+                    </p>
+                    {m.locationLabel && (
+                      <p className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-muted">
+                        <MapPin className="h-3 w-3 shrink-0 text-gold-strong dark:text-gold" />
+                        {m.latitude !== null && m.longitude !== null ? (
+                          <a
+                            href={`https://maps.google.com/?q=${m.latitude},${m.longitude}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="truncate text-info hover:underline"
+                          >
+                            {m.locationLabel}
+                          </a>
+                        ) : (
+                          <span className="truncate">{m.locationLabel}</span>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <Badge tone={m.onBreak ? 'warning' : 'success'}>
+                  {m.onBreak ? 'Break' : 'In'}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader title="Team attendance log" description="Daily clock-in, GPS location, break and clock-out register." />
         {loading ? (
           <div className="p-6">
             <Skeleton className="h-32" />
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left text-sm">
+            <table className="w-full min-w-[820px] text-left text-sm">
               <thead className="bg-canvas/60 text-xs uppercase tracking-wider text-muted">
                 <tr>
                   <th className="px-5 py-3">Team member</th>
-                  <th className="px-5 py-3">Date</th>
+                  <th className="px-5 py-3">Date &amp; Mode</th>
                   <th className="px-5 py-3">Clock In</th>
                   <th className="px-5 py-3">Clock Out</th>
+                  <th className="px-5 py-3">Live Location</th>
                   <th className="px-5 py-3">Breaks</th>
                   <th className="px-5 py-3">Notes</th>
                 </tr>
@@ -797,15 +1106,26 @@ export function AttendanceView() {
               <tbody className="divide-y divide-line">
                 {records.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="p-8 text-center text-xs text-muted">
+                    <td colSpan={7} className="p-8 text-center text-xs text-muted">
                       No team attendance records logged yet today.
                     </td>
                   </tr>
                 ) : (
                   records.map((rec) => (
                   <tr key={rec.id} className="hover:bg-canvas/40">
-                    <td className="px-5 py-3.5 font-medium">{rec.userName}</td>
-                    <td className="px-5 py-3.5 font-mono text-xs">{rec.workDate}</td>
+                    <td className="px-5 py-3.5">
+                      <div className="flex items-center gap-2.5 font-medium">
+                        <Avatar name={rec.userName} size="sm" />
+                        <span>{rec.userName}</span>
+                        {rec.isLate && <Badge tone="danger">Late</Badge>}
+                      </div>
+                    </td>
+                    <td className="px-5 py-3.5 text-xs">
+                      <span className="font-mono">{rec.workDate}</span>
+                      {rec.workMode && (
+                        <Badge tone="neutral" className="ml-2">{rec.workMode}</Badge>
+                      )}
+                    </td>
                     <td className="px-5 py-3.5 text-xs">
                       {rec.clockInAt
                         ? new Date(rec.clockInAt).toLocaleTimeString('en-LK', {
@@ -824,6 +1144,21 @@ export function AttendanceView() {
                         })
                       ) : (
                         <Badge tone="success">Active</Badge>
+                      )}
+                    </td>
+                    <td className="px-5 py-3.5 text-xs">
+                      {rec.latitude != null && rec.longitude != null ? (
+                        <a
+                          href={`https://maps.google.com/?q=${rec.latitude},${rec.longitude}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-info hover:underline"
+                        >
+                          <MapPin className="h-3 w-3" />
+                          {rec.locationLabel ?? `${rec.latitude.toFixed(4)}, ${rec.longitude.toFixed(4)}`}
+                        </a>
+                      ) : (
+                        <span className="text-muted">{rec.locationLabel ?? '—'}</span>
                       )}
                     </td>
                     <td className="px-5 py-3.5 text-xs text-muted">{rec.breakMinutes}m</td>

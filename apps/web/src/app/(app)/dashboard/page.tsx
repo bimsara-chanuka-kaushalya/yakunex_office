@@ -8,11 +8,13 @@ import {
   Clock,
   FolderKanban,
   ListChecks,
+  MapPin,
   ShieldCheck,
   Users,
   Video,
 } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
+import { Avatar } from '@/components/ui/avatar';
 import { Card, CardHeader, StatCard } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -123,6 +125,18 @@ export default function DashboardPage() {
 
   const [summary, setSummary] = useState<AdminSummary | null>(null);
   const [personal, setPersonal] = useState<PersonalSummary | null>(null);
+  const [liveBoard, setLiveBoard] = useState<
+    Array<{
+      userId: string;
+      userName: string;
+      clockInAt: string | null;
+      onBreak: boolean;
+      workMode: string;
+      latitude: number | null;
+      longitude: number | null;
+      locationLabel: string | null;
+    }>
+  >([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -130,11 +144,13 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      if (isAdminView) {
-        setSummary(await api<AdminSummary>('/dashboard/admin'));
-      } else {
-        setPersonal(await api<PersonalSummary>('/dashboard/me'));
-      }
+      const [attRes] = await Promise.all([
+        api<{ liveBoard?: typeof liveBoard }>('/attendance').catch(() => ({ liveBoard: [] })),
+        isAdminView
+          ? api<AdminSummary>('/dashboard/admin').then(setSummary)
+          : api<PersonalSummary>('/dashboard/me').then(setPersonal),
+      ]);
+      setLiveBoard(Array.isArray(attRes?.liveBoard) ? attRes.liveBoard : []);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not load your dashboard.');
     } finally {
@@ -269,6 +285,65 @@ export default function DashboardPage() {
             </>
           )}
         </section>
+
+        {/* Jibble Live Who's In & Location Board */}
+        <Card>
+          <CardHeader
+            title={`Jibble Live — Who's In (${liveBoard.length})`}
+            description="Real-time team attendance, work mode & GPS check-in locations."
+            badge={<Badge dot tone="success">Live</Badge>}
+            action={
+              <div className="flex items-center gap-2">
+                <Link href="/attendance">
+                  <Button size="sm" variant="secondary">Clock In / Map</Button>
+                </Link>
+                <Link href="/time-tracker">
+                  <Button size="sm">Timesheet</Button>
+                </Link>
+              </div>
+            }
+          />
+          {liveBoard.length === 0 ? (
+            <p className="px-6 pb-5 text-xs text-muted">
+              No one has clocked in yet today. Click &ldquo;Clock In / Map&rdquo; to start your shift with GPS.
+            </p>
+          ) : (
+            <div className="grid gap-3 px-5 pb-5 sm:grid-cols-2 lg:grid-cols-3 sm:px-6">
+              {liveBoard.map((m) => (
+                <div
+                  key={m.userId}
+                  className="flex items-center justify-between gap-3 rounded-2xl bg-ink/[0.04] p-3 dark:bg-white/[0.06]"
+                >
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <Avatar name={m.userName} size="md" />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-ink">{m.userName}</p>
+                      <p className="text-[11px] text-muted">
+                        {m.workMode} ·{' '}
+                        {m.clockInAt
+                          ? new Date(m.clockInAt).toLocaleTimeString('en-LK', {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              timeZone: 'Asia/Colombo',
+                            })
+                          : '—'}
+                      </p>
+                      {m.locationLabel && (
+                        <p className="flex items-center gap-1 truncate text-[11px] text-muted">
+                          <MapPin className="h-3 w-3 shrink-0 text-gold-strong dark:text-gold" />
+                          <span className="truncate">{m.locationLabel}</span>
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <Badge tone={m.onBreak ? 'warning' : 'success'}>
+                    {m.onBreak ? 'Break' : 'In'}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
 
         {ws && ws.recentProjects.length > 0 && (
           <Card>

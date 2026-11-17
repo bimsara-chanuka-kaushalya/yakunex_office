@@ -155,6 +155,9 @@ export interface TimeEntryItem {
   note: string;
   status?: 'RUNNING' | 'PAUSED' | 'SAVED' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | 'REVISION_REQUIRED';
   approvedByName?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  locationLabel?: string | null;
 }
 
 export interface AttendanceItem {
@@ -169,6 +172,12 @@ export interface AttendanceItem {
   breakMinutes: number;
   isLate: boolean;
   notes: string;
+  workMode?: 'OFFICE' | 'REMOTE' | 'FIELD';
+  latitude?: number | null;
+  longitude?: number | null;
+  accuracyMeters?: number | null;
+  locationLabel?: string | null;
+  deviceType?: string | null;
 }
 
 export interface LeaveRequestItem {
@@ -1483,6 +1492,9 @@ export class WorkspaceService implements OnModuleInit {
       durationMinutes: 0,
       billable: body.billable !== false,
       note: String(body.note ?? '').trim() || 'Active timer session',
+      latitude: typeof body.latitude === 'number' ? body.latitude : null,
+      longitude: typeof body.longitude === 'number' ? body.longitude : null,
+      locationLabel: body.locationLabel ? String(body.locationLabel).trim() : null,
       status: 'RUNNING',
       approvedByName: null,
     };
@@ -1644,7 +1656,7 @@ export class WorkspaceService implements OnModuleInit {
     return entry;
   }
 
-  // ─── Attendance ───────────────────────────────────────────────────────────
+  // ─── Attendance & Jibble Live Location ────────────────────────────────────
   listAttendance(actor: AuthUser) {
     const today = new Date().toISOString().slice(0, 10);
     const myToday =
@@ -1654,9 +1666,23 @@ export class WorkspaceService implements OnModuleInit {
     const records = this.isManagerOrAdmin(actor)
       ? this.attendance
       : this.attendance.filter((a) => a.userId === actor.id || a.userName === actor.fullName);
+    const liveBoard = this.attendance
+      .filter((a) => a.workDate === today && a.clockInAt && !a.clockOutAt)
+      .map((a) => ({
+        userId: a.userId,
+        userName: a.userName,
+        userRole: a.userRole,
+        clockInAt: a.clockInAt,
+        onBreak: a.onBreak,
+        workMode: a.workMode ?? 'OFFICE',
+        latitude: a.latitude ?? null,
+        longitude: a.longitude ?? null,
+        locationLabel: a.locationLabel ?? null,
+      }));
     return {
       todayRecord: myToday,
       records,
+      liveBoard,
     };
   }
 
@@ -1666,6 +1692,30 @@ export class WorkspaceService implements OnModuleInit {
     if (record && record.clockInAt && !record.clockOutAt) {
       throw new BadRequestException('You are already clocked in for today.');
     }
+    const workModeRaw = String(body.workMode ?? 'OFFICE').toUpperCase();
+    const workMode: AttendanceItem['workMode'] =
+      workModeRaw === 'REMOTE' || workModeRaw === 'FIELD' ? workModeRaw : 'OFFICE';
+    const latitude = typeof body.latitude === 'number' ? body.latitude : null;
+    const longitude = typeof body.longitude === 'number' ? body.longitude : null;
+    const accuracyMeters = typeof body.accuracyMeters === 'number' ? body.accuracyMeters : null;
+    const locationLabel = body.locationLabel
+      ? String(body.locationLabel).trim()
+      : latitude !== null && longitude !== null
+        ? `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
+        : workMode === 'OFFICE'
+          ? 'Colombo HQ'
+          : 'Remote';
+    const deviceType = body.deviceType ? String(body.deviceType).trim() : 'Web Workspace';
+
+    // Check Colombo local time against workDayStart (08:30 default)
+    const nowColombo = new Date().toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'Asia/Colombo',
+    });
+    const isLate = nowColombo > (this.settings.workDayStart || '08:30');
+
     if (!record) {
       record = {
         id: `att_${randomUUID().slice(0, 8)}`,
@@ -1677,12 +1727,24 @@ export class WorkspaceService implements OnModuleInit {
         clockOutAt: null,
         onBreak: false,
         breakMinutes: 0,
-        isLate: false,
+        isLate,
         notes: String(body.notes ?? '').trim() || 'Clocked in from web workspace.',
+        workMode,
+        latitude,
+        longitude,
+        accuracyMeters,
+        locationLabel,
+        deviceType,
       };
       this.attendance.unshift(record);
     } else {
       record.clockOutAt = null;
+      record.workMode = workMode;
+      record.latitude = latitude;
+      record.longitude = longitude;
+      record.accuracyMeters = accuracyMeters;
+      record.locationLabel = locationLabel;
+      record.deviceType = deviceType;
     }
     this.persistState(actor.organizationId);
 
@@ -2788,10 +2850,74 @@ export class WorkspaceService implements OnModuleInit {
       count: this.tasks.filter((t) => t.status === st).length,
     }));
 
+    // Jibble-style per-employee Timesheet & Attendance Summary
+    const byUser = new Map<
+      string,
+      {
+        userId: string;
+        userName: string;
+        totalMinutes: number;
+        regularMinutes: number;
+        overtimeMinutes: number;
+        billableMinutes: number;
+        approvedMinutes: number;
+        breakMinutes: number;
+        lateCount: number;
+        gpsVerifiedCount: number;
+      }
+    >();
+    const ensureEmp = (userId: string, userName: string) => {
+      let row = byUser.get(userId);
+      if (!row) {
+        row = {
+          userId,
+          userName,
+          totalMinutes: 0,
+          regularMinutes: 0,
+          overtimeMinutes: 0,
+          billableMinutes: 0,
+          approvedMinutes: 0,
+          breakMinutes: 0,
+          lateCount: 0,
+          gpsVerifiedCount: 0,
+        };
+        byUser.set(userId, row);
+      }
+      return row;
+    };
+
+    const dailyMinutes = new Map<string, number>();
+    for (const te of this.timeEntries) {
+      const row = ensureEmp(te.userId, te.userName);
+      row.totalMinutes += te.durationMinutes;
+      if (te.billable) row.billableMinutes += te.durationMinutes;
+      if (te.status === 'APPROVED') row.approvedMinutes += te.durationMinutes;
+      if (te.latitude != null && te.longitude != null) row.gpsVerifiedCount += 1;
+      const dayKey = `${te.userId}::${te.startedAt.slice(0, 10)}`;
+      dailyMinutes.set(dayKey, (dailyMinutes.get(dayKey) ?? 0) + te.durationMinutes);
+    }
+    for (const [dayKey, mins] of dailyMinutes.entries()) {
+      const [uid] = dayKey.split('::');
+      const row = byUser.get(uid);
+      if (row) {
+        const reg = Math.min(480, mins);
+        const ot = Math.max(0, mins - 480);
+        row.regularMinutes += reg;
+        row.overtimeMinutes += ot;
+      }
+    }
+    for (const att of this.attendance) {
+      const row = ensureEmp(att.userId, att.userName);
+      row.breakMinutes += att.breakMinutes;
+      if (att.isLate) row.lateCount += 1;
+      if (att.latitude != null && att.longitude != null) row.gpsVerifiedCount += 1;
+    }
+
     return {
       projectProgress,
       bugsBySeverity,
       tasksByStatus,
+      timesheetSummary: Array.from(byUser.values()),
       totalBillableMinutes: this.timeEntries.filter((t) => t.billable).reduce((s, t) => s + t.durationMinutes, 0),
       totalNonBillableMinutes: this.timeEntries.filter((t) => !t.billable).reduce((s, t) => s + t.durationMinutes, 0),
     };
