@@ -1,11 +1,13 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Lock } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { YakunexMark } from '@/components/brand/logo';
 import { Avatar } from '@/components/ui/avatar';
+import { api } from '@/lib/api';
 import { NAV_SECTIONS } from '@/lib/nav';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
@@ -14,6 +16,36 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { user, can } = useAuth();
   const { t, lang } = useLang();
+  const [badges, setBadges] = useState<{ notifications: number; approvals: number }>({
+    notifications: 0,
+    approvals: 0,
+  });
+
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+    const poll = async () => {
+      try {
+        const [notifs, apps] = await Promise.all([
+          api<Array<{ read?: boolean }>>('/notifications').catch(() => []),
+          api<Array<{ status?: string }>>('/approvals').catch(() => []),
+        ]);
+        if (!active) return;
+        setBadges({
+          notifications: Array.isArray(notifs) ? notifs.filter((n) => !n.read).length : 0,
+          approvals: Array.isArray(apps) ? apps.filter((a) => a.status === 'PENDING').length : 0,
+        });
+      } catch {
+        // ignore transient polling errors
+      }
+    };
+    void poll();
+    const id = setInterval(() => void poll(), 30_000);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, [user]);
 
   return (
     <nav
@@ -72,6 +104,16 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                           )}
                         />
                         <span className="flex-1 truncate">{t(item.key)}</span>
+                        {item.key === 'notifications' && badges.notifications > 0 && (
+                          <span className="rounded-full bg-danger px-1.5 py-0.5 font-mono text-[10px] font-bold text-white">
+                            {badges.notifications}
+                          </span>
+                        )}
+                        {item.key === 'approvals' && badges.approvals > 0 && (
+                          <span className="rounded-full bg-gold px-1.5 py-0.5 font-mono text-[10px] font-bold text-gold-ink">
+                            {badges.approvals}
+                          </span>
+                        )}
                         {!item.ready && (
                           <span
                             className="flex items-center rounded bg-ink/[0.05] px-1.5 py-0.5 text-[10px] text-muted dark:bg-white/[0.08]"

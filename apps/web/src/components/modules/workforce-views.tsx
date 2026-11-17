@@ -875,6 +875,8 @@ interface AttendanceRow {
   accuracyMeters?: number | null;
   locationLabel?: string | null;
   deviceType?: string | null;
+  geofenceStatus?: 'INSIDE_OFFICE' | 'OUTSIDE_OFFICE' | 'REMOTE_APPROVED' | 'NO_GPS';
+  distanceMeters?: number | null;
 }
 
 interface LiveBoardMember {
@@ -1267,19 +1269,34 @@ export function AttendanceView() {
                       )}
                     </td>
                     <td className="px-5 py-3.5 text-xs">
-                      {rec.latitude != null && rec.longitude != null ? (
-                        <a
-                          href={`https://maps.google.com/?q=${rec.latitude},${rec.longitude}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 text-info hover:underline"
-                        >
-                          <MapPin className="h-3 w-3" />
-                          {rec.locationLabel ?? `${rec.latitude.toFixed(4)}, ${rec.longitude.toFixed(4)}`}
-                        </a>
-                      ) : (
-                        <span className="text-muted">{rec.locationLabel ?? '—'}</span>
-                      )}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {rec.latitude != null && rec.longitude != null ? (
+                          <a
+                            href={`https://maps.google.com/?q=${rec.latitude},${rec.longitude}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-info hover:underline"
+                          >
+                            <MapPin className="h-3 w-3" />
+                            {rec.locationLabel ?? `${rec.latitude.toFixed(4)}, ${rec.longitude.toFixed(4)}`}
+                          </a>
+                        ) : (
+                          <span className="text-muted">{rec.locationLabel ?? '—'}</span>
+                        )}
+                        {rec.geofenceStatus === 'INSIDE_OFFICE' && (
+                          <Badge tone="success">
+                            In Zone{rec.distanceMeters != null ? ` (${rec.distanceMeters}m)` : ''}
+                          </Badge>
+                        )}
+                        {rec.geofenceStatus === 'OUTSIDE_OFFICE' && (
+                          <Badge tone="warning">
+                            Outside Zone{rec.distanceMeters != null ? ` (${rec.distanceMeters}m)` : ''}
+                          </Badge>
+                        )}
+                        {rec.geofenceStatus === 'REMOTE_APPROVED' && (
+                          <Badge tone="info">Remote</Badge>
+                        )}
+                      </div>
                     </td>
                     <td className="px-5 py-3.5 text-xs text-muted">{rec.breakMinutes}m</td>
                     <td className="px-5 py-3.5 text-xs text-muted">{rec.notes}</td>

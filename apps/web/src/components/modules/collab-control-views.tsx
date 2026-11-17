@@ -16,6 +16,7 @@ import {
   Lock,
   MessageSquarePlus,
   MessagesSquare,
+  Paperclip,
   Pin,
   Plus,
   Reply,
@@ -74,6 +75,8 @@ interface ChatMessage {
   reactions?: Record<string, string[]>;
   linkedTaskId?: string | null;
   linkedMeetingCode?: string | null;
+  attachmentUrl?: string | null;
+  attachmentName?: string | null;
 }
 
 interface OrgMember {
@@ -124,6 +127,8 @@ export function ChatView() {
   const [editingMsg, setEditingMsg] = useState<ChatMessage | null>(null);
   const [editText, setEditText] = useState('');
   const [banner, setBanner] = useState<string | null>(null);
+  const [pendingAttachment, setPendingAttachment] = useState<{ name: string; dataUrl: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [newChannelName, setNewChannelName] = useState('');
@@ -202,15 +207,35 @@ export function ChatView() {
     }
   }, [activeId, loadMessages]);
 
+  function onPickAttachment(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 3 * 1024 * 1024) {
+      setBanner('Attachment must be under 3 MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setPendingAttachment({ name: file.name, dataUrl: reader.result });
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+
   async function onSend(e: FormEvent) {
     e.preventDefault();
-    if (!text.trim()) return;
+    if (!text.trim() && !pendingAttachment) return;
     await post(`/chat/channels/${activeId}/messages`, {
-      body: text,
+      body: text.trim() || `Attachment: ${pendingAttachment?.name ?? 'File'}`,
       replyToId: replyTo?.id,
+      attachmentUrl: pendingAttachment?.dataUrl,
+      attachmentName: pendingAttachment?.name,
     });
     setText('');
     setReplyTo(null);
+    setPendingAttachment(null);
     await loadMessages(activeId);
   }
 
@@ -626,9 +651,39 @@ export function ChatView() {
                           </Button>
                         </form>
                       ) : (
-                        <p className={cn('text-[14px] leading-snug', msg.deleted && 'italic opacity-60')}>
-                          {msg.body}
-                        </p>
+                        <>
+                          {msg.attachmentUrl && !msg.deleted && (
+                            <div className="mb-1.5">
+                              {msg.attachmentUrl.startsWith('data:image/') ? (
+                                <a
+                                  href={msg.attachmentUrl}
+                                  download={msg.attachmentName || 'image.png'}
+                                  className="block overflow-hidden rounded-xl border border-black/10 dark:border-white/10"
+                                >
+                                  <img
+                                    src={msg.attachmentUrl}
+                                    alt={msg.attachmentName || 'Attachment'}
+                                    className="max-h-56 w-auto rounded-xl object-cover"
+                                  />
+                                </a>
+                              ) : (
+                                <a
+                                  href={msg.attachmentUrl}
+                                  download={msg.attachmentName || 'attachment'}
+                                  className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-black/[0.04] px-3 py-1.5 text-xs font-medium hover:bg-black/[0.08] dark:border-white/10 dark:bg-white/[0.08]"
+                                >
+                                  <Download className="h-3.5 w-3.5 text-gold" />
+                                  <span className="max-w-[200px] truncate">
+                                    {msg.attachmentName || 'Download attachment'}
+                                  </span>
+                                </a>
+                              )}
+                            </div>
+                          )}
+                          <p className={cn('text-[14px] leading-snug', msg.deleted && 'italic opacity-60')}>
+                            {msg.body}
+                          </p>
+                        </>
                       )}
 
                       <div className="mt-1 flex flex-wrap items-center justify-end gap-1.5 text-[10px] opacity-70">
@@ -692,8 +747,40 @@ export function ChatView() {
             </div>
           )}
 
+          {pendingAttachment && (
+            <div className="material flex items-center justify-between border-t border-line/60 px-4 py-2 text-xs">
+              <div className="flex items-center gap-2 truncate">
+                <Paperclip className="h-3.5 w-3.5 shrink-0 text-gold" />
+                <span className="truncate font-medium text-ink">{pendingAttachment.name}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingAttachment(null)}
+                className="text-muted hover:text-ink"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+
           {/* Frosted WhatsApp + Apple Composer Bar */}
           <form onSubmit={onSend} className="material flex items-center gap-2.5 border-t border-line/70 px-4 py-3">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv"
+              className="hidden"
+              onChange={onPickAttachment}
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="Attach image or file"
+              title="Attach image or file"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-surface text-muted ring-1 ring-line/60 transition hover:text-ink dark:bg-raised"
+            >
+              <Paperclip className="h-4 w-4" />
+            </button>
             <input
               type="text"
               placeholder={`Message #${activeChannel?.name ?? 'channel'}…`}

@@ -133,6 +133,8 @@ export interface DocumentItem {
   visibility: string;
   uploadedByName: string;
   summary: string;
+  fileDataUrl?: string | null;
+  fileName?: string | null;
   updatedAt: string;
 }
 
@@ -178,6 +180,8 @@ export interface AttendanceItem {
   accuracyMeters?: number | null;
   locationLabel?: string | null;
   deviceType?: string | null;
+  geofenceStatus?: 'INSIDE_OFFICE' | 'OUTSIDE_OFFICE' | 'REMOTE_APPROVED' | 'NO_GPS';
+  distanceMeters?: number | null;
 }
 
 export interface LeaveRequestItem {
@@ -334,6 +338,9 @@ export interface OrganizationSettings {
   idleTimeoutMinutes: number;
   enforceSingleTimer: boolean;
   requirePasswordRotationDays: number;
+  officeLatitude?: number;
+  officeLongitude?: number;
+  officeRadiusMeters?: number;
 }
 
 export interface IceServerEntry {
@@ -620,6 +627,9 @@ export class WorkspaceService implements OnModuleInit {
     idleTimeoutMinutes: 10,
     enforceSingleTimer: true,
     requirePasswordRotationDays: 90,
+    officeLatitude: 6.9271,
+    officeLongitude: 79.8612,
+    officeRadiusMeters: 250,
   };
 
   private roleMatrix: Record<Role, string[]> = {
@@ -1414,6 +1424,11 @@ export class WorkspaceService implements OnModuleInit {
       visibility: String(body.visibility || 'TEAM'),
       uploadedByName: actor.fullName,
       summary: String(body.summary ?? '').trim(),
+      fileDataUrl:
+        typeof body.fileDataUrl === 'string' && body.fileDataUrl.startsWith('data:')
+          ? body.fileDataUrl
+          : null,
+      fileName: typeof body.fileName === 'string' && body.fileName.trim() ? body.fileName.trim() : null,
       updatedAt: new Date().toISOString(),
     };
     this.documents.unshift(created);
@@ -1721,6 +1736,19 @@ export class WorkspaceService implements OnModuleInit {
           : 'Remote';
     const deviceType = body.deviceType ? String(body.deviceType).trim() : 'Web Workspace';
 
+    // Geofence check against configured office coordinates
+    let distanceMeters: number | null = null;
+    let geofenceStatus: AttendanceItem['geofenceStatus'] = 'NO_GPS';
+    if (workMode === 'REMOTE') {
+      geofenceStatus = 'REMOTE_APPROVED';
+    } else if (latitude !== null && longitude !== null) {
+      const officeLat = this.settings.officeLatitude ?? 6.9271;
+      const officeLon = this.settings.officeLongitude ?? 79.8612;
+      const radius = this.settings.officeRadiusMeters ?? 250;
+      distanceMeters = Math.round(this.haversineMeters(latitude, longitude, officeLat, officeLon));
+      geofenceStatus = distanceMeters <= radius ? 'INSIDE_OFFICE' : 'OUTSIDE_OFFICE';
+    }
+
     // Check Colombo local time against workDayStart (08:30 default)
     const nowColombo = new Date().toLocaleTimeString('en-GB', {
       hour: '2-digit',
@@ -1749,6 +1777,8 @@ export class WorkspaceService implements OnModuleInit {
         accuracyMeters,
         locationLabel,
         deviceType,
+        geofenceStatus,
+        distanceMeters,
       };
       this.attendance.unshift(record);
     } else {
@@ -1759,6 +1789,8 @@ export class WorkspaceService implements OnModuleInit {
       record.accuracyMeters = accuracyMeters;
       record.locationLabel = locationLabel;
       record.deviceType = deviceType;
+      record.geofenceStatus = geofenceStatus;
+      record.distanceMeters = distanceMeters;
     }
     this.persistState(actor.organizationId);
 
@@ -4005,6 +4037,261 @@ export class WorkspaceService implements OnModuleInit {
     });
 
     return this.getEmployeeProfile(actor, targetUserId);
+  }
+
+  private haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const toRad = (deg: number) => (deg * Math.PI) / 180;
+    const R = 6371000;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  getRoleInsights(actor: AuthUser) {
+    const actorTitle = this.userProfiles[actor.id]?.title || '';
+    const title = actorTitle.toLowerCase();
+    const today = new Date().toISOString().slice(0, 10);
+    const activeClockedIn = this.attendance.filter((a) => a.workDate === today && a.clockInAt && !a.clockOutAt);
+    const lateToday = this.attendance.filter((a) => a.workDate === today && a.isLate);
+    const pendingApprovals = this.approvals.filter((a) => a.status === 'PENDING');
+    const pendingLeaves = this.leaveRequests.filter((l) => l.status === 'PENDING');
+    const openBugs = this.bugs.filter((b) => b.status !== 'CLOSED' && b.status !== 'VERIFIED');
+    const criticalBugs = openBugs.filter((b) => b.severity === 'CRITICAL' || b.severity === 'BLOCKER');
+    const activeProjects = this.projects.filter((p) => p.status === 'ACTIVE');
+    const invoiceEntries = this.financeEntries.filter(
+      (f) => f.type === 'INVOICE' || f.type === 'INCOME',
+    );
+    const totalInvoiceUsd = invoiceEntries.reduce((acc, i) => acc + (i.amount || 0), 0);
+    const paidInvoiceUsd = invoiceEntries
+      .filter((i) => i.status === 'PAID')
+      .reduce((acc, i) => acc + (i.amount || 0), 0);
+    const outstandingUsd = totalInvoiceUsd - paidInvoiceUsd;
+
+    if (
+      title.includes('accountant') ||
+      title.includes('cfo') ||
+      title.includes('finance')
+    ) {
+      return {
+        persona: 'Finance & Accounting Intelligence',
+        badge: actorTitle || 'CFO / Finance',
+        cards: [
+          {
+            label: 'Total Billed',
+            value: `$${totalInvoiceUsd.toLocaleString()}`,
+            detail: `${invoiceEntries.length} revenue & invoice entries`,
+            tone: 'blue',
+          },
+          {
+            label: 'Collected Revenue',
+            value: `$${paidInvoiceUsd.toLocaleString()}`,
+            detail: 'Settled & reconciled',
+            tone: 'emerald',
+          },
+          {
+            label: 'Outstanding AR',
+            value: `$${outstandingUsd.toLocaleString()}`,
+            detail: 'Pending client settlement',
+            tone: outstandingUsd > 0 ? 'amber' : 'emerald',
+          },
+          {
+            label: 'Pending Approvals',
+            value: String(pendingApprovals.length),
+            detail: 'Expense & payout sign-offs',
+            tone: 'indigo',
+          },
+        ],
+      };
+    }
+
+    if (title.includes('secretary') || title.includes('legal') || title.includes('compliance')) {
+      const legalDocs = this.documents.filter(
+        (d) => d.visibility === 'ADMIN_ONLY' || d.visibility === 'CONFIDENTIAL' || d.type === 'CONTRACT',
+      );
+      const boardMeetings = this.meetings.filter(
+        (m) => m.meetingScope === 'BOARD' || m.meetingScope === 'LEGAL',
+      );
+      return {
+        persona: 'Legal & Governance Intelligence',
+        badge: actorTitle || 'Company Secretary',
+        cards: [
+          {
+            label: 'Board & Legal Meetings',
+            value: String(boardMeetings.length),
+            detail: 'Confidential governance sessions',
+            tone: 'indigo',
+          },
+          {
+            label: 'Restricted Documents',
+            value: String(legalDocs.length),
+            detail: 'Contracts & admin-only filings',
+            tone: 'blue',
+          },
+          {
+            label: 'Active Clients',
+            value: String(this.clients.length),
+            detail: 'Corporate entities on record',
+            tone: 'emerald',
+          },
+          {
+            label: 'Pending Approvals',
+            value: String(pendingApprovals.length),
+            detail: 'Compliance & policy sign-offs',
+            tone: 'amber',
+          },
+        ],
+      };
+    }
+
+    if (title.includes('hr') || title.includes('people') || actor.role === Role.ADMIN) {
+      return {
+        persona: 'HR & Workforce Intelligence',
+        badge: actorTitle || 'HR / Admin',
+        cards: [
+          {
+            label: 'Clocked In Today',
+            value: String(activeClockedIn.length),
+            detail: `${this.attendance.filter((a) => a.workDate === today).length} total check-ins`,
+            tone: 'emerald',
+          },
+          {
+            label: 'Late Arrivals Today',
+            value: String(lateToday.length),
+            detail: `Shift start ${this.settings.workDayStart}`,
+            tone: lateToday.length > 0 ? 'rose' : 'emerald',
+          },
+          {
+            label: 'Pending Leaves',
+            value: String(pendingLeaves.length),
+            detail: 'Awaiting HR review',
+            tone: 'amber',
+          },
+          {
+            label: 'Employee Profiles',
+            value: String(Object.keys(this.userProfiles).length),
+            detail: 'Profiles in HR directory',
+            tone: 'blue',
+          },
+        ],
+      };
+    }
+
+    if (
+      title.includes('cto') ||
+      title.includes('tech') ||
+      title.includes('engineer') ||
+      title.includes('qa') ||
+      title.includes('devops') ||
+      title.includes('ui')
+    ) {
+      const reviewTasks = this.tasks.filter((t) => t.status === 'IN_REVIEW' || t.status === 'IN_PROGRESS');
+      return {
+        persona: 'Engineering & Quality Intelligence',
+        badge: actorTitle || 'Engineering',
+        cards: [
+          {
+            label: 'Open Bugs',
+            value: String(openBugs.length),
+            detail: `${criticalBugs.length} critical / blocker`,
+            tone: criticalBugs.length > 0 ? 'rose' : 'amber',
+          },
+          {
+            label: 'Active Dev Tasks',
+            value: String(reviewTasks.length),
+            detail: 'In progress or in review',
+            tone: 'blue',
+          },
+          {
+            label: 'Active Sprints',
+            value: String(this.sprints.filter((s) => s.status === 'ACTIVE').length),
+            detail: `${this.sprints.length} total sprints`,
+            tone: 'indigo',
+          },
+          {
+            label: 'Active Projects',
+            value: String(activeProjects.length),
+            detail: 'Repositories & modules live',
+            tone: 'emerald',
+          },
+        ],
+      };
+    }
+
+    if (
+      actor.role === Role.SUPER_ADMIN ||
+      title.includes('md') ||
+      title.includes('ceo') ||
+      title.includes('director')
+    ) {
+      return {
+        persona: 'Executive Command Center',
+        badge: actorTitle || 'MD / Super Admin',
+        cards: [
+          {
+            label: 'Active Projects',
+            value: String(activeProjects.length),
+            detail: `${this.projects.length} total engagements`,
+            tone: 'blue',
+          },
+          {
+            label: 'Live Workforce',
+            value: String(activeClockedIn.length),
+            detail: 'Currently clocked in',
+            tone: 'emerald',
+          },
+          {
+            label: 'Outstanding AR',
+            value: `$${outstandingUsd.toLocaleString()}`,
+            detail: `$${paidInvoiceUsd.toLocaleString()} collected`,
+            tone: outstandingUsd > 0 ? 'amber' : 'emerald',
+          },
+          {
+            label: 'Executive Approvals',
+            value: String(pendingApprovals.length + pendingLeaves.length),
+            detail: `${pendingApprovals.length} approvals · ${pendingLeaves.length} leaves`,
+            tone: 'indigo',
+          },
+        ],
+      };
+    }
+
+    // Default: Delivery / PM / Intern
+    const myTasks = this.tasks.filter(
+      (t) => t.assigneeName === actor.fullName && t.status !== 'COMPLETED',
+    );
+    return {
+      persona: 'Delivery & Operations Focus',
+      badge: actorTitle || actor.role,
+      cards: [
+        {
+          label: 'My Open Tasks',
+          value: String(myTasks.length),
+          detail: 'Assigned & not yet done',
+          tone: 'blue',
+        },
+        {
+          label: 'Active Projects',
+          value: String(activeProjects.length),
+          detail: 'Across workspace',
+          tone: 'emerald',
+        },
+        {
+          label: 'Open Bugs',
+          value: String(openBugs.length),
+          detail: `${criticalBugs.length} high-priority`,
+          tone: openBugs.length > 0 ? 'amber' : 'emerald',
+        },
+        {
+          label: 'Team Clocked In',
+          value: String(activeClockedIn.length),
+          detail: 'Live attendance today',
+          tone: 'indigo',
+        },
+      ],
+    };
   }
 }
 

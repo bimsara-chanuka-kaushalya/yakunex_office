@@ -1817,6 +1817,8 @@ interface DocumentRow {
   visibility: string;
   uploadedByName: string;
   summary: string;
+  fileDataUrl?: string | null;
+  fileName?: string | null;
   updatedAt: string;
 }
 
@@ -1829,6 +1831,10 @@ export function DocumentsView() {
   const [type, setType] = useState('SRS');
   const [folder, setFolder] = useState('/architecture');
   const [summary, setSummary] = useState('');
+  const [fileDataUrl, setFileDataUrl] = useState<string | null>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [mimeType, setMimeType] = useState<string>('application/pdf');
+  const [sizeBytes, setSizeBytes] = useState<number>(524288);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1843,12 +1849,47 @@ export function DocumentsView() {
     void load();
   }, [load]);
 
+  function onFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) {
+      setFileDataUrl(null);
+      setFileName(null);
+      return;
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      alert('Please select a file under 4 MB.');
+      e.target.value = '';
+      return;
+    }
+    setFileName(file.name);
+    setMimeType(file.type || 'application/octet-stream');
+    setSizeBytes(file.size);
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setFileDataUrl(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+
   async function onCreate(e: FormEvent) {
     e.preventDefault();
-    await post('/documents', { title, type, folder, summary });
+    await post('/documents', {
+      title,
+      type,
+      folder,
+      summary,
+      fileDataUrl,
+      fileName,
+      mimeType,
+      sizeBytes,
+    });
     setModalOpen(false);
     setTitle('');
     setSummary('');
+    setFileDataUrl(null);
+    setFileName(null);
     await load();
   }
 
@@ -1913,11 +1954,21 @@ export function DocumentsView() {
                 </span>
                 <div className="flex items-center gap-2">
                   <span>{(doc.sizeBytes / 1024).toFixed(0)} KB</span>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() =>
-                      exportBrandedPdf({
+                  <div className="flex items-center gap-1.5">
+                    {doc.fileDataUrl && (
+                      <a
+                        href={doc.fileDataUrl}
+                        download={doc.fileName || `${doc.title}.pdf`}
+                        className="inline-flex h-8 items-center gap-1 rounded-xl border border-gold/40 bg-gold/10 px-2.5 text-xs font-semibold text-gold-strong hover:bg-gold/20 dark:text-gold"
+                      >
+                        <Download className="h-3.5 w-3.5" /> File
+                      </a>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() =>
+                        exportBrandedPdf({
                         title: doc.title,
                         subtitle: `${doc.type} · Version v${doc.version} · Project: ${doc.projectName}`,
                         generatedByEmail: user?.email,
@@ -1937,6 +1988,7 @@ export function DocumentsView() {
                   >
                     <Download className="h-3.5 w-3.5" /> PDF
                   </Button>
+                  </div>
                 </div>
               </div>
             </Card>
@@ -1977,6 +2029,19 @@ export function DocumentsView() {
               value={summary}
               onChange={(e) => setSummary(e.target.value)}
             />
+          </Field>
+          <Field label="Attach file (optional, max 4 MB)" htmlFor="dc-file">
+            <input
+              id="dc-file"
+              type="file"
+              onChange={onFileSelected}
+              className="block w-full rounded-xl border border-line bg-surface px-3 py-2 text-xs text-ink file:mr-3 file:rounded-lg file:border-0 file:bg-gold/15 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-gold-strong dark:file:text-gold"
+            />
+            {fileName && (
+              <p className="mt-1 text-[11px] text-success">
+                Attached: {fileName} ({(sizeBytes / 1024).toFixed(0)} KB)
+              </p>
+            )}
           </Field>
           <div className="flex justify-end gap-2">
             <Button variant="secondary" type="button" onClick={() => setModalOpen(false)}>

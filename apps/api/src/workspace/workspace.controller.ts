@@ -657,5 +657,10 @@ export class WorkspaceController {
   ) {
     return this.workspace.adminUpdateProfile(actor, userId, body);
   }
+
+  @Get('dashboard/role-insights')
+  getRoleInsights(@CurrentUser() actor: AuthUser) {
+    return this.workspace.getRoleInsights(actor);
+  }
 }
 

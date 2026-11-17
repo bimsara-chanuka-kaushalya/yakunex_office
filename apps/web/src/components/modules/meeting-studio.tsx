@@ -92,6 +92,8 @@ export interface MeetingRow {
   notes: string;
   participants: MeetingParticipant[];
   chatMessages: MeetingChatMessage[];
+  waitingRoom?: Array<{ userId: string; fullName: string; role: string; requestedAt: string }>;
+  screenShareApprovedIds?: string[];
 }
 
 interface MeetingSignalItem {
@@ -3110,6 +3112,28 @@ export function MeetingStudio({
     showToast(targetUserId ? 'Participant muted.' : 'All participants muted.');
   };
 
+  const hostAction = async (
+    action: 'admit' | 'remove' | 'approve-screenshare',
+    targetUserId: string,
+  ) => {
+    try {
+      const updated = await patch<MeetingRow>(`/meetings/${room.id}/host-action`, {
+        action,
+        targetUserId,
+      });
+      setRoom(updated);
+      const label =
+        action === 'admit'
+          ? 'Participant admitted from waiting room.'
+          : action === 'remove'
+            ? 'Participant removed from meeting.'
+            : 'Screen-share permission granted to intern.';
+      showToast(label);
+    } catch {
+      showToast('Host action failed or requires higher tier.');
+    }
+  };
+
   const copyInviteLink = async () => {
     const url = `${window.location.origin}/meet?room=${room.roomCode}`;
     await navigator.clipboard.writeText(url).catch(() => undefined);
@@ -3811,8 +3835,44 @@ export function MeetingStudio({
             {sideTab === 'participants' && (
               <div className="flex flex-1 flex-col overflow-hidden p-3">
                 <div className="flex-1 space-y-2 overflow-y-auto">
+                  {canHostControl && (room.waitingRoom?.length ?? 0) > 0 && (
+                    <div className="mb-3 space-y-1.5 rounded-xl border border-amber-400/25 bg-amber-400/10 p-2.5">
+                      <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-amber-300">
+                        <span>Waiting Room</span>
+                        <span>{room.waitingRoom?.length}</span>
+                      </div>
+                      {(room.waitingRoom ?? []).map((w) => (
+                        <div
+                          key={w.userId}
+                          className="flex items-center justify-between gap-2 rounded-lg bg-black/30 px-2.5 py-1.5"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-semibold text-white">{w.fullName}</p>
+                            <p className="text-[10px] text-white/50">{w.role}</p>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => void hostAction('admit', w.userId)}
+                              className="rounded bg-emerald-500/25 px-2 py-0.5 text-[10px] font-semibold text-emerald-300 hover:bg-emerald-500/40"
+                            >
+                              Admit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void hostAction('remove', w.userId)}
+                              className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-rose-300 hover:bg-rose-500/35"
+                            >
+                              Deny
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {room.participants.map((p) => {
                     const isSelf = p.userId === currentUser.id;
+                    const internApproved = (room.screenShareApprovedIds ?? []).includes(p.userId);
                     return (
                       <div
                         key={p.userId}
@@ -3848,6 +3908,21 @@ export function MeetingStudio({
                           >
                             {pinnedUserId === p.userId ? 'Main' : 'Pin'}
                           </button>
+                          {canHostControl && !isSelf && p.role === 'INTERN' && (
+                            internApproved ? (
+                              <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
+                                Share OK
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => void hostAction('approve-screenshare', p.userId)}
+                                className="rounded bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-sky-300 hover:bg-sky-500/35"
+                              >
+                                Allow Share
+                              </button>
+                            )
+                          )}
                           {canHostControl && !isSelf && p.micOn && (
                             <button
                               type="button"
@@ -3855,6 +3930,16 @@ export function MeetingStudio({
                               className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-rose-300 hover:bg-rose-500/35"
                             >
                               Mute
+                            </button>
+                          )}
+                          {canHostControl && !isSelf && (
+                            <button
+                              type="button"
+                              onClick={() => void hostAction('remove', p.userId)}
+                              title="Remove from meeting"
+                              className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-white/70 hover:bg-rose-500/35 hover:text-rose-200"
+                            >
+                              Remove
                             </button>
                           )}
                           <span className={p.micOn ? 'text-emerald-400' : 'text-rose-400'}>

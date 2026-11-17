@@ -86,6 +86,17 @@ interface PersonalSummary {
   workspace?: WorkspaceMetrics;
 }
 
+interface RoleInsights {
+  persona: string;
+  badge: string;
+  cards: Array<{
+    label: string;
+    value: string;
+    detail: string;
+    tone: 'blue' | 'emerald' | 'amber' | 'rose' | 'indigo';
+  }>;
+}
+
 const ACTION_LABELS: Record<string, string> = {
   LOGIN_SUCCESS: 'Signed in',
   LOGIN_FAILED: 'Failed sign-in attempt',
@@ -125,6 +136,7 @@ export default function DashboardPage() {
 
   const [summary, setSummary] = useState<AdminSummary | null>(null);
   const [personal, setPersonal] = useState<PersonalSummary | null>(null);
+  const [roleInsights, setRoleInsights] = useState<RoleInsights | null>(null);
   const [liveBoard, setLiveBoard] = useState<
     Array<{
       userId: string;
@@ -144,13 +156,15 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      const [attRes] = await Promise.all([
+      const [attRes, insightsRes] = await Promise.all([
         api<{ liveBoard?: typeof liveBoard }>('/attendance').catch(() => ({ liveBoard: [] })),
+        api<RoleInsights>('/dashboard/role-insights').catch(() => null),
         isAdminView
           ? api<AdminSummary>('/dashboard/admin').then(setSummary)
           : api<PersonalSummary>('/dashboard/me').then(setPersonal),
       ]);
       setLiveBoard(Array.isArray(attRes?.liveBoard) ? attRes.liveBoard : []);
+      if (insightsRes) setRoleInsights(insightsRes);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not load your dashboard.');
     } finally {
@@ -247,6 +261,44 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+
+        {/* Role-Tailored Intelligence Strip */}
+        {roleInsights && roleInsights.cards.length > 0 && (
+          <section aria-label="Role Intelligence" className="space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-gold" />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-muted">
+                  {roleInsights.persona}
+                </h3>
+              </div>
+              <Badge tone="gold">{roleInsights.badge}</Badge>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {roleInsights.cards.map((c) => {
+                const toneMap: Record<string, string> = {
+                  blue: 'border-sky-500/20 bg-sky-500/5 text-sky-600 dark:text-sky-400',
+                  emerald: 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600 dark:text-emerald-400',
+                  amber: 'border-amber-500/20 bg-amber-500/5 text-amber-600 dark:text-amber-400',
+                  rose: 'border-rose-500/20 bg-rose-500/5 text-rose-600 dark:text-rose-400',
+                  indigo: 'border-indigo-500/20 bg-indigo-500/5 text-indigo-600 dark:text-indigo-400',
+                };
+                return (
+                  <div
+                    key={c.label}
+                    className={`rounded-2xl border p-4 shadow-2xs transition hover:shadow-card ${toneMap[c.tone] ?? toneMap.blue}`}
+                  >
+                    <div className="text-[11px] font-semibold uppercase tracking-wider opacity-80">
+                      {c.label}
+                    </div>
+                    <div className="mt-1 font-display text-2xl font-bold text-ink">{c.value}</div>
+                    <div className="mt-1 text-xs text-muted">{c.detail}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {/* Key Metrics Grid */}
         <section aria-label="Key figures" className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4 sm:gap-4">

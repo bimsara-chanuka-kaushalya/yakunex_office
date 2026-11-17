@@ -348,17 +348,31 @@ interface FinancePayload {
   }>;
 }
 
+interface PayrollEmployeeRow {
+  userName: string;
+  hours: number;
+  entries: number;
+}
+
 export function FinanceView() {
   const { user, can } = useAuth();
   const [data, setData] = useState<FinancePayload | null>(null);
+  const [payrollRows, setPayrollRows] = useState<PayrollEmployeeRow[]>([]);
+  const [hourlyRate, setHourlyRate] = useState<number>(25);
   const [type, setType] = useState<'INCOME' | 'EXPENSE' | 'INVOICE' | 'PAYROLL'>('INCOME');
   const [category, setCategory] = useState('');
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
 
   const load = useCallback(async () => {
-    const res = await api<FinancePayload>('/finance');
+    const [res, rep] = await Promise.all([
+      api<FinancePayload>('/finance'),
+      api<{ timesheetSummary?: PayrollEmployeeRow[] }>('/reports/summary').catch(() => ({
+        timesheetSummary: [],
+      })),
+    ]);
     setData(res);
+    setPayrollRows(Array.isArray(rep?.timesheetSummary) ? rep.timesheetSummary : []);
   }, []);
 
   useEffect(() => {
@@ -455,6 +469,77 @@ export function FinanceView() {
                 <span className="font-mono font-bold text-ink">${entry.amount.toLocaleString()}</span>
               </div>
             ))
+          )}
+        </div>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Monthly Payroll & Payslip Generator"
+          description="Calculated from Jibble timesheet hours (Regular + 1.5x OT over 160h/month)"
+          action={
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-muted">Base Rate ($/hr):</span>
+              <Input
+                type="number"
+                min={1}
+                value={hourlyRate}
+                onChange={(e) => setHourlyRate(Math.max(1, Number(e.target.value) || 25))}
+                className="h-8 w-20 text-xs"
+              />
+            </div>
+          }
+        />
+        <div className="divide-y divide-line">
+          {payrollRows.length === 0 ? (
+            <p className="p-6 text-sm text-muted">No timesheet hours logged yet for payroll calculation.</p>
+          ) : (
+            payrollRows.map((emp) => {
+              const regularHours = Math.min(emp.hours, 160);
+              const otHours = Math.max(0, emp.hours - 160);
+              const regularPay = regularHours * hourlyRate;
+              const otPay = otHours * hourlyRate * 1.5;
+              const grossPay = regularPay + otPay;
+              return (
+                <div key={emp.userName} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 text-sm">
+                  <div>
+                    <p className="font-semibold text-ink">{emp.userName}</p>
+                    <p className="text-xs text-muted">
+                      {emp.hours.toFixed(1)}h logged ({regularHours.toFixed(1)}h reg · {otHours.toFixed(1)}h OT) · {emp.entries} entries
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="font-mono font-bold text-ink">${grossPay.toFixed(2)}</span>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() =>
+                        exportBrandedPdf({
+                          title: `Employee Payslip — ${emp.userName}`,
+                          subtitle: `Monthly Payroll Statement · Rate $${hourlyRate}/hr`,
+                          generatedByEmail: user?.email,
+                          generatedByName: user?.fullName,
+                          kpis: [
+                            { label: 'Total Hours', value: `${emp.hours.toFixed(1)}h` },
+                            { label: 'Regular Pay', value: `$${regularPay.toFixed(2)}` },
+                            { label: 'Overtime (1.5x)', value: `$${otPay.toFixed(2)}` },
+                            { label: 'Gross Payout', value: `$${grossPay.toFixed(2)}` },
+                          ],
+                          columns: ['Pay Component', 'Hours / Units', 'Rate', 'Amount'],
+                          rows: [
+                            ['Regular Hours', `${regularHours.toFixed(1)}h`, `$${hourlyRate.toFixed(2)}/hr`, `$${regularPay.toFixed(2)}`],
+                            ['Overtime Hours (1.5x)', `${otHours.toFixed(1)}h`, `$${(hourlyRate * 1.5).toFixed(2)}/hr`, `$${otPay.toFixed(2)}`],
+                            ['Total Gross Compensation', `${emp.hours.toFixed(1)}h`, '—', `$${grossPay.toFixed(2)}`],
+                          ],
+                        })
+                      }
+                    >
+                      <Download className="h-3.5 w-3.5" /> Payslip PDF
+                    </Button>
+                  </div>
+                </div>
+              );
+            })
           )}
         </div>
       </Card>
