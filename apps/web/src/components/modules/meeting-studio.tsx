@@ -643,6 +643,8 @@ export function MeetingStudio({
   initialRoom,
   initialMicOn,
   initialCamOn,
+  initialMicId = '',
+  initialCamId = '',
   currentUser,
   onExited,
   onMeetingUpdated,
@@ -651,6 +653,8 @@ export function MeetingStudio({
   initialRoom: MeetingRow;
   initialMicOn: boolean;
   initialCamOn: boolean;
+  initialMicId?: string;
+  initialCamId?: string;
   currentUser: CurrentUserInfo;
   onExited: (endedForAll?: boolean) => void;
   onMeetingUpdated?: (room: MeetingRow) => void;
@@ -676,8 +680,8 @@ export function MeetingStudio({
   const [deviceMenu, setDeviceMenu] = useState<'mic' | 'cam' | null>(null);
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
-  const [selectedMicId, setSelectedMicId] = useState<string>('');
-  const [selectedCamId, setSelectedCamId] = useState<string>('');
+  const [selectedMicId, setSelectedMicId] = useState<string>(initialMicId);
+  const [selectedCamId, setSelectedCamId] = useState<string>(initialCamId);
   const [recording, setRecording] = useState(false);
   const [recordingSec, setRecordingSec] = useState(0);
   const [screenAudioMuted, setScreenAudioMuted] = useState(false);
@@ -1162,13 +1166,19 @@ export function MeetingStudio({
         stream = await navigator.mediaDevices.getUserMedia({
           audio: initialMicOn
             ? {
+                ...(initialMicId ? { deviceId: { exact: initialMicId } } : {}),
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
                 sampleRate: 48000,
               }
             : false,
-          video: initialCamOn ? initialVideoConstraints : false,
+          video: initialCamOn
+            ? {
+                ...(initialCamId ? { deviceId: { exact: initialCamId } } : {}),
+                ...initialVideoConstraints,
+              }
+            : false,
         });
       } catch {
         // Fallback 1: try 720p video + audio if 1080p constraints were rejected
@@ -3428,8 +3438,8 @@ export function MeetingStudio({
           </div>
         ))}
 
-      {/* ─── TOP ZOOM HEADER ─────────────────────────────────────────────── */}
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#0F1522]/95 px-5 py-3 backdrop-blur-md">
+      {/* ─── TOP ZOOM + APPLE FROSTED HEADER ─────────────────────────────── */}
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#0b0e16]/85 px-5 py-3 backdrop-blur-2xl">
         <div className="flex min-w-0 items-center gap-3">
           <span className="flex h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_10px_#34D399]" />
           <div className="min-w-0">
@@ -3485,13 +3495,13 @@ export function MeetingStudio({
           )}
 
           {!activeScreenShare && (
-            <div className="inline-flex rounded-xl border border-white/10 bg-white/5 p-0.5 text-xs">
+            <div className="inline-flex rounded-full border border-white/10 bg-white/[0.06] p-0.5 text-xs backdrop-blur-md">
               <button
                 type="button"
                 onClick={() => setLayoutMode('gallery')}
                 className={cn(
-                  'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-medium transition',
-                  layoutMode === 'gallery' ? 'bg-white/15 text-white' : 'text-white/60 hover:text-white',
+                  'inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-medium transition',
+                  layoutMode === 'gallery' ? 'bg-white/20 text-white shadow-2xs' : 'text-white/60 hover:text-white',
                 )}
               >
                 <LayoutGrid className="h-3.5 w-3.5" /> Gallery
@@ -3500,8 +3510,8 @@ export function MeetingStudio({
                 type="button"
                 onClick={() => setLayoutMode('speaker')}
                 className={cn(
-                  'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-medium transition',
-                  layoutMode === 'speaker' ? 'bg-white/15 text-white' : 'text-white/60 hover:text-white',
+                  'inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-medium transition',
+                  layoutMode === 'speaker' ? 'bg-white/20 text-white shadow-2xs' : 'text-white/60 hover:text-white',
                 )}
               >
                 <Sparkles className="h-3.5 w-3.5" /> Speaker
@@ -3514,10 +3524,10 @@ export function MeetingStudio({
             onClick={() => void togglePictureInPicture()}
             title={isPip ? 'Exit Picture-in-Picture' : 'Enter Picture-in-Picture'}
             className={cn(
-              'inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition',
+              'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold backdrop-blur-md transition',
               isPip
                 ? 'border-emerald-400/50 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
-                : 'border-white/15 bg-white/5 text-white/85 hover:bg-white/15 hover:text-white',
+                : 'border-white/15 bg-white/[0.06] text-white/85 hover:bg-white/15 hover:text-white',
             )}
           >
             <PictureInPicture2 className="h-3.5 w-3.5" />
@@ -3529,10 +3539,10 @@ export function MeetingStudio({
             onClick={() => void toggleFullscreen()}
             title={isFullscreen ? 'Exit Fullscreen (Esc)' : 'Enter Fullscreen'}
             className={cn(
-              'inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition',
+              'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold backdrop-blur-md transition',
               isFullscreen
                 ? 'border-[#D4A843]/50 bg-[#D4A843]/20 text-[#F3D27A] hover:bg-[#D4A843]/30'
-                : 'border-white/15 bg-white/5 text-white/85 hover:bg-white/15 hover:text-white',
+                : 'border-white/15 bg-white/[0.06] text-white/85 hover:bg-white/15 hover:text-white',
             )}
           >
             {isFullscreen ? (
@@ -4256,10 +4266,14 @@ export function PreJoinGreenRoom({
   userName: string;
   joining: boolean;
   onCancel: () => void;
-  onJoin: (opts: { micOn: boolean; camOn: boolean }) => void;
+  onJoin: (opts: { micOn: boolean; camOn: boolean; micDeviceId?: string; camDeviceId?: string }) => void;
 }) {
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
+  const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicId, setSelectedMicId] = useState('');
+  const [selectedCamId, setSelectedCamId] = useState('');
   const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
   const [micLevel, setMicLevel] = useState(0);
   const [deviceWarn, setDeviceWarn] = useState<string | null>(null);
@@ -4270,10 +4284,14 @@ export function PreJoinGreenRoom({
 
     async function setupPreview() {
       if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
+      setDeviceWarn(null);
       try {
         current = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
+          video: selectedCamId
+            ? { deviceId: { exact: selectedCamId }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }
+            : { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } },
           audio: {
+            ...(selectedMicId ? { deviceId: { exact: selectedMicId } } : {}),
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
@@ -4285,6 +4303,7 @@ export function PreJoinGreenRoom({
           current = await navigator.mediaDevices.getUserMedia({
             video: false,
             audio: {
+              ...(selectedMicId ? { deviceId: { exact: selectedMicId } } : {}),
               echoCancellation: true,
               noiseSuppression: true,
               autoGainControl: true,
@@ -4307,7 +4326,28 @@ export function PreJoinGreenRoom({
         current?.getTracks().forEach((t) => t.stop());
         return;
       }
+      current?.getAudioTracks().forEach((t) => {
+        t.enabled = micOn;
+      });
+      current?.getVideoTracks().forEach((t) => {
+        t.enabled = camOn;
+      });
       setPreviewStream(current);
+
+      if (navigator.mediaDevices?.enumerateDevices) {
+        try {
+          const all = await navigator.mediaDevices.enumerateDevices();
+          if (!active) return;
+          const mics = all.filter((d) => d.kind === 'audioinput');
+          const cams = all.filter((d) => d.kind === 'videoinput');
+          setAudioInputs(mics);
+          setVideoInputs(cams);
+          if (!selectedMicId && mics[0]?.deviceId) setSelectedMicId(mics[0].deviceId);
+          if (!selectedCamId && cams[0]?.deviceId) setSelectedCamId(cams[0].deviceId);
+        } catch {
+          // Ignore device enumeration errors
+        }
+      }
     }
 
     void setupPreview();
@@ -4316,7 +4356,9 @@ export function PreJoinGreenRoom({
       active = false;
       current?.getTracks().forEach((t) => t.stop());
     };
-  }, []);
+    // Re-capture preview when user switches selected mic or camera device before joining
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMicId, selectedCamId]);
 
   // Live microphone level bar in pre-join green room
   useEffect(() => {
@@ -4372,95 +4414,150 @@ export function PreJoinGreenRoom({
   };
 
   return (
-    <div className="mx-auto max-w-4xl rounded-3xl border border-border/80 bg-[#0B0F17] p-6 text-white shadow-2xl md:p-8">
-      <div className="grid gap-6 md:grid-cols-[1.4fr_1fr] md:items-center">
-        {/* Live Camera Preview Box */}
-        <div className="relative aspect-video overflow-hidden rounded-2xl border border-white/10 bg-[#111827]">
+    <div className="mx-auto max-w-5xl rounded-[28px] border border-white/10 bg-[#0b0d13]/95 p-6 text-white shadow-pop backdrop-blur-2xl md:p-8">
+      <div className="grid gap-7 md:grid-cols-[1.45fr_1fr] md:items-center">
+        {/* Live Camera Preview Box (Apple FaceTime + Zoom Pro) */}
+        <div className="relative aspect-video overflow-hidden rounded-[22px] border border-white/10 bg-[#121622] shadow-card">
           {camOn && previewStream?.getVideoTracks().some((t) => t.readyState === 'live') ? (
             <VideoCanvas stream={previewStream} mirrored />
           ) : (
-            <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-[#161F30] to-[#0B0F17]">
-              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-[#D4A843] to-[#9A7222] font-display text-2xl font-bold text-slate-950">
+            <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-[#192030] to-[#0b0d13]">
+              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-[#D4A843] to-[#9A7222] font-display text-2xl font-bold text-slate-950 shadow-lg">
                 {getInitials(userName)}
               </div>
-              <p className="mt-3 text-xs text-white/60">Camera is off</p>
+              <p className="mt-3 text-xs font-medium text-white/60">Camera is off</p>
             </div>
           )}
 
-          {/* Overlay toggles */}
+          {/* Top-left live status pill */}
+          <div className="absolute left-3.5 top-3.5 flex items-center gap-2 rounded-full bg-black/45 px-3 py-1 text-[11px] font-medium text-white/85 backdrop-blur-md">
+            <span className={cn('h-2 w-2 rounded-full', micOn || camOn ? 'bg-emerald-400' : 'bg-white/40')} />
+            <span>Pre-Join Check</span>
+          </div>
+
+          {/* Floating Apple Frosted Dock toggles */}
           <div className="absolute inset-x-0 bottom-4 flex items-center justify-center gap-3">
             <button
               type="button"
               onClick={togglePreviewMic}
               className={cn(
-                'flex h-11 w-11 items-center justify-center rounded-full shadow-lg transition',
-                micOn ? 'bg-white/15 text-white hover:bg-white/25' : 'bg-rose-600 text-white',
+                'flex h-11 items-center gap-2 rounded-full px-4 text-xs font-semibold shadow-lg backdrop-blur-xl transition active:scale-95',
+                micOn ? 'bg-white/15 text-white hover:bg-white/25' : 'bg-rose-600 text-white hover:bg-rose-500',
               )}
               title={micOn ? 'Mute mic' : 'Unmute mic'}
             >
-              {micOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+              {micOn ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
+              <span>{micOn ? 'Mic On' : 'Mic Off'}</span>
             </button>
             <button
               type="button"
               onClick={togglePreviewCam}
               className={cn(
-                'flex h-11 w-11 items-center justify-center rounded-full shadow-lg transition',
-                camOn ? 'bg-white/15 text-white hover:bg-white/25' : 'bg-rose-600 text-white',
+                'flex h-11 items-center gap-2 rounded-full px-4 text-xs font-semibold shadow-lg backdrop-blur-xl transition active:scale-95',
+                camOn ? 'bg-white/15 text-white hover:bg-white/25' : 'bg-rose-600 text-white hover:bg-rose-500',
               )}
               title={camOn ? 'Turn camera off' : 'Turn camera on'}
             >
-              {camOn ? <Camera className="h-5 w-5" /> : <CameraOff className="h-5 w-5" />}
+              {camOn ? <Camera className="h-4 w-4" /> : <CameraOff className="h-4 w-4" />}
+              <span>{camOn ? 'Cam On' : 'Cam Off'}</span>
             </button>
           </div>
         </div>
 
-        {/* Room Join Details */}
+        {/* Room Join Details & Device Selectors */}
         <div className="space-y-4">
-          <Badge tone="gold" className="w-fit">
-            Room {roomCode}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Badge tone="gold" className="w-fit">
+              Room {roomCode}
+            </Badge>
+            <span className="text-[11px] font-medium text-white/50">Zoom + Apple Studio</span>
+          </div>
           <div>
-            <h3 className="font-display text-2xl font-bold text-white">{meetingTitle}</h3>
+            <h3 className="font-display text-2xl font-bold tracking-tight text-white">{meetingTitle}</h3>
             <p className="mt-1 text-xs text-white/60">Hosted by {organizerName}</p>
           </div>
 
           {deviceWarn && (
-            <div className="rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-200">
+            <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-200">
               {deviceWarn}
             </div>
           )}
 
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-3.5 text-xs text-white/75">
-            <div className="flex items-center justify-between">
-              <span>Microphone</span>
-              <span className={micOn ? 'font-semibold text-emerald-400' : 'font-semibold text-rose-400'}>
-                {micOn ? 'Ready (On)' : 'Muted'}
-              </span>
-            </div>
-            {micOn && (
-              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-                <div
-                  className="h-full rounded-full bg-emerald-400 transition-all duration-100"
-                  style={{ width: `${micLevel}%` }}
-                />
+          {/* Device Selection Card */}
+          <div className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.05] p-4 text-xs text-white/80 backdrop-blur-md">
+            <div>
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="font-semibold text-white/90">Microphone</span>
+                <span className={micOn ? 'font-semibold text-emerald-400' : 'font-semibold text-rose-400'}>
+                  {micOn ? 'On' : 'Muted'}
+                </span>
               </div>
-            )}
-            <div className="mt-2.5 flex items-center justify-between">
-              <span>Camera</span>
-              <span className={camOn ? 'font-semibold text-emerald-400' : 'font-semibold text-rose-400'}>
-                {camOn ? 'Ready (On)' : 'Off'}
-              </span>
+              <select
+                aria-label="Select Microphone"
+                value={selectedMicId}
+                onChange={(e) => setSelectedMicId(e.target.value)}
+                className="h-9 w-full rounded-xl border border-white/10 bg-black/40 px-3 text-xs text-white focus:border-gold focus:outline-none"
+              >
+                {audioInputs.length === 0 ? (
+                  <option value="">Default Microphone</option>
+                ) : (
+                  audioInputs.map((d, idx) => (
+                    <option key={d.deviceId || idx} value={d.deviceId}>
+                      {d.label || `Microphone ${idx + 1}`}
+                    </option>
+                  ))
+                )}
+              </select>
+              {micOn && (
+                <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full bg-emerald-400 transition-all duration-100"
+                    style={{ width: `${micLevel}%` }}
+                  />
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="font-semibold text-white/90">Camera</span>
+                <span className={camOn ? 'font-semibold text-emerald-400' : 'font-semibold text-rose-400'}>
+                  {camOn ? 'On' : 'Off'}
+                </span>
+              </div>
+              <select
+                aria-label="Select Camera"
+                value={selectedCamId}
+                onChange={(e) => setSelectedCamId(e.target.value)}
+                className="h-9 w-full rounded-xl border border-white/10 bg-black/40 px-3 text-xs text-white focus:border-gold focus:outline-none"
+              >
+                {videoInputs.length === 0 ? (
+                  <option value="">Default Camera</option>
+                ) : (
+                  videoInputs.map((d, idx) => (
+                    <option key={d.deviceId || idx} value={d.deviceId}>
+                      {d.label || `Camera ${idx + 1}`}
+                    </option>
+                  ))
+                )}
+              </select>
             </div>
           </div>
 
-          <div className="flex flex-col gap-2 pt-2">
+          <div className="flex flex-col gap-2 pt-1">
             <Button
               variant="primary"
-              className="w-full justify-center py-3 text-sm font-bold"
+              size="lg"
+              className="w-full justify-center"
               disabled={joining}
               onClick={() => {
                 previewStream?.getTracks().forEach((t) => t.stop());
-                onJoin({ micOn, camOn });
+                onJoin({
+                  micOn,
+                  camOn,
+                  micDeviceId: selectedMicId || undefined,
+                  camDeviceId: selectedCamId || undefined,
+                });
               }}
             >
               <Video className="h-4 w-4" /> {joining ? 'Connecting to Room...' : 'Join Meeting Now'}

@@ -893,6 +893,8 @@ export function MeetingsView() {
     room: MeetingRow;
     micOn: boolean;
     camOn: boolean;
+    micDeviceId?: string;
+    camDeviceId?: string;
   } | null>(null);
   const handledUrlParamRef = useRef(false);
 
@@ -968,7 +970,17 @@ export function MeetingsView() {
     return false;
   };
 
-  const confirmPreJoin = async ({ micOn, camOn }: { micOn: boolean; camOn: boolean }) => {
+  const confirmPreJoin = async ({
+    micOn,
+    camOn,
+    micDeviceId,
+    camDeviceId,
+  }: {
+    micOn: boolean;
+    camOn: boolean;
+    micDeviceId?: string;
+    camDeviceId?: string;
+  }) => {
     if (!preJoin) return;
     setJoining(true);
     setJoinError(null);
@@ -995,10 +1007,12 @@ export function MeetingsView() {
           room: joined.roomCode,
           mic: String(micOn),
           cam: String(camOn),
+          ...(micDeviceId ? { micId: micDeviceId } : {}),
+          ...(camDeviceId ? { camId: camDeviceId } : {}),
           autojoin: '1',
         })
       ) {
-        setActiveSession({ room: joined, micOn, camOn });
+        setActiveSession({ room: joined, micOn, camOn, micDeviceId, camDeviceId });
       }
     } catch (err) {
       setJoinError(err instanceof Error ? err.message : 'Unable to enter meeting room.');
@@ -1085,6 +1099,8 @@ export function MeetingsView() {
         initialRoom={activeSession.room}
         initialMicOn={activeSession.micOn}
         initialCamOn={activeSession.camOn}
+        initialMicId={activeSession.micDeviceId}
+        initialCamId={activeSession.camDeviceId}
         currentUser={{
           id: user?.id ?? '',
           companyId: user?.companyId ?? null,

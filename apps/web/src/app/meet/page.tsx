@@ -22,12 +22,16 @@ function StandaloneMeetContent() {
   const titleParam = searchParams.get('title')?.trim() ?? '';
   const initialMic = searchParams.get('mic') !== 'false';
   const initialCam = searchParams.get('cam') !== 'false';
+  const initialMicId = searchParams.get('micId') ?? '';
+  const initialCamId = searchParams.get('camId') ?? '';
 
   const [targetRoom, setTargetRoom] = useState<MeetingRow | null>(null);
   const [activeSession, setActiveSession] = useState<{
     room: MeetingRow;
     micOn: boolean;
     camOn: boolean;
+    micDeviceId?: string;
+    camDeviceId?: string;
   } | null>(null);
   const [loadingRoom, setLoadingRoom] = useState(true);
   const [joining, setJoining] = useState(false);
@@ -55,7 +59,13 @@ function StandaloneMeetContent() {
             camOn: initialCam,
           });
           if (active) {
-            setActiveSession({ room: joined, micOn: initialMic, camOn: initialCam });
+            setActiveSession({
+              room: joined,
+              micOn: initialMic,
+              camOn: initialCam,
+              micDeviceId: initialMicId || undefined,
+              camDeviceId: initialCamId || undefined,
+            });
           }
           return;
         }
@@ -91,7 +101,17 @@ function StandaloneMeetContent() {
     };
   }, [authLoading, autoJoin, initialCam, initialMic, isInstant, roomParam, user]);
 
-  const handleConfirmJoin = async ({ micOn, camOn }: { micOn: boolean; camOn: boolean }) => {
+  const handleConfirmJoin = async ({
+    micOn,
+    camOn,
+    micDeviceId,
+    camDeviceId,
+  }: {
+    micOn: boolean;
+    camOn: boolean;
+    micDeviceId?: string;
+    camDeviceId?: string;
+  }) => {
     setJoining(true);
     setError(null);
     try {
@@ -113,7 +133,7 @@ function StandaloneMeetContent() {
           camOn,
         });
       }
-      setActiveSession({ room: joined, micOn, camOn });
+      setActiveSession({ room: joined, micOn, camOn, micDeviceId, camDeviceId });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to enter meeting room.');
     } finally {
@@ -149,6 +169,8 @@ function StandaloneMeetContent() {
         initialRoom={activeSession.room}
         initialMicOn={activeSession.micOn}
         initialCamOn={activeSession.camOn}
+        initialMicId={activeSession.micDeviceId}
+        initialCamId={activeSession.camDeviceId}
         currentUser={{
           id: user.id,
           companyId: user.companyId ?? null,
