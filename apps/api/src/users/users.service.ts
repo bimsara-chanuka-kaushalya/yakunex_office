@@ -142,8 +142,9 @@ export class UsersService {
 
     const firstName = dto.firstName?.trim() ?? '';
     const lastNameInput = dto.lastName?.trim() ?? '';
+    const explicitFull = dto.fullName?.trim() ?? '';
     const composedName = [firstName, lastNameInput].filter(Boolean).join(' ');
-    const fullName = composedName.length >= 2 ? composedName : (dto.fullName?.trim() ?? '');
+    const fullName = explicitFull.length >= 2 ? explicitFull : composedName;
     if (fullName.length < 2) {
       throw new BadRequestException('First and last name (or full name) must be at least 2 characters.');
     }

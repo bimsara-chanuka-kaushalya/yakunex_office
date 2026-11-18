@@ -130,6 +130,22 @@ function greeting(hour: number): string {
   return 'Good evening';
 }
 
+function formatNameWithInitials(fullName?: string | null, savedInitials?: string | null): string {
+  if (savedInitials && savedInitials.trim().length > 0) {
+    return savedInitials.trim();
+  }
+  const raw = (fullName ?? '').trim();
+  if (!raw) return '';
+  const parts = raw.split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) return raw;
+  const last = parts[parts.length - 1];
+  const initials = parts
+    .slice(0, -1)
+    .map((w) => `${w[0].toUpperCase()}.`)
+    .join(' ');
+  return `${initials} ${last}`;
+}
+
 export default function DashboardPage() {
   const { user, can } = useAuth();
   const { lang, t } = useLang();
@@ -138,6 +154,7 @@ export default function DashboardPage() {
   const [summary, setSummary] = useState<AdminSummary | null>(null);
   const [personal, setPersonal] = useState<PersonalSummary | null>(null);
   const [roleInsights, setRoleInsights] = useState<RoleInsights | null>(null);
+  const [profileInitialsName, setProfileInitialsName] = useState<string | null>(null);
   const [liveBoard, setLiveBoard] = useState<
     Array<{
       userId: string;
@@ -161,15 +178,17 @@ export default function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      const [attRes, insightsRes] = await Promise.all([
+      const [attRes, insightsRes, profRes] = await Promise.all([
         api<{ liveBoard?: typeof liveBoard }>('/attendance').catch(() => ({ liveBoard: [] })),
         api<RoleInsights>('/dashboard/role-insights').catch(() => null),
+        api<{ firstName?: string; fullName?: string }>('/profile/me').catch(() => null),
         isAdminView
           ? api<AdminSummary>('/dashboard/admin').then(setSummary)
           : api<PersonalSummary>('/dashboard/me').then(setPersonal),
       ]);
       setLiveBoard(Array.isArray(attRes?.liveBoard) ? attRes.liveBoard : []);
       if (insightsRes) setRoleInsights(insightsRes);
+      if (profRes?.firstName) setProfileInitialsName(profRes.firstName);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not load your dashboard.');
     } finally {
@@ -193,7 +212,7 @@ export default function DashboardPage() {
     }));
   }, [summary, lang]);
 
-  const firstName = user?.fullName.split(' ')[0] ?? '';
+  const firstName = formatNameWithInitials(user?.fullName, profileInitialsName);
   const roleLabel = user ? ROLE_LABELS[user.role as Role]?.[lang] ?? user.role : '';
   const quickModules = ALL_NAV_ITEMS.filter(
     (item) => item.key !== 'dashboard' && (!item.permission || can(item.permission)),

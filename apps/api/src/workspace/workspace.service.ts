@@ -4102,8 +4102,14 @@ export class WorkspaceService implements OnModuleInit {
     const ext = this.userProfiles[base.id] ?? {};
     const effectiveFullName = ext.fullName || base.fullName;
     const nameParts = effectiveFullName.trim().split(/\s+/).filter(Boolean);
-    const derivedLast = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
-    const derivedFirst = nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : effectiveFullName;
+    const derivedLast = nameParts.length > 1 ? nameParts[nameParts.length - 1] : nameParts[0] ?? '';
+    const derivedInitials =
+      nameParts.length > 1
+        ? `${nameParts
+            .slice(0, -1)
+            .map((w) => `${w[0].toUpperCase()}.`)
+            .join(' ')} ${derivedLast}`
+        : effectiveFullName;
 
     const pendingRequests = this.approvals.filter(
       (a) => a.type === 'PROFILE_CHANGE' && a.status === 'PENDING' && a.meta?.targetUserId === base.id,
@@ -4114,8 +4120,8 @@ export class WorkspaceService implements OnModuleInit {
       companyId: base.companyId,
       email: base.email,
       fullName: effectiveFullName,
-      firstName: ext.firstName ?? derivedFirst,
-      lastName: ext.lastName ?? derivedLast,
+      firstName: ext.firstName || derivedInitials,
+      lastName: ext.lastName || derivedLast,
       nicNumber: ext.nicNumber ?? '',
       address: ext.address ?? '',
       birthday: ext.birthday ?? '',

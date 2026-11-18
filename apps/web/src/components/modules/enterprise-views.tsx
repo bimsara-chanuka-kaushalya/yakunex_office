@@ -1195,7 +1195,7 @@ export function ProfileView() {
           <Field label="Full Name" htmlFor="pf-full">
             <Input id="pf-full" disabled={!isHrOrSuperAdmin} value={fullName} onChange={(e) => setFullName(e.target.value)} />
           </Field>
-          <Field label="Initials / First Name" htmlFor="pf-first">
+          <Field label="Name with Initials" htmlFor="pf-first">
             <Input id="pf-first" disabled={!isHrOrSuperAdmin} value={firstName} onChange={(e) => setFirstName(e.target.value)} />
           </Field>
           <Field label="Last Name" htmlFor="pf-last">

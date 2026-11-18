@@ -611,6 +611,7 @@ function CreateUserDialog({
   onCreated: (fullName: string) => Promise<void>;
 }) {
   const { t, lang } = useLang();
+  const [fullNameInput, setFullNameInput] = useState('');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
@@ -666,7 +667,30 @@ function CreateUserDialog({
     lastName.trim().split(/\s+/).filter(Boolean).pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') || 'lastname';
   const suggestedEmail = `${previewLast}@${roleCode.toLowerCase()}.yakunx.com`;
 
+  function handleFullNameChange(val: string) {
+    setFullNameInput(val);
+    const parts = val.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) {
+      setFirstName('');
+      setLastName('');
+      return;
+    }
+    if (parts.length === 1) {
+      setFirstName(parts[0]);
+      setLastName(parts[0]);
+      return;
+    }
+    const last = parts[parts.length - 1];
+    const initials = parts
+      .slice(0, -1)
+      .map((w) => `${w[0].toUpperCase()}.`)
+      .join(' ');
+    setFirstName(`${initials} ${last}`);
+    setLastName(last);
+  }
+
   function reset() {
+    setFullNameInput('');
     setFirstName('');
     setLastName('');
     setEmail('');
@@ -688,11 +712,18 @@ function CreateUserDialog({
     event.preventDefault();
     setBusy(true);
     setError(null);
+    const trimmedFullInput = fullNameInput.trim();
     const trimmedFirst = firstName.trim();
     const trimmedLast = lastName.trim();
-    const fullName = [trimmedFirst, trimmedLast].filter(Boolean).join(' ');
+    const fullName =
+      trimmedFullInput.length >= 2
+        ? trimmedFullInput
+        : [trimmedFirst, trimmedLast].filter(Boolean).join(' ');
     try {
-      const result = await post<{ user: { fullName: string; companyId: string | null; email: string }; temporaryPassword: string }>(
+      const result = await post<{
+        user: { id: string; fullName: string; companyId: string | null; email: string };
+        temporaryPassword: string;
+      }>(
         '/users',
         {
           firstName: trimmedFirst,
@@ -705,6 +736,11 @@ function CreateUserDialog({
           title: title || undefined,
         },
       );
+      await patch(`/profile/${result.user.id}`, {
+        fullName,
+        firstName: trimmedFirst,
+        lastName: trimmedLast,
+      }).catch(() => undefined);
       setCreated({
         name: result.user.fullName,
         companyId: result.user.companyId,
@@ -783,8 +819,19 @@ function CreateUserDialog({
         </div>
       ) : (
         <form onSubmit={onSubmit} className="space-y-4">
+          <Field label="Full Name" htmlFor="new-full-name">
+            <Input
+              id="new-full-name"
+              required
+              minLength={2}
+              maxLength={120}
+              value={fullNameInput}
+              onChange={(e) => handleFullNameChange(e.target.value)}
+              placeholder="e.g. Hewa Mee Ellage Bimsara Chanuka Kaushalya"
+            />
+          </Field>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="First name" htmlFor="new-first-name">
+            <Field label="Name with Initials" htmlFor="new-first-name">
               <Input
                 id="new-first-name"
                 required
@@ -792,10 +839,10 @@ function CreateUserDialog({
                 maxLength={60}
                 value={firstName}
                 onChange={(e) => setFirstName(e.target.value)}
-                placeholder="e.g. Chanuka"
+                placeholder="e.g. H. M. E. B. C. Kaushalya"
               />
             </Field>
-            <Field label="Last name" htmlFor="new-last-name">
+            <Field label="Last Name" htmlFor="new-last-name">
               <Input
                 id="new-last-name"
                 required
@@ -803,7 +850,7 @@ function CreateUserDialog({
                 maxLength={60}
                 value={lastName}
                 onChange={(e) => setLastName(e.target.value)}
-                placeholder="e.g. Silva"
+                placeholder="e.g. Kaushalya"
               />
             </Field>
           </div>
