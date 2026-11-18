@@ -26,6 +26,16 @@ export class UsersController {
     return this.users.create(actor, dto, metaOf(req));
   }
 
+  @Post(':id/invite-link')
+  @RequirePermissions(PERMISSIONS.USERS_WRITE)
+  generateInviteLink(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Req() req: Request,
+  ) {
+    return this.users.generateInviteLink(actor, id, metaOf(req));
+  }
+
   @Patch(':id/role')
   @RequirePermissions(PERMISSIONS.USERS_ASSIGN_ROLES)
   changeRole(

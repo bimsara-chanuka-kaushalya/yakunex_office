@@ -58,7 +58,11 @@ function ResetPasswordForm() {
       await post('/auth/reset-password', { token: token.trim(), newPassword });
       setSuccess(true);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not reset password. The link may have expired.');
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'This activation or reset link has expired (72h limit). Please request a new link from your Admin / HR.',
+      );
     } finally {
       setBusy(false);
     }
@@ -77,10 +81,10 @@ function ResetPasswordForm() {
             <span>Identity Verification</span>
           </div>
           <h2 className="font-display text-5xl font-semibold leading-[1.05]">
-            Set your new workspace password.
+            Activate your workspace account.
           </h2>
           <p className="mt-5 text-base text-white/60">
-            Choose a strong passphrase to protect your account and project assets across all devices.
+            Set a strong password to activate your account and sign in using your Company ID or Company Mail.
           </p>
         </div>
         <YakunexLogo className="w-44 opacity-90" />

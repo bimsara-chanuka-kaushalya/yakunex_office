@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import Link from 'next/link';
-import { Check, Copy, Eye, EyeOff, KeyRound, Search, Trash2, UserCircle, UserPlus, Users as UsersIcon } from 'lucide-react';
+import { Check, Copy, KeyRound, Link2, Search, Trash2, UserCircle, UserPlus, Users as UsersIcon } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -48,6 +48,71 @@ const STATUS_TONE: Record<AccountStatus, 'success' | 'warning' | 'danger' | 'neu
   DEACTIVATED: 'danger',
   INVITED: 'neutral',
 };
+
+function formatInitialsFromFullName(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) return fullName.trim();
+  const last = parts[parts.length - 1];
+  const initials = parts
+    .slice(0, -1)
+    .map((w) => `${w[0].toUpperCase()}.`)
+    .join(' ');
+  return `${initials} ${last}`;
+}
+
+function buildActivationUrl(token: string): string {
+  const origin =
+    typeof window !== 'undefined' && window.location?.origin
+      ? window.location.origin
+      : 'https://yakunex-office.vercel.app';
+  return `${origin}/reset-password?token=${encodeURIComponent(token)}`;
+}
+
+function buildTrilingualInviteMessage({
+  nameWithInitials,
+  companyId,
+  email,
+  activationUrl,
+}: {
+  nameWithInitials: string;
+  companyId: string | null;
+  email: string;
+  activationUrl: string;
+}): string {
+  const cid = companyId ?? 'Assigned on login';
+  return [
+    'Welcome to Yakunex Hub! 🎉',
+    'Your official corporate workspace account has been created.',
+    '',
+    `👤 Name: ${nameWithInitials}`,
+    `🆔 Company ID: ${cid}`,
+    `📧 Company Mail: ${email}`,
+    '🔗 Activation Link (Valid for 72 Hours):',
+    activationUrl,
+    '',
+    '━━━━━━━━━━━━━━━━━━━━',
+    '📌 How to Activate & Sign In (English):',
+    '1. Click the Activation Link above within 72 hours.',
+    '2. Enter and confirm your new strong Password, then click "Set Password".',
+    `3. Open the Login page and sign in using either your Company ID (${cid}) or Company Mail (${email}) along with your new Password.`,
+    '4. Once logged in, visit "Profile" to upload your Profile Picture (DP) and verify your details.',
+    '',
+    '📌 Account එක Activate කර Login වන ආකාරය (සිංහල):',
+    '1. ඉහත ඇති Activation Link එක පැය 72ක් ඇතුළත click කරන්න.',
+    '2. ඔබ කැමති ශක්තිමත් Password එකක් type කර "Set Password" click කරන්න.',
+    `3. ඉන්පසු Login page එකට ගොස් ඔබගේ Company ID (${cid}) හෝ Company Mail (${email}) සහ අලුත් Password එක භාවිතා කර Sign In වන්න.`,
+    '4. Login වූ පසු "Profile" වෙත ගොස් ඔබගේ Profile Picture (DP) එක upload කර තොරතුරු පරීක්ෂා කරන්න.',
+    '',
+    '📌 Account-ஐ Activate செய்து Login செய்வது எப்படி (தமிழ்):',
+    '1. மேலே உள்ள Activation Link-ஐ 72 மணிநேரத்திற்குள் click செய்யவும்.',
+    '2. உங்களுக்கு விருப்பமான வலுவான Password-ஐ உள்ளிட்டு "Set Password"-ஐ click செய்யவும்.',
+    `3. பின்னர் Login page-க்குச் சென்று உங்கள் Company ID (${cid}) அல்லது Company Mail (${email}) மற்றும் புதிய Password-ஐப் பயன்படுத்தி Sign In செய்யவும்.`,
+    '4. Login செய்த பிறகு "Profile" பகுதிக்குச் சென்று உங்கள் Profile Picture (DP)-ஐ upload செய்து விவரங்களைச் சரிபார்க்கவும்.',
+    '━━━━━━━━━━━━━━━━━━━━',
+    '',
+    '⚠️ Security Notice: Do not share this link with anyone. If the link expires after 72 hours, please request a new Activation Link from Admin / HR.',
+  ].join('\n');
+}
 
 function errorText(err: unknown): string {
   return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
@@ -144,9 +209,36 @@ export default function UsersPage() {
       await del(`/users/${row.id}`);
       setNotice({
         tone: 'success',
-        text: `${row.fullName}'s account has been deleted.`,
+        text: `${row.fullName} has been permanently deleted.`,
       });
       await load();
+    } catch (err) {
+      setNotice({ tone: 'error', text: errorText(err) });
+    }
+  }
+
+  const [inviteModal, setInviteModal] = useState<{
+    nameWithInitials: string;
+    companyId: string | null;
+    email: string;
+    activationUrl: string;
+  } | null>(null);
+  const [inviteCopied, setInviteCopied] = useState<'msg' | 'link' | null>(null);
+
+  async function regenerateInviteLink(row: UserRow) {
+    setNotice(null);
+    try {
+      const res = await post<{
+        user: { fullName: string; companyId: string | null; email: string };
+        activationToken: string;
+      }>(`/users/${row.id}/invite-link`, {});
+      setInviteCopied(null);
+      setInviteModal({
+        nameWithInitials: formatInitialsFromFullName(res.user.fullName),
+        companyId: res.user.companyId,
+        email: res.user.email,
+        activationUrl: buildActivationUrl(res.activationToken),
+      });
     } catch (err) {
       setNotice({ tone: 'error', text: errorText(err) });
     }
@@ -335,7 +427,7 @@ export default function UsersPage() {
                         <td className="px-5 py-3.5">
                           <Badge tone={STATUS_TONE[row.status]}>{t(row.status.toLowerCase())}</Badge>
                           {row.mustChangePassword && (
-                            <p className="mt-1 text-xs text-muted">Temporary password</p>
+                            <p className="mt-1 text-xs text-amber-500">Pending Activation</p>
                           )}
                         </td>
                         <td className="px-5 py-3.5 text-muted">
@@ -360,6 +452,17 @@ export default function UsersPage() {
                               <UserCircle className="h-3.5 w-3.5 text-gold" />
                               Profile
                             </Link>
+                            {can(PERMISSIONS.USERS_WRITE) && editable && (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => void regenerateInviteLink(row)}
+                                title="Generate 72h Activation Link & Welcome Message"
+                              >
+                                <Link2 className="h-3.5 w-3.5 text-gold" />
+                                72h Link
+                              </Button>
+                            )}
                             {can(PERMISSIONS.USERS_MANAGE_PERMISSIONS) && editable && (
                               <Button
                                 variant="ghost"
@@ -450,7 +553,7 @@ export default function UsersPage() {
         onCreated={async (name) => {
           setNotice({
             tone: 'success',
-            text: `${name} was added. Share the temporary password securely.`,
+            text: `${name} was added. Share the 72-hour activation link & welcome message.`,
           });
           await load();
         }}
@@ -467,6 +570,56 @@ export default function UsersPage() {
           });
         }}
       />
+
+      <Modal
+        open={Boolean(inviteModal)}
+        title="72-Hour Activation Link & Welcome Message"
+        onClose={() => setInviteModal(null)}
+      >
+        {inviteModal && (
+          <div className="space-y-4">
+            <div className="space-y-1 rounded-xl border border-gold/40 bg-gold/10 px-4 py-3 text-xs">
+              <p><strong className="text-ink">Name:</strong> {inviteModal.nameWithInitials}</p>
+              <p><strong className="text-ink">Company ID:</strong> <span className="font-mono font-bold text-gold">{inviteModal.companyId ?? '—'}</span></p>
+              <p><strong className="text-ink">Company Mail:</strong> <span className="font-mono">{inviteModal.email}</span></p>
+              <p className="break-all text-muted"><strong className="text-ink">Link (72h):</strong> {inviteModal.activationUrl}</p>
+            </div>
+            <textarea
+              readOnly
+              rows={10}
+              value={buildTrilingualInviteMessage(inviteModal)}
+              className="w-full rounded-xl border border-line bg-canvas p-3 font-sans text-xs leading-relaxed text-ink focus:outline-none"
+            />
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={async () => {
+                  await navigator.clipboard.writeText(inviteModal.activationUrl).catch(() => undefined);
+                  setInviteCopied('link');
+                  setTimeout(() => setInviteCopied(null), 2000);
+                }}
+              >
+                {inviteCopied === 'link' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                {inviteCopied === 'link' ? 'Link Copied' : 'Copy Link Only'}
+              </Button>
+              <Button
+                size="sm"
+                onClick={async () => {
+                  await navigator.clipboard
+                    .writeText(buildTrilingualInviteMessage(inviteModal))
+                    .catch(() => undefined);
+                  setInviteCopied('msg');
+                  setTimeout(() => setInviteCopied(null), 2000);
+                }}
+              >
+                {inviteCopied === 'msg' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                {inviteCopied === 'msg' ? 'Message Copied!' : 'Copy Welcome Message'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
@@ -621,9 +774,13 @@ function CreateUserDialog({
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [created, setCreated] = useState<{ name: string; companyId: string | null; email: string; password: string } | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [showCreatedPassword, setShowCreatedPassword] = useState(true);
+  const [created, setCreated] = useState<{
+    nameWithInitials: string;
+    companyId: string | null;
+    email: string;
+    activationUrl: string;
+  } | null>(null);
+  const [copiedMode, setCopiedMode] = useState<'msg' | 'link' | null>(null);
 
   const DESIGNATION_PRESETS: Record<string, { role: Role; title: string }> = {
     MD: { role: 'SUPER_ADMIN', title: 'Managing Director' },
@@ -700,7 +857,7 @@ function CreateUserDialog({
     setTitle('');
     setError(null);
     setCreated(null);
-    setCopied(false);
+    setCopiedMode(null);
   }
 
   function close() {
@@ -722,7 +879,8 @@ function CreateUserDialog({
     try {
       const result = await post<{
         user: { id: string; fullName: string; companyId: string | null; email: string };
-        temporaryPassword: string;
+        activationToken: string;
+        activationExpiresAt: string;
       }>(
         '/users',
         {
@@ -742,10 +900,10 @@ function CreateUserDialog({
         lastName: trimmedLast,
       }).catch(() => undefined);
       setCreated({
-        name: result.user.fullName,
+        nameWithInitials: trimmedFirst || formatInitialsFromFullName(result.user.fullName),
         companyId: result.user.companyId,
         email: result.user.email,
-        password: result.temporaryPassword,
+        activationUrl: buildActivationUrl(result.activationToken),
       });
       await onCreated(result.user.fullName);
     } catch (err) {
@@ -755,66 +913,62 @@ function CreateUserDialog({
     }
   }
 
-  async function copyPassword() {
+  async function copyMessage(mode: 'msg' | 'link') {
     if (!created) return;
-    const text = `Company ID: ${created.companyId ?? '—'}\nEmail: ${created.email}\nPassword: ${created.password}`;
+    const text =
+      mode === 'link' ? created.activationUrl : buildTrilingualInviteMessage(created);
     await navigator.clipboard.writeText(text).catch(() => undefined);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setCopiedMode(mode);
+    setTimeout(() => setCopiedMode(null), 2000);
   }
 
   return (
     <Modal
       open={open}
-      title={created ? 'Account created' : t('addUser')}
+      title={created ? 'Account created — 72h Activation Ready' : t('addUser')}
       onClose={close}
       dismissible={!created}
     >
       {created ? (
-        <div className="space-y-5">
-          <p className="text-sm text-muted">
-            Give {created.name} their Company ID and temporary password. They can sign in using either their{' '}
-            <strong className="text-ink">Company ID ({created.companyId})</strong> or their email.
+        <div className="space-y-4">
+          <p className="text-xs text-muted">
+            Copy and send the trilingual welcome message below to{' '}
+            <strong className="text-ink">{created.nameWithInitials}</strong>. Their activation link is valid for{' '}
+            <strong className="text-ink">72 hours</strong>.
           </p>
-          <div className="space-y-3 rounded-xl border border-gold/40 bg-gold/10 px-4 py-3">
-            <div className="flex items-center justify-between border-b border-gold/20 pb-2">
+          <div className="space-y-1.5 rounded-xl border border-gold/40 bg-gold/10 px-4 py-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <p className="text-xs uppercase tracking-wider text-muted">Company ID</p>
-                <p className="font-mono text-base font-bold text-gold">{created.companyId ?? '—'}</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted">Company ID</p>
+                <p className="font-mono text-sm font-bold text-gold">{created.companyId ?? '—'}</p>
               </div>
               <div className="text-right">
-                <p className="text-xs uppercase tracking-wider text-muted">{t('email')}</p>
+                <p className="text-[10px] uppercase tracking-wider text-muted">{t('email')}</p>
                 <p className="font-mono text-xs text-ink">{created.email}</p>
               </div>
             </div>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs uppercase tracking-wider text-muted">
-                  {t('temporaryPassword')}
-                </p>
-                <p className="font-mono text-lg tracking-wider">
-                  {showCreatedPassword ? created.password : '••••••••••••••••'}
-                </p>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowCreatedPassword((v) => !v)}
-                  title={showCreatedPassword ? t('hidePassword') : t('showPassword')}
-                  aria-label={showCreatedPassword ? t('hidePassword') : t('showPassword')}
-                >
-                  {showCreatedPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </Button>
-                <Button variant="secondary" size="sm" onClick={copyPassword}>
-                  {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                  {copied ? t('copied') : t('copy')}
-                </Button>
-              </div>
-            </div>
+            <p className="break-all pt-1 text-[11px] text-muted">
+              <strong className="text-ink">72h Link:</strong> {created.activationUrl}
+            </p>
           </div>
-          <div className="flex justify-end">
-            <Button onClick={close}>Done</Button>
+          <textarea
+            readOnly
+            rows={10}
+            value={buildTrilingualInviteMessage(created)}
+            className="w-full rounded-xl border border-line bg-canvas p-3 font-sans text-xs leading-relaxed text-ink focus:outline-none"
+          />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Button variant="secondary" size="sm" onClick={() => void copyMessage('link')}>
+              {copiedMode === 'link' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+              {copiedMode === 'link' ? 'Link Copied' : 'Copy Link Only'}
+            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="secondary" size="sm" onClick={() => void copyMessage('msg')}>
+                {copiedMode === 'msg' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                {copiedMode === 'msg' ? 'Message Copied!' : 'Copy Welcome Message'}
+              </Button>
+              <Button size="sm" onClick={close}>Done</Button>
+            </div>
           </div>
         </div>
       ) : (

@@ -4,10 +4,13 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Prisma, Role, User, UserStatus } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
+import { config } from '../config/config';
 import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../common/types';
 import { PrismaService } from '../prisma/prisma.service';
@@ -58,7 +61,31 @@ export class UsersService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly rbac: RbacService,
+    @Optional() private readonly jwt?: JwtService,
   ) {}
+
+  private async signActivationToken(user: {
+    id: string;
+    email: string;
+    passwordHash: string;
+  }): Promise<{ activationToken: string; activationExpiresAt: string }> {
+    const jwtSvc = this.jwt ?? new JwtService({});
+    const fp = createHash('sha256').update(user.passwordHash).digest('hex').slice(0, 16);
+    const activationToken = await jwtSvc.signAsync(
+      {
+        sub: user.id,
+        email: user.email,
+        fp,
+        purpose: 'password-reset',
+      },
+      {
+        secret: config.jwtAccessSecret,
+        expiresIn: '72h',
+      },
+    );
+    const activationExpiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+    return { activationToken, activationExpiresAt };
+  }
 
   async list(actor: AuthUser, query: ListUsersQuery) {
     const page = query.page ?? 1;
@@ -211,19 +238,58 @@ export class UsersService {
       mustChangePassword: createdFull.mustChangePassword,
     };
 
+    const { activationToken, activationExpiresAt } = await this.signActivationToken(createdFull);
+
     await this.audit.log({
       organizationId: actor.organizationId,
       actorId: actor.id,
       action: 'USER_CREATED',
       entityType: 'User',
       entityId: user.id,
-      metadata: { role: dto.role, companyId },
+      metadata: { role: dto.role, companyId, activationExpiresAt },
       ipAddress: meta.ipAddress,
       userAgent: meta.userAgent,
     });
 
-    // Returned exactly once. It is never stored in plain text or logged.
-    return { user, temporaryPassword };
+    return { user, activationToken, activationExpiresAt };
+  }
+
+  async generateInviteLink(
+    actor: AuthUser,
+    targetUserId: string,
+    meta: { ipAddress?: string; userAgent?: string },
+  ) {
+    const target = await this.prisma.user.findFirst({
+      where: { id: targetUserId, organizationId: actor.organizationId, deletedAt: null },
+    });
+    if (!target) throw new NotFoundException('User not found.');
+    assertCanManageTarget(actor.role, target.role);
+
+    const { activationToken, activationExpiresAt } = await this.signActivationToken(target);
+
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'USER_INVITE_LINK_GENERATED',
+      entityType: 'User',
+      entityId: target.id,
+      metadata: { activationExpiresAt },
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent,
+    });
+
+    return {
+      user: {
+        id: target.id,
+        companyId: target.companyId,
+        email: target.email,
+        fullName: target.fullName,
+        title: target.title,
+        role: target.role,
+      },
+      activationToken,
+      activationExpiresAt,
+    };
   }
 
   private async generateNextCompanyId(organizationId: string, roleCode: CompanyRoleCode): Promise<string> {
