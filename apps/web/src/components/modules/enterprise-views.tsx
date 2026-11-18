@@ -481,7 +481,7 @@ export function FinanceView() {
       <Card>
         <CardHeader
           title="Monthly Payroll & Payslip Generator"
-          description="Calculated from Jibble timesheet hours (Regular + 1.5x OT over 160h/month)"
+          description="Calculated from Yakunex Workforce timesheet hours (Regular + 1.5x OT over 160h/month)"
           action={
             <div className="flex items-center gap-2 text-xs">
               <span className="text-muted">Base Rate ($/hr):</span>

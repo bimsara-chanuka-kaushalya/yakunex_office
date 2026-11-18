@@ -182,6 +182,7 @@ export interface AttendanceItem {
   deviceType?: string | null;
   geofenceStatus?: 'INSIDE_OFFICE' | 'OUTSIDE_OFFICE' | 'REMOTE_APPROVED' | 'NO_GPS';
   distanceMeters?: number | null;
+  lastLocationAt?: string | null;
 }
 
 export interface LeaveRequestItem {
@@ -285,6 +286,10 @@ export interface MeetingChatMessage {
   senderName: string;
   body: string;
   createdAt: string;
+  replyToId?: string | null;
+  replyPreview?: string | null;
+  recipientId?: string | null;
+  recipientName?: string | null;
 }
 
 export interface MeetingItem {
@@ -1685,7 +1690,7 @@ export class WorkspaceService implements OnModuleInit {
     return entry;
   }
 
-  // ─── Attendance & Jibble Live Location ────────────────────────────────────
+  // ─── Attendance & Yakunex Live Location ────────────────────────────────────
   listAttendance(actor: AuthUser) {
     const today = new Date().toISOString().slice(0, 10);
     const myToday =
@@ -1706,7 +1711,11 @@ export class WorkspaceService implements OnModuleInit {
         workMode: a.workMode ?? 'OFFICE',
         latitude: a.latitude ?? null,
         longitude: a.longitude ?? null,
+        accuracyMeters: a.accuracyMeters ?? null,
         locationLabel: a.locationLabel ?? null,
+        geofenceStatus: a.geofenceStatus ?? 'NO_GPS',
+        distanceMeters: a.distanceMeters ?? null,
+        lastLocationAt: a.lastLocationAt ?? a.clockInAt ?? null,
       }));
     return {
       todayRecord: myToday,
@@ -1873,7 +1882,7 @@ export class WorkspaceService implements OnModuleInit {
     return this.clockIn(targetActor, {
       ...body,
       notes: String(body.notes ?? '').trim() || `Kiosk check-in by ${actor.fullName}`,
-      deviceType: 'Jibble Kiosk Terminal',
+      deviceType: 'Yakunex Kiosk Terminal',
     });
   }
 
@@ -2730,6 +2739,29 @@ export class WorkspaceService implements OnModuleInit {
       const camOn = body?.camOn !== undefined ? Boolean(body.camOn) : true;
       const joinedAt = new Date().toISOString();
       const existing = mtg.participants.find((p) => p.userId === actor.id);
+      const isHostOrManager =
+        mtg.organizerId === actor.id ||
+        mtg.organizerName === actor.fullName ||
+        actor.role === Role.SUPER_ADMIN ||
+        actor.role === Role.ADMIN ||
+        actor.role === Role.PROJECT_MANAGER ||
+        (mtg.coHostIds ?? []).includes(actor.id);
+
+      if (mtg.waitingRoomEnabled && !isHostOrManager && !existing) {
+        mtg.waitingRoom = mtg.waitingRoom ?? [];
+        if (!mtg.waitingRoom.some((w) => w.userId === actor.id)) {
+          mtg.waitingRoom.push({
+            userId: actor.id,
+            fullName: actor.fullName,
+            companyId: actor.companyId ?? null,
+            role: actor.role,
+            requestedAt: joinedAt,
+          });
+          await this.persistStateNow(actor.organizationId);
+        }
+        return mtg;
+      }
+
       if (existing) {
         if (actor.companyId) existing.companyId = actor.companyId;
         existing.fullName = actor.fullName;
@@ -3080,12 +3112,24 @@ export class WorkspaceService implements OnModuleInit {
     if (!text) throw new BadRequestException('Message cannot be empty.');
     const senderParts = actor.fullName.trim().split(/\s+/).filter(Boolean);
     const senderLast = senderParts[senderParts.length - 1] || actor.fullName;
+    const replyToId = body.replyToId ? String(body.replyToId) : null;
+    const replyTarget = replyToId ? mtg.chatMessages.find((m) => m.id === replyToId) : null;
+    const replyPreview = replyTarget
+      ? `${replyTarget.senderName}: ${replyTarget.body.slice(0, 60)}${replyTarget.body.length > 60 ? '…' : ''}`
+      : null;
+    const recipientId = body.recipientId ? String(body.recipientId) : null;
+    const recipientName = body.recipientName ? String(body.recipientName) : null;
+
     mtg.chatMessages.push({
       id: `mc_${randomUUID().slice(0, 8)}`,
       senderId: actor.id,
       senderName: actor.companyId ? `${senderLast} · ${actor.companyId}` : senderLast,
       body: text,
       createdAt: new Date().toISOString(),
+      replyToId,
+      replyPreview,
+      recipientId,
+      recipientName,
     });
     await this.persistStateNow(actor.organizationId);
     return mtg;
@@ -4291,6 +4335,56 @@ export class WorkspaceService implements OnModuleInit {
           tone: 'indigo',
         },
       ],
+    };
+  }
+
+  updateLiveLocation(actor: AuthUser, body: Record<string, unknown>) {
+    const today = new Date().toISOString().slice(0, 10);
+    const record = this.attendance.find(
+      (a) => a.userId === actor.id && a.workDate === today && a.clockInAt && !a.clockOutAt,
+    );
+    if (!record) {
+      return { ok: false, reason: 'Not currently clocked in.' };
+    }
+    const latitude = typeof body.latitude === 'number' ? body.latitude : null;
+    const longitude = typeof body.longitude === 'number' ? body.longitude : null;
+    if (latitude === null || longitude === null) {
+      throw new BadRequestException('Valid latitude and longitude are required.');
+    }
+    const accuracyMeters = typeof body.accuracyMeters === 'number' ? body.accuracyMeters : null;
+    const locationLabel = body.locationLabel
+      ? String(body.locationLabel).trim()
+      : `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+
+    let distanceMeters: number | null = null;
+    let geofenceStatus: AttendanceItem['geofenceStatus'] = 'NO_GPS';
+    if (record.workMode === 'REMOTE') {
+      geofenceStatus = 'REMOTE_APPROVED';
+    } else {
+      const officeLat = this.settings.officeLatitude ?? 6.9271;
+      const officeLon = this.settings.officeLongitude ?? 79.8612;
+      const radius = this.settings.officeRadiusMeters ?? 250;
+      distanceMeters = Math.round(this.haversineMeters(latitude, longitude, officeLat, officeLon));
+      geofenceStatus = distanceMeters <= radius ? 'INSIDE_OFFICE' : 'OUTSIDE_OFFICE';
+    }
+
+    record.latitude = latitude;
+    record.longitude = longitude;
+    record.accuracyMeters = accuracyMeters;
+    record.locationLabel = locationLabel;
+    record.geofenceStatus = geofenceStatus;
+    record.distanceMeters = distanceMeters;
+    record.lastLocationAt = new Date().toISOString();
+    this.persistState(actor.organizationId);
+
+    return {
+      ok: true,
+      latitude,
+      longitude,
+      accuracyMeters,
+      geofenceStatus,
+      distanceMeters,
+      lastLocationAt: record.lastLocationAt,
     };
   }
 }

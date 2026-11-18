@@ -70,7 +70,7 @@ export default function LoginPage() {
             Every project, team, and hour in one place.
           </h2>
           <p className="mt-5 text-base text-white/70 leading-relaxed">
-            Unify client delivery, sprint planning, Jibble-style time tracking, and built-in video
+            Unify client delivery, sprint planning, live GPS time tracking, and built-in video
             meetings into a single lightning-fast workspace.
           </p>
         </div>

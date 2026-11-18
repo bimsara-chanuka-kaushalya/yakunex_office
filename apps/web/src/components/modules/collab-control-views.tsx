@@ -1624,7 +1624,7 @@ export function ReportsView() {
         <div>
           <h2 className="font-display text-3xl font-semibold">Analytics & Reports</h2>
           <p className="mt-1 text-sm text-muted">
-            Executive delivery metrics, Jibble-style timesheet/overtime utilization &amp; defect distribution.
+            Executive delivery metrics, live timesheet/overtime utilization &amp; defect distribution.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1635,7 +1635,7 @@ export function ReportsView() {
               if (!data?.timesheetSummary) return;
               exportBrandedPdf({
                 title: 'Timesheet, Overtime & Attendance Report',
-                subtitle: 'Jibble-style Regular vs Overtime (>8h/day), Billable & GPS Verification Summary',
+                subtitle: 'Regular vs Overtime (>8h/day), Billable & GPS Verification Summary',
                 generatedByEmail: user?.email,
                 generatedByName: user?.fullName,
                 columns: ['Employee', 'Total (h)', 'Regular (h)', 'Overtime (h)', 'Billable (h)', 'Approved (h)', 'Breaks (m)', 'Late / GPS'],
@@ -1795,7 +1795,7 @@ export function ReportsView() {
             <Card>
               <CardHeader
                 title="Employee Timesheet, Overtime & Attendance Report"
-                description="Jibble-style Regular vs Overtime (>8h/day), Billable, Approved, Break & GPS-verified breakdown."
+                description="Regular vs Overtime (>8h/day), Billable, Approved, Break & GPS-verified breakdown."
               />
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[820px] text-left text-sm">

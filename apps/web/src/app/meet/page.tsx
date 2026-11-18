@@ -33,6 +33,13 @@ function StandaloneMeetContent() {
     micDeviceId?: string;
     camDeviceId?: string;
   } | null>(null);
+  const [waitingSession, setWaitingSession] = useState<{
+    room: MeetingRow;
+    micOn: boolean;
+    camOn: boolean;
+    micDeviceId?: string;
+    camDeviceId?: string;
+  } | null>(null);
   const [loadingRoom, setLoadingRoom] = useState(true);
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,13 +66,18 @@ function StandaloneMeetContent() {
             camOn: initialCam,
           });
           if (active) {
-            setActiveSession({
+            const inWaiting =
+              !joined.participants.some((p) => p.userId === user!.id) &&
+              (joined.waitingRoom ?? []).some((w) => w.userId === user!.id);
+            const payload = {
               room: joined,
               micOn: initialMic,
               camOn: initialCam,
               micDeviceId: initialMicId || undefined,
               camDeviceId: initialCamId || undefined,
-            });
+            };
+            if (inWaiting) setWaitingSession(payload);
+            else setActiveSession(payload);
           }
           return;
         }
@@ -133,7 +145,13 @@ function StandaloneMeetContent() {
           camOn,
         });
       }
-      setActiveSession({ room: joined, micOn, camOn, micDeviceId, camDeviceId });
+      const inWaiting =
+        Boolean(user) &&
+        !joined.participants.some((p) => p.userId === user!.id) &&
+        (joined.waitingRoom ?? []).some((w) => w.userId === user!.id);
+      const payload = { room: joined, micOn, camOn, micDeviceId, camDeviceId };
+      if (inWaiting) setWaitingSession(payload);
+      else setActiveSession(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to enter meeting room.');
     } finally {
@@ -154,10 +172,59 @@ function StandaloneMeetContent() {
     }
   };
 
+  useEffect(() => {
+    if (!waitingSession || !user) return;
+    let active = true;
+    const pollId = setInterval(async () => {
+      try {
+        const list = await api<MeetingRow[]>('/meetings');
+        const fresh = list.find((m) => m.id === waitingSession.room.id);
+        if (!fresh || !active) return;
+        if (fresh.participants.some((p) => p.userId === user.id)) {
+          setActiveSession({ ...waitingSession, room: fresh });
+          setWaitingSession(null);
+        } else if (!(fresh.waitingRoom ?? []).some((w) => w.userId === user.id)) {
+          setWaitingSession(null);
+          setError('Host declined or removed your waiting room request.');
+        }
+      } catch {
+        // retry on next tick
+      }
+    }, 2500);
+    return () => {
+      active = false;
+      clearInterval(pollId);
+    };
+  }, [waitingSession, user]);
+
   if (authLoading || !user || loadingRoom) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-[#070B12] text-sm text-white/75">
         Connecting to Yakunex Meeting Studio...
+      </div>
+    );
+  }
+
+  if (waitingSession) {
+    return (
+      <div className="flex h-screen w-screen flex-col items-center justify-center bg-[#070B12] p-6 text-center text-white">
+        <div className="w-full max-w-md space-y-4 rounded-3xl border border-white/10 bg-[#0F1522] p-8 shadow-2xl">
+          <div className="mx-auto flex h-14 w-14 animate-pulse items-center justify-center rounded-full border border-[#D4A843]/40 bg-[#D4A843]/15 text-[#D4A843]">
+            <span className="h-3 w-3 rounded-full bg-[#D4A843]" />
+          </div>
+          <h2 className="font-display text-xl font-semibold">Waiting Room</h2>
+          <p className="text-sm text-white/70">
+            Please wait — the host of <strong>{waitingSession.room.title}</strong> will admit you shortly.
+          </p>
+          <p className="font-mono text-xs text-white/45">Room: {waitingSession.room.roomCode}</p>
+          <button
+            type="button"
+            onClick={handleExit}
+            className="mt-2 rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/20"
+          >
+            Leave Waiting Room
+          </button>
+        </div>
       </div>
     );
   }

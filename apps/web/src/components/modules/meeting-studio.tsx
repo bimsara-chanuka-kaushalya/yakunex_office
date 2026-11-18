@@ -75,6 +75,10 @@ export interface MeetingChatMessage {
   senderName: string;
   body: string;
   createdAt: string;
+  replyToId?: string | null;
+  replyPreview?: string | null;
+  recipientId?: string | null;
+  recipientName?: string | null;
 }
 
 export interface MeetingRow {
@@ -689,6 +693,10 @@ export function MeetingStudio({
   const [screenAudioMuted, setScreenAudioMuted] = useState(false);
   const [shareRequests, setShareRequests] = useState<Array<{ userId: string; fullName: string }>>([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [controlsHidden, setControlsHidden] = useState(false);
+  const hideControlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [chatReplyTo, setChatReplyTo] = useState<MeetingChatMessage | null>(null);
+  const [chatRecipientId, setChatRecipientId] = useState<string>('ALL');
   const [isPip, setIsPip] = useState(false);
   const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
@@ -771,6 +779,30 @@ export function MeetingStudio({
   const showToast = useCallback((msg: string) => {
     setBannerNotice(msg);
   }, []);
+
+  const resetFullscreenAutoHide = useCallback(() => {
+    if (hideControlsTimerRef.current) {
+      clearTimeout(hideControlsTimerRef.current);
+      hideControlsTimerRef.current = null;
+    }
+    if (!isFullscreen) {
+      setControlsHidden(false);
+      return;
+    }
+    setControlsHidden(false);
+    hideControlsTimerRef.current = setTimeout(() => {
+      setControlsHidden(true);
+    }, 5000);
+  }, [isFullscreen]);
+
+  useEffect(() => {
+    resetFullscreenAutoHide();
+    return () => {
+      if (hideControlsTimerRef.current) {
+        clearTimeout(hideControlsTimerRef.current);
+      }
+    };
+  }, [resetFullscreenAutoHide]);
 
   useEffect(() => {
     if (!bannerNotice) return;
@@ -3124,12 +3156,35 @@ export function MeetingStudio({
     }
   };
 
+  const hostRecipients = useMemo(
+    () =>
+      room.participants.filter(
+        (p) =>
+          p.userId !== currentUser.id &&
+          (p.fullName === room.organizerName ||
+            ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'MANAGER', 'DIRECTOR', 'PM'].includes(
+              p.role.toUpperCase(),
+            )),
+      ),
+    [currentUser.id, room.organizerName, room.participants],
+  );
+
   const sendChat = async (e: FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
     const body = chatInput.trim();
+    const targetHost =
+      chatRecipientId !== 'ALL'
+        ? hostRecipients.find((h) => h.userId === chatRecipientId) ?? null
+        : null;
     setChatInput('');
-    const updated = await post<MeetingRow>(`/meetings/${room.id}/chat`, { body });
+    const updated = await post<MeetingRow>(`/meetings/${room.id}/chat`, {
+      body,
+      replyToId: chatReplyTo?.id ?? null,
+      recipientId: targetHost?.userId ?? null,
+      recipientName: targetHost?.fullName ?? null,
+    });
+    setChatReplyTo(null);
     setRoom(updated);
   };
 
@@ -3474,11 +3529,16 @@ export function MeetingStudio({
   return (
     <div
       ref={studioRef}
+      onMouseMove={isFullscreen ? resetFullscreenAutoHide : undefined}
+      onMouseDown={isFullscreen ? resetFullscreenAutoHide : undefined}
+      onTouchStart={isFullscreen ? resetFullscreenAutoHide : undefined}
+      onKeyDown={isFullscreen ? resetFullscreenAutoHide : undefined}
       className={cn(
         'relative flex flex-col overflow-hidden bg-[#0B0F17] text-white shadow-2xl',
         standalone || isFullscreen
           ? 'fixed inset-0 z-50 h-screen w-screen rounded-none border-0'
           : 'h-[calc(100vh-110px)] min-h-[640px] rounded-3xl border border-white/10',
+        isFullscreen && controlsHidden && 'cursor-none',
       )}
     >
       {/* Hidden video element powering Picture-in-Picture floating window */}
@@ -3510,7 +3570,12 @@ export function MeetingStudio({
         ))}
 
       {/* ─── TOP ZOOM + APPLE FROSTED HEADER ─────────────────────────────── */}
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#0b0e16]/85 px-5 py-3 backdrop-blur-2xl">
+      <header
+        className={cn(
+          'flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#0b0e16]/85 px-5 py-3 backdrop-blur-2xl transition-all duration-300',
+          isFullscreen && controlsHidden && 'pointer-events-none h-0 overflow-hidden border-0 py-0 opacity-0',
+        )}
+      >
         <div className="flex min-w-0 items-center gap-3">
           <span className="flex h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_10px_#34D399]" />
           <div className="min-w-0">
@@ -4052,54 +4117,128 @@ export function MeetingStudio({
             {sideTab === 'chat' && (
               <div className="flex flex-1 flex-col overflow-hidden">
                 <div className="flex-1 space-y-2.5 overflow-y-auto p-3.5">
-                  {room.chatMessages.length === 0 ? (
+                  {room.chatMessages.filter(
+                    (msg) =>
+                      !msg.recipientId ||
+                      msg.senderId === currentUser.id ||
+                      msg.recipientId === currentUser.id ||
+                      canHostControl,
+                  ).length === 0 ? (
                     <div className="mt-10 text-center text-xs text-white/45">
-                      In-meeting messages appear here for everyone in the call.
+                      In-meeting messages appear here for everyone or directly to Hosts / Co-Hosts.
                     </div>
                   ) : (
-                    room.chatMessages.map((msg) => {
-                      const isMine =
-                        msg.senderId === currentUser.id || msg.senderName === currentUser.fullName;
-                      return (
-                        <div
-                          key={msg.id}
-                          className={cn('flex flex-col', isMine ? 'items-end' : 'items-start')}
-                        >
+                    room.chatMessages
+                      .filter(
+                        (msg) =>
+                          !msg.recipientId ||
+                          msg.senderId === currentUser.id ||
+                          msg.recipientId === currentUser.id ||
+                          canHostControl,
+                      )
+                      .map((msg) => {
+                        const isMine =
+                          msg.senderId === currentUser.id || msg.senderName === currentUser.fullName;
+                        return (
                           <div
-                            className={cn(
-                              'max-w-[85%] rounded-2xl px-3 py-2 text-xs leading-relaxed',
-                              isMine
-                                ? 'rounded-br-sm bg-[#D4A843] text-slate-950 font-medium'
-                                : 'rounded-bl-sm bg-white/10 text-white',
-                            )}
+                            key={msg.id}
+                            className={cn('group flex flex-col', isMine ? 'items-end' : 'items-start')}
                           >
-                            {!isMine && (
-                              <p className="mb-0.5 text-[10px] font-bold text-[#D4A843]">
-                                {msg.senderName}
-                              </p>
-                            )}
-                            <p className="whitespace-pre-wrap break-words">{msg.body}</p>
+                            <div
+                              className={cn(
+                                'max-w-[85%] rounded-2xl px-3 py-2 text-xs leading-relaxed',
+                                isMine
+                                  ? 'rounded-br-sm bg-[#D4A843] text-slate-950 font-medium'
+                                  : 'rounded-bl-sm bg-white/10 text-white',
+                              )}
+                            >
+                              {!isMine && (
+                                <p className="mb-0.5 text-[10px] font-bold text-[#D4A843]">
+                                  {msg.senderName}
+                                </p>
+                              )}
+                              {msg.recipientId && (
+                                <p className={cn(
+                                  'mb-1 inline-block rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider',
+                                  isMine ? 'bg-black/15 text-slate-900' : 'bg-sky-500/25 text-sky-300',
+                                )}>
+                                  Direct to {msg.recipientName ?? 'Host'}
+                                </p>
+                              )}
+                              {msg.replyPreview && (
+                                <div className={cn(
+                                  'mb-1.5 rounded-lg border-l-2 px-2 py-1 text-[10px]',
+                                  isMine
+                                    ? 'border-slate-900/50 bg-black/10 text-slate-900/80'
+                                    : 'border-[#D4A843] bg-white/10 text-white/75',
+                                )}>
+                                  {msg.replyPreview}
+                                </div>
+                              )}
+                              <p className="whitespace-pre-wrap break-words">{msg.body}</p>
+                            </div>
+                            <div className="mt-1 flex items-center gap-2 text-[10px] text-white/35">
+                              <span>
+                                {new Date(msg.createdAt).toLocaleTimeString('en-LK', {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setChatReplyTo(msg)}
+                                className="opacity-70 transition hover:text-[#D4A843] hover:opacity-100"
+                              >
+                                Reply
+                              </button>
+                            </div>
                           </div>
-                          <span className="mt-1 text-[10px] text-white/35">
-                            {new Date(msg.createdAt).toLocaleTimeString('en-LK', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                          </span>
-                        </div>
-                      );
-                    })
+                        );
+                      })
                   )}
                   <div ref={chatBottomRef} />
                 </div>
+                <div className="border-t border-white/10 px-3 pt-2">
+                  <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-white/50">To:</span>
+                    <select
+                      value={chatRecipientId}
+                      onChange={(e) => setChatRecipientId(e.target.value)}
+                      className="flex-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-[11px] text-white focus:outline-none"
+                    >
+                      <option value="ALL" className="bg-[#0F1522]">Everyone in meeting</option>
+                      {hostRecipients.map((h) => (
+                        <option key={h.userId} value={h.userId} className="bg-[#0F1522]">
+                          Direct: {h.fullName} (Host / Co-Host)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {chatReplyTo && (
+                    <div className="mb-1.5 flex items-center justify-between gap-2 rounded-lg bg-white/10 px-2.5 py-1 text-[11px] text-white/80">
+                      <span className="truncate">
+                        Replying to <strong>{chatReplyTo.senderName}</strong>: {chatReplyTo.body}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setChatReplyTo(null)}
+                        className="text-white/50 hover:text-white"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <form
                   onSubmit={sendChat}
-                  className="flex items-center gap-2 border-t border-white/10 p-3"
+                  className="flex items-center gap-2 px-3 pb-3 pt-1"
                 >
                   <Input
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
-                    placeholder="Message everyone..."
+                    placeholder={
+                      chatRecipientId === 'ALL' ? 'Message everyone...' : 'Direct message to Host...'
+                    }
                     className="h-9 border-white/15 bg-white/5 text-xs text-white placeholder:text-white/40"
                   />
                   <Button type="submit" size="sm" variant="primary" className="h-9 px-3">
@@ -4156,7 +4295,12 @@ export function MeetingStudio({
       </div>
 
       {/* ─── FLOATING BOTTOM ZOOM CONTROL BAR ────────────────────────────── */}
-      <footer className="relative flex flex-wrap items-center justify-between gap-2 border-t border-white/10 bg-[#0F1522]/95 px-4 py-3 backdrop-blur-md">
+      <footer
+        className={cn(
+          'relative flex flex-wrap items-center justify-between gap-2 border-t border-white/10 bg-[#0F1522]/95 px-4 py-3 backdrop-blur-md transition-all duration-300',
+          isFullscreen && controlsHidden && 'pointer-events-none h-0 overflow-hidden border-0 py-0 opacity-0',
+        )}
+      >
         {/* Left: Audio & Video + device selectors */}
         <div className="flex items-center gap-2">
           <div className="relative flex items-center rounded-xl bg-white/5 p-0.5">

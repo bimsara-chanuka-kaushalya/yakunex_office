@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import dynamic from 'next/dynamic';
 import {
   CalendarCheck,
   Check,
@@ -23,6 +24,11 @@ import {
   Star,
 } from 'lucide-react';
 import { useAuth } from '@/components/providers';
+
+const LiveLocationMap = dynamic(
+  () => import('@/components/ui/live-location-map').then((m) => m.LiveLocationMap),
+  { ssr: false },
+);
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -387,7 +393,7 @@ export function TimeTrackerView() {
         <div>
           <h2 className="font-display text-3xl font-semibold">Time Tracker &amp; Timesheets</h2>
           <p className="mt-1 text-sm text-muted">
-            Jibble-style live timer, GPS verification, weekly Mon–Sun timesheet matrix &amp; manager approvals.
+            Live timer, GPS verification, weekly Mon–Sun timesheet matrix &amp; manager approvals.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5">
@@ -566,7 +572,7 @@ export function TimeTrackerView() {
         <Card>
           <CardHeader
             title="Weekly Timesheet (Mon – Sun)"
-            description="Jibble-style daily hour breakdown by Project & Task, with Regular vs Overtime (>8h/day)."
+            description="Daily hour breakdown by Project & Task, with Regular vs Overtime (>8h/day)."
             action={
               savedEntries.length > 0 ? (
                 <Button size="sm" onClick={() => void handleSubmitAllSaved()}>
@@ -888,7 +894,11 @@ interface LiveBoardMember {
   workMode: 'OFFICE' | 'REMOTE' | 'FIELD';
   latitude: number | null;
   longitude: number | null;
+  accuracyMeters?: number | null;
   locationLabel: string | null;
+  geofenceStatus?: 'INSIDE_OFFICE' | 'OUTSIDE_OFFICE' | 'REMOTE_APPROVED' | 'NO_GPS';
+  distanceMeters?: number | null;
+  lastLocationAt?: string | null;
 }
 
 export function AttendanceView() {
@@ -932,6 +942,50 @@ export function AttendanceView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Real-time continuous GPS tracking while clocked in + 15s live board refresh
+  const isClockedInActive = Boolean(todayRecord?.clockInAt && !todayRecord?.clockOutAt);
+  useEffect(() => {
+    const refreshId = setInterval(() => {
+      void api<{ liveBoard?: LiveBoardMember[] }>('/attendance')
+        .then((res) => {
+          if (Array.isArray(res?.liveBoard)) setLiveBoard(res.liveBoard);
+        })
+        .catch(() => undefined);
+    }, 15_000);
+
+    let watchId: number | null = null;
+    let lastSentAt = 0;
+    if (isClockedInActive && typeof navigator !== 'undefined' && navigator.geolocation) {
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const lat = Number(pos.coords.latitude.toFixed(6));
+          const lon = Number(pos.coords.longitude.toFixed(6));
+          const acc = Math.round(pos.coords.accuracy);
+          setGpsStatus(`Live GPS (±${acc}m): ${lat.toFixed(4)}, ${lon.toFixed(4)}`);
+          const now = Date.now();
+          if (now - lastSentAt >= 15_000) {
+            lastSentAt = now;
+            void post('/attendance/location', {
+              latitude: lat,
+              longitude: lon,
+              accuracyMeters: acc,
+              locationLabel: `${lat.toFixed(4)}, ${lon.toFixed(4)}`,
+            }).catch(() => undefined);
+          }
+        },
+        () => undefined,
+        { enableHighAccuracy: true, maximumAge: 10_000, timeout: 15_000 },
+      );
+    }
+
+    return () => {
+      clearInterval(refreshId);
+      if (watchId !== null && typeof navigator !== 'undefined' && navigator.geolocation) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+    };
+  }, [isClockedInActive]);
 
   async function doClockIn() {
     setError(null);
@@ -1012,7 +1066,7 @@ export function AttendanceView() {
         <div>
           <h2 className="font-display text-3xl font-semibold">Attendance &amp; Live Location</h2>
           <p className="mt-1 text-sm text-muted">
-            Jibble-style GPS clock-in/out, Office/Remote/Field work modes, Kiosk terminal &amp; live team board.
+            Real-time GPS clock-in/out, Office/Remote/Field work modes, Kiosk terminal &amp; live team map.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1144,13 +1198,16 @@ export function AttendanceView() {
         {error && <p className="mt-3 text-xs text-danger">{error}</p>}
       </Card>
 
-      {/* Jibble Live Who's In & Location Board */}
+      {/* Yakunex Live Who's In & Interactive GPS Map */}
       <Card>
         <CardHeader
-          title={`Live Who's In (${liveBoard.length})`}
-          description="Real-time team attendance, work mode, and GPS check-in locations."
-          badge={<Badge dot tone="success">Live</Badge>}
+          title={`Live Who's In & GPS Map (${liveBoard.length})`}
+          description="Real-time team attendance, office geofence zone & continuous GPS locations."
+          badge={<Badge dot tone="success">Live GPS</Badge>}
         />
+        <div className="px-5 pb-4 sm:px-6">
+          <LiveLocationMap members={liveBoard} />
+        </div>
         {liveBoard.length === 0 ? (
           <div className="px-6 pb-6 text-xs text-muted">
             No team members are currently clocked in today.
@@ -1308,7 +1365,7 @@ export function AttendanceView() {
         )}
       </Card>
 
-      <Modal open={kioskOpen} title="Jibble Kiosk — Team Clock-In / Out" onClose={() => setKioskOpen(false)}>
+      <Modal open={kioskOpen} title="Workforce Kiosk — Team Clock-In / Out" onClose={() => setKioskOpen(false)}>
         <form onSubmit={submitKiosk} className="space-y-4">
           <Field label="Employee" htmlFor="ksk-emp">
             <Select id="ksk-emp" value={kioskUserId} onChange={(e) => setKioskUserId(e.target.value)}>

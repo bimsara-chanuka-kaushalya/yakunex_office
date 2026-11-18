@@ -347,10 +347,10 @@ export default function DashboardPage() {
           )}
         </section>
 
-        {/* Jibble Live Who's In & Location Board */}
+        {/* Live Who's In & Location Board */}
         <Card>
           <CardHeader
-            title={`Jibble Live — Who's In (${liveBoard.length})`}
+            title={`Live Workforce — Who's In (${liveBoard.length})`}
             description="Real-time team attendance, work mode & GPS check-in locations."
             badge={<Badge dot tone="success">Live</Badge>}
             action={
