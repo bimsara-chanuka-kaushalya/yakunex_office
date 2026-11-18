@@ -183,6 +183,7 @@ export interface AttendanceItem {
   geofenceStatus?: 'INSIDE_OFFICE' | 'OUTSIDE_OFFICE' | 'REMOTE_APPROVED' | 'NO_GPS';
   distanceMeters?: number | null;
   lastLocationAt?: string | null;
+  locationTrail?: Array<{ lat: number; lon: number; at: string }>;
 }
 
 export interface LeaveRequestItem {
@@ -1716,11 +1717,17 @@ export class WorkspaceService implements OnModuleInit {
         geofenceStatus: a.geofenceStatus ?? 'NO_GPS',
         distanceMeters: a.distanceMeters ?? null,
         lastLocationAt: a.lastLocationAt ?? a.clockInAt ?? null,
+        locationTrail: a.locationTrail ?? [],
       }));
     return {
       todayRecord: myToday,
       records,
       liveBoard,
+      officeGeofence: {
+        latitude: this.settings.officeLatitude ?? 6.9271,
+        longitude: this.settings.officeLongitude ?? 79.8612,
+        radiusMeters: this.settings.officeRadiusMeters ?? 250,
+      },
     };
   }
 
@@ -1788,6 +1795,11 @@ export class WorkspaceService implements OnModuleInit {
         deviceType,
         geofenceStatus,
         distanceMeters,
+        lastLocationAt: new Date().toISOString(),
+        locationTrail:
+          latitude !== null && longitude !== null
+            ? [{ lat: latitude, lon: longitude, at: new Date().toISOString() }]
+            : [],
       };
       this.attendance.unshift(record);
     } else {
@@ -1800,6 +1812,13 @@ export class WorkspaceService implements OnModuleInit {
       record.deviceType = deviceType;
       record.geofenceStatus = geofenceStatus;
       record.distanceMeters = distanceMeters;
+      record.lastLocationAt = new Date().toISOString();
+      if (latitude !== null && longitude !== null) {
+        record.locationTrail = [
+          ...(record.locationTrail ?? []),
+          { lat: latitude, lon: longitude, at: new Date().toISOString() },
+        ].slice(-100);
+      }
     }
     this.persistState(actor.organizationId);
 
@@ -3290,6 +3309,11 @@ export class WorkspaceService implements OnModuleInit {
       ...(body.requirePasswordRotationDays !== undefined
         ? { requirePasswordRotationDays: Number(body.requirePasswordRotationDays) }
         : {}),
+      ...(body.officeLatitude !== undefined ? { officeLatitude: Number(body.officeLatitude) } : {}),
+      ...(body.officeLongitude !== undefined ? { officeLongitude: Number(body.officeLongitude) } : {}),
+      ...(body.officeRadiusMeters !== undefined
+        ? { officeRadiusMeters: Math.max(25, Number(body.officeRadiusMeters) || 250) }
+        : {}),
     };
     this.persistState(actor.organizationId);
     void this.prisma.organization?.update?.({
@@ -4375,6 +4399,11 @@ export class WorkspaceService implements OnModuleInit {
     record.geofenceStatus = geofenceStatus;
     record.distanceMeters = distanceMeters;
     record.lastLocationAt = new Date().toISOString();
+    const prevTrail = record.locationTrail ?? [];
+    const lastPt = prevTrail[prevTrail.length - 1];
+    if (!lastPt || lastPt.lat !== latitude || lastPt.lon !== longitude) {
+      record.locationTrail = [...prevTrail, { lat: latitude, lon: longitude, at: record.lastLocationAt }].slice(-100);
+    }
     this.persistState(actor.organizationId);
 
     return {

@@ -54,6 +54,7 @@ import {
   type RemoteTrackPublication,
 } from 'livekit-client';
 import { liveGet, patch, post } from '@/lib/api';
+import { playAlertChime, showDesktopNotification } from '@/lib/alerts';
 import { cn } from '@/lib/cn';
 
 export interface MeetingParticipant {
@@ -1930,6 +1931,8 @@ export function MeetingStudio({
           prev.some((r) => r.userId === reqUserId) ? prev : [...prev, { userId: reqUserId, fullName: reqName }],
         );
         if (canHostControl) {
+          playAlertChime();
+          showDesktopNotification('Screen Share Request', `${reqName} wants to share their screen.`);
           showToast(`${reqName} requested screen-share access.`);
         }
         return;

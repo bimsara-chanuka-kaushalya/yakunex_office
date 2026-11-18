@@ -16,6 +16,7 @@ export interface LiveMapMember {
   geofenceStatus?: 'INSIDE_OFFICE' | 'OUTSIDE_OFFICE' | 'REMOTE_APPROVED' | 'NO_GPS';
   distanceMeters?: number | null;
   lastLocationAt?: string | null;
+  locationTrail?: Array<{ lat: number; lon: number; at: string }>;
   onBreak: boolean;
 }
 
@@ -110,6 +111,18 @@ export function LiveLocationMap({
             timeZone: 'Asia/Colombo',
           })
         : '—';
+
+      if (m.locationTrail && m.locationTrail.length > 1) {
+        const trailCoords: L.LatLngTuple[] = m.locationTrail.map((pt) => [pt.lat, pt.lon]);
+        L.polyline(trailCoords, {
+          color,
+          weight: 3,
+          opacity: 0.75,
+          dashArray: '6, 6',
+        })
+          .bindPopup(`${m.userName} — Daily Route (${m.locationTrail.length} GPS points)`)
+          .addTo(group);
+      }
 
       L.marker([m.latitude, m.longitude], { icon })
         .bindPopup(

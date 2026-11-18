@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Lock } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { YakunexMark } from '@/components/brand/logo';
 import { Avatar } from '@/components/ui/avatar';
+import { playAlertChime, showDesktopNotification } from '@/lib/alerts';
 import { api } from '@/lib/api';
 import { NAV_SECTIONS, isModuleLockedForRole } from '@/lib/nav';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
@@ -20,6 +21,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     notifications: 0,
     approvals: 0,
   });
+  const prevBadgesRef = useRef<{ notifications: number; approvals: number } | null>(null);
 
   useEffect(() => {
     if (!user || user.role === 'INTERN') return;
@@ -31,10 +33,19 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           api<Array<{ status?: string }>>('/approvals').catch(() => []),
         ]);
         if (!active) return;
-        setBadges({
-          notifications: Array.isArray(notifs) ? notifs.filter((n) => !n.read).length : 0,
-          approvals: Array.isArray(apps) ? apps.filter((a) => a.status === 'PENDING').length : 0,
-        });
+        const nextNotifs = Array.isArray(notifs) ? notifs.filter((n) => !n.read).length : 0;
+        const nextApprovals = Array.isArray(apps) ? apps.filter((a) => a.status === 'PENDING').length : 0;
+        const prev = prevBadgesRef.current;
+        if (prev && (nextNotifs > prev.notifications || nextApprovals > prev.approvals)) {
+          playAlertChime();
+          const label =
+            nextNotifs > prev.notifications
+              ? `You have ${nextNotifs} unread notification(s).`
+              : `You have ${nextApprovals} pending approval(s).`;
+          showDesktopNotification('Yakunex Hub Alert', label);
+        }
+        prevBadgesRef.current = { notifications: nextNotifs, approvals: nextApprovals };
+        setBadges({ notifications: nextNotifs, approvals: nextApprovals });
       } catch {
         // ignore transient polling errors
       }

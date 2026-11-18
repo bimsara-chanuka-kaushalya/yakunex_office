@@ -899,6 +899,7 @@ interface LiveBoardMember {
   geofenceStatus?: 'INSIDE_OFFICE' | 'OUTSIDE_OFFICE' | 'REMOTE_APPROVED' | 'NO_GPS';
   distanceMeters?: number | null;
   lastLocationAt?: string | null;
+  locationTrail?: Array<{ lat: number; lon: number; at: string }>;
 }
 
 export function AttendanceView() {
@@ -907,6 +908,11 @@ export function AttendanceView() {
   const [todayRecord, setTodayRecord] = useState<AttendanceRow | null>(null);
   const [records, setRecords] = useState<AttendanceRow[]>([]);
   const [liveBoard, setLiveBoard] = useState<LiveBoardMember[]>([]);
+  const [officeGeofence, setOfficeGeofence] = useState<{
+    latitude: number;
+    longitude: number;
+    radiusMeters: number;
+  }>({ latitude: 6.9271, longitude: 79.8612, radiusMeters: 250 });
   const [employees, setEmployees] = useState<Array<{ id: string; fullName: string; companyId: string | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [notes, setNotes] = useState('');
@@ -925,12 +931,14 @@ export function AttendanceView() {
           todayRecord: AttendanceRow | null;
           records: AttendanceRow[];
           liveBoard?: LiveBoardMember[];
+          officeGeofence?: { latitude: number; longitude: number; radiusMeters: number };
         }>('/attendance'),
         api<{ employees?: Array<{ id: string; fullName: string; companyId: string | null }> }>('/organization').catch(() => ({ employees: [] })),
       ]);
       setTodayRecord(res.todayRecord);
       setRecords(res.records);
       setLiveBoard(Array.isArray(res.liveBoard) ? res.liveBoard : []);
+      if (res.officeGeofence) setOfficeGeofence(res.officeGeofence);
       const emps = Array.isArray(org?.employees) ? org.employees : [];
       setEmployees(emps);
       if (emps.length > 0) setKioskUserId((prev) => prev || emps[0].id);
@@ -1206,7 +1214,12 @@ export function AttendanceView() {
           badge={<Badge dot tone="success">Live GPS</Badge>}
         />
         <div className="px-5 pb-4 sm:px-6">
-          <LiveLocationMap members={liveBoard} />
+          <LiveLocationMap
+            members={liveBoard}
+            officeLat={officeGeofence.latitude}
+            officeLon={officeGeofence.longitude}
+            officeRadiusMeters={officeGeofence.radiusMeters}
+          />
         </div>
         {liveBoard.length === 0 ? (
           <div className="px-6 pb-6 text-xs text-muted">

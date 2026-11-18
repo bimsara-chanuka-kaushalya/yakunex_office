@@ -2033,6 +2033,9 @@ interface SettingsPayload {
     idleTimeoutMinutes: number;
     enforceSingleTimer: boolean;
     requirePasswordRotationDays: number;
+    officeLatitude?: number;
+    officeLongitude?: number;
+    officeRadiusMeters?: number;
   };
   roleMatrix: Record<Role, string[]>;
   permissionCatalog: string[];
@@ -2058,6 +2061,9 @@ export function SettingsView() {
   const [workDayStart, setWorkDayStart] = useState('08:30');
   const [workDayEnd, setWorkDayEnd] = useState('17:30');
   const [idleTimeoutMinutes, setIdleTimeoutMinutes] = useState('10');
+  const [officeLatitude, setOfficeLatitude] = useState('6.9271');
+  const [officeLongitude, setOfficeLongitude] = useState('79.8612');
+  const [officeRadiusMeters, setOfficeRadiusMeters] = useState('250');
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -2068,11 +2074,26 @@ export function SettingsView() {
     setWorkDayStart(res.settings.workDayStart);
     setWorkDayEnd(res.settings.workDayEnd);
     setIdleTimeoutMinutes(String(res.settings.idleTimeoutMinutes));
+    setOfficeLatitude(String(res.settings.officeLatitude ?? 6.9271));
+    setOfficeLongitude(String(res.settings.officeLongitude ?? 79.8612));
+    setOfficeRadiusMeters(String(res.settings.officeRadiusMeters ?? 250));
   }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  function useCurrentGpsForOffice() {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setOfficeLatitude(pos.coords.latitude.toFixed(6));
+        setOfficeLongitude(pos.coords.longitude.toFixed(6));
+      },
+      () => undefined,
+      { enableHighAccuracy: true, timeout: 10000 },
+    );
+  }
 
   async function saveOrgSettings(e: FormEvent) {
     e.preventDefault();
@@ -2082,8 +2103,11 @@ export function SettingsView() {
       workDayStart,
       workDayEnd,
       idleTimeoutMinutes: Number(idleTimeoutMinutes),
+      officeLatitude: Number(officeLatitude),
+      officeLongitude: Number(officeLongitude),
+      officeRadiusMeters: Number(officeRadiusMeters),
     });
-    setSavedNotice('Organization profile and working policies saved.');
+    setSavedNotice('Organization profile, working policies, and office geofence saved.');
     setTimeout(() => setSavedNotice(null), 3000);
     await load();
   }
@@ -2168,6 +2192,51 @@ export function SettingsView() {
                 onChange={(e) => setIdleTimeoutMinutes(e.target.value)}
               />
             </Field>
+          </div>
+          <div className="rounded-2xl border border-line/70 bg-canvas/40 p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="text-xs font-bold uppercase tracking-wider text-ink">
+                  Office HQ Geofence Zone
+                </h4>
+                <p className="text-xs text-muted">
+                  Coordinates and radius used to verify In-Zone vs Outside-Zone GPS attendance.
+                </p>
+              </div>
+              <Button type="button" size="sm" variant="secondary" onClick={useCurrentGpsForOffice}>
+                Use My Current GPS
+              </Button>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Field label="Office Latitude" htmlFor="st-lat">
+                <Input
+                  id="st-lat"
+                  type="number"
+                  step="any"
+                  value={officeLatitude}
+                  onChange={(e) => setOfficeLatitude(e.target.value)}
+                />
+              </Field>
+              <Field label="Office Longitude" htmlFor="st-lon">
+                <Input
+                  id="st-lon"
+                  type="number"
+                  step="any"
+                  value={officeLongitude}
+                  onChange={(e) => setOfficeLongitude(e.target.value)}
+                />
+              </Field>
+              <Field label="Geofence Radius (meters)" htmlFor="st-rad">
+                <Input
+                  id="st-rad"
+                  type="number"
+                  min={25}
+                  max={10000}
+                  value={officeRadiusMeters}
+                  onChange={(e) => setOfficeRadiusMeters(e.target.value)}
+                />
+              </Field>
+            </div>
           </div>
           <div className="flex justify-end">
             <Button type="submit">Save settings</Button>
