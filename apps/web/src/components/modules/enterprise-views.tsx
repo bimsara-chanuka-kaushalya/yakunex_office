@@ -67,6 +67,12 @@ export function OrganizationView() {
 
   useEffect(() => {
     void load();
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        void load();
+      }
+    }, 5_000);
+    return () => clearInterval(id);
   }, [load]);
 
   async function onCreateDept(e: FormEvent) {
@@ -233,6 +239,12 @@ export function ApprovalsView() {
 
   useEffect(() => {
     void load();
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        void load();
+      }
+    }, 5_000);
+    return () => clearInterval(id);
   }, [load]);
 
   async function onSubmit(e: FormEvent) {
@@ -382,6 +394,12 @@ export function FinanceView() {
 
   useEffect(() => {
     void load();
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        void load();
+      }
+    }, 5_000);
+    return () => clearInterval(id);
   }, [load]);
 
   async function onCreate(e: FormEvent) {
@@ -587,6 +605,12 @@ export function AssetsView() {
 
   useEffect(() => {
     void load();
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        void load();
+      }
+    }, 5_000);
+    return () => clearInterval(id);
   }, [load]);
 
   async function onCreate(e: FormEvent) {
@@ -677,6 +701,12 @@ export function PerformanceView() {
 
   useEffect(() => {
     void load();
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        void load();
+      }
+    }, 5_000);
+    return () => clearInterval(id);
   }, [load]);
 
   async function onCreate(e: FormEvent) {
@@ -771,6 +801,12 @@ export function NotificationsView() {
 
   useEffect(() => {
     void load();
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        void load();
+      }
+    }, 5_000);
+    return () => clearInterval(id);
   }, [load]);
 
   async function onPublish(e: FormEvent) {
@@ -945,6 +981,12 @@ export function ProfileView() {
 
   useEffect(() => {
     void load();
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        void load();
+      }
+    }, 5_000);
+    return () => clearInterval(id);
   }, [load]);
 
   useEffect(() => {
@@ -1031,9 +1073,9 @@ export function ProfileView() {
         payload.role = role;
         payload.title = title;
       }
-      await patch(`/profile/${profile.id}`, payload);
+      const updated = await patch<EmployeeProfilePayload>(`/profile/${profile.id}`, payload);
+      applyProfileState(updated);
       setNotice('Profile updated successfully.');
-      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update profile.');
     }

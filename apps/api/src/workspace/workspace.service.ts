@@ -387,6 +387,7 @@ export class WorkspaceService implements OnModuleInit {
   private auditLogsCache = new Map<string, { data: unknown; expiresAt: number }>();
   private iceConfigCache: { data: MeetingIceConfig; expiresAt: number } | null = null;
   private lastMeetingsSyncAt = 0;
+  private lastSnapshotSyncAt = 0;
   private lastSignalPruneAt = new Map<string, number>();
   private meetingMutationChain: Promise<unknown> = Promise.resolve();
   private meetingSignals = new Map<string, { seq: number; items: MeetingSignalItem[] }>();
@@ -778,6 +779,34 @@ export class WorkspaceService implements OnModuleInit {
       this.logger.log('✅ Workspace state hydrated from Supabase PostgreSQL.');
     } catch (err) {
       this.logger.warn(`Workspace hydration skipped (in-memory fallback): ${(err as Error).message}`);
+    }
+  }
+
+  private async syncSnapshotFromSupabase(organizationId?: string, force = false): Promise<void> {
+    if (!force && Date.now() - this.lastSnapshotSyncAt < 2000) return;
+    try {
+      const orgId = await this.resolveOrgId(organizationId);
+      if (!orgId || !this.prisma.systemSetting?.findUnique) return;
+      const stateRow = await this.prisma.systemSetting.findUnique({
+        where: { organizationId_key: { organizationId: orgId, key: 'workspace_state' } },
+      });
+      this.lastSnapshotSyncAt = Date.now();
+      if (!stateRow?.value || typeof stateRow.value !== 'object') return;
+      const snap = stateRow.value as Record<string, unknown>;
+      if (Array.isArray(snap.notifications)) {
+        this.notifications = snap.notifications as WorkspaceService['notifications'];
+      }
+      if (Array.isArray(snap.approvals)) {
+        this.approvals = snap.approvals as WorkspaceService['approvals'];
+      }
+      if (snap.userProfiles && typeof snap.userProfiles === 'object') {
+        this.userProfiles = snap.userProfiles as WorkspaceService['userProfiles'];
+      }
+      if (snap.settings && typeof snap.settings === 'object') {
+        this.settings = { ...this.settings, ...(snap.settings as Partial<OrganizationSettings>) };
+      }
+    } catch {
+      // Non-fatal fallback
     }
   }
 
@@ -3988,7 +4017,8 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   // ─── Notifications & Announcements ────────────────────────────────────────
-  listNotifications(actor: AuthUser) {
+  async listNotifications(actor: AuthUser) {
+    await this.syncSnapshotFromSupabase(actor.organizationId);
     return this.notifications
       .filter((n) => n.targetUserId === '*' || n.targetUserId === actor.id)
       .map((n) => ({
@@ -3997,7 +4027,8 @@ export class WorkspaceService implements OnModuleInit {
       }));
   }
 
-  createAnnouncement(actor: AuthUser, body: Record<string, unknown>) {
+  async createAnnouncement(actor: AuthUser, body: Record<string, unknown>) {
+    await this.syncSnapshotFromSupabase(actor.organizationId, true);
     const title = String(body.title ?? '').trim();
     const message = String(body.body ?? '').trim();
     if (title.length < 2 || !message) {
@@ -4014,16 +4045,17 @@ export class WorkspaceService implements OnModuleInit {
       createdAt: new Date().toISOString(),
     };
     this.notifications.unshift(item);
-    this.persistState(actor.organizationId);
+    await this.persistStateNow(actor.organizationId);
     return item;
   }
 
-  markNotificationRead(actor: AuthUser, id: string) {
+  async markNotificationRead(actor: AuthUser, id: string) {
+    await this.syncSnapshotFromSupabase(actor.organizationId, true);
     const item = this.notifications.find((n) => n.id === id);
     if (!item) throw new NotFoundException('Notification not found.');
     if (!item.readByIds.includes(actor.id)) {
       item.readByIds.push(actor.id);
-      this.persistState(actor.organizationId);
+      await this.persistStateNow(actor.organizationId);
     }
     return { ok: true, id };
   }
@@ -4039,6 +4071,7 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   async getEmployeeProfile(actor: AuthUser, targetUserId?: string) {
+    await this.syncSnapshotFromSupabase(actor.organizationId);
     const uid = targetUserId || actor.id;
     let dbUser: {
       id: string;
@@ -4215,6 +4248,7 @@ export class WorkspaceService implements OnModuleInit {
     if ((body.role !== undefined || body.title !== undefined) && actor.role !== Role.SUPER_ADMIN) {
       throw new ForbiddenException('Only a Super Admin can change an employee job role or title.');
     }
+    await this.syncSnapshotFromSupabase(actor.organizationId, true);
 
     const prev = this.userProfiles[targetUserId] ?? {};
     this.userProfiles[targetUserId] = {
@@ -4231,7 +4265,7 @@ export class WorkspaceService implements OnModuleInit {
       ...(body.role !== undefined && actor.role === Role.SUPER_ADMIN ? { role: body.role } : {}),
       ...(body.title !== undefined && actor.role === Role.SUPER_ADMIN ? { title: String(body.title).trim() } : {}),
     };
-    this.persistState(actor.organizationId);
+    await this.persistStateNow(actor.organizationId);
 
     const dbPatch: Record<string, unknown> = {};
     if (body.fullName !== undefined && String(body.fullName).trim().length >= 2) {
@@ -4242,10 +4276,15 @@ export class WorkspaceService implements OnModuleInit {
     if (body.title !== undefined && actor.role === Role.SUPER_ADMIN) dbPatch.title = String(body.title).trim() || null;
 
     if (Object.keys(dbPatch).length > 0 && this.prisma.user?.update) {
-      await this.prisma.user.update({
-        where: { id: targetUserId },
-        data: dbPatch,
-      }).catch(() => undefined);
+      const updatedDbUser = await this.prisma.user
+        .update({
+          where: { id: targetUserId },
+          data: dbPatch,
+        })
+        .catch(() => null);
+      if (updatedDbUser) {
+        this.prisma.upsertUserInCache?.(updatedDbUser);
+      }
     }
 
     await this.audit.log({

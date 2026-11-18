@@ -51,10 +51,21 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       }
     };
     void poll();
-    const id = setInterval(() => void poll(), 30_000);
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        void poll();
+      }
+    }, 5_000);
+    const onFocus = () => void poll();
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', onFocus);
+    }
     return () => {
       active = false;
       clearInterval(id);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', onFocus);
+      }
     };
   }, [user]);
 

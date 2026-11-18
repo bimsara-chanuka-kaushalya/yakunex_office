@@ -332,11 +332,12 @@ describe('WorkspaceService Full-System Coverage (All 14 Modules)', () => {
     expect(review.rating).toBe(5);
     expect(svc.listPerformanceReviews(staffActor).length).toBe(1);
 
-    const ann = svc.createAnnouncement(adminActor, { title: 'Townhall', body: 'Friday 4 PM' });
-    const inbox = svc.listNotifications(staffActor);
+    const ann = await svc.createAnnouncement(adminActor, { title: 'Townhall', body: 'Friday 4 PM' });
+    const inbox = await svc.listNotifications(staffActor);
     expect(inbox.some((n) => n.id === ann.id)).toBe(true);
     await svc.markNotificationRead(staffActor, ann.id);
-    expect(svc.listNotifications(staffActor).find((n) => n.id === ann.id)?.read).toBe(true);
+    const updatedInbox = await svc.listNotifications(staffActor);
+    expect(updatedInbox.find((n) => n.id === ann.id)?.read).toBe(true);
   });
 
   it('covers upgraded Time Tracker (pause/resume/switch/submit & approval sync)', async () => {
