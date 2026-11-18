@@ -291,6 +291,8 @@ export interface MeetingChatMessage {
   replyPreview?: string | null;
   recipientId?: string | null;
   recipientName?: string | null;
+  attachmentUrl?: string | null;
+  attachmentName?: string | null;
 }
 
 export interface MeetingItem {
@@ -306,6 +308,9 @@ export interface MeetingItem {
   endsAt: string;
   status: 'LIVE' | 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
   meetingScope?: 'BOARD' | 'LEGAL' | 'DEPT' | 'PROJECT' | 'HR' | 'INTERNAL';
+  allowedRoles?: string[];
+  invitedUserIds?: string[];
+  removedUserIds?: string[];
   allowExternalGuests?: boolean;
   recordingAllowed?: boolean;
   waitingRoomEnabled?: boolean;
@@ -2600,9 +2605,48 @@ export class WorkspaceService implements OnModuleInit {
     };
   }
 
-  async listMeetings(organizationId?: string) {
+  private canActorSeeMeeting(mtg: MeetingItem, actor?: AuthUser): boolean {
+    if (!actor) return true;
+    if (
+      actor.role === Role.SUPER_ADMIN ||
+      mtg.organizerId === actor.id ||
+      mtg.organizerName === actor.fullName ||
+      (mtg.coHostIds ?? []).includes(actor.id) ||
+      mtg.participants.some((p) => p.userId === actor.id) ||
+      (mtg.waitingRoom ?? []).some((w) => w.userId === actor.id) ||
+      (mtg.invitedUserIds ?? []).includes(actor.id)
+    ) {
+      return true;
+    }
+    if (mtg.meetingScope === 'BOARD' || mtg.meetingScope === 'LEGAL') {
+      const policy = this.resolveMeetingAccessPolicy(actor);
+      if (policy.tier !== 'Tier 1: Super Admin' && policy.tier !== 'Tier 1B: Legal Admin') {
+        const roleExplicitlyAllowed =
+          Array.isArray(mtg.allowedRoles) &&
+          !mtg.allowedRoles.includes('ALL') &&
+          mtg.allowedRoles.includes(actor.role);
+        if (!roleExplicitlyAllowed) return false;
+      }
+    }
+    const hasCustomRoles =
+      Array.isArray(mtg.allowedRoles) &&
+      mtg.allowedRoles.length > 0 &&
+      !mtg.allowedRoles.includes('ALL');
+    const hasInvitedUsers =
+      Array.isArray(mtg.invitedUserIds) && mtg.invitedUserIds.length > 0;
+    if (hasCustomRoles) {
+      return mtg.allowedRoles!.includes(actor.role);
+    }
+    if (hasInvitedUsers) {
+      return mtg.invitedUserIds!.includes(actor.id);
+    }
+    return true;
+  }
+
+  async listMeetings(organizationId?: string, actor?: AuthUser) {
     await this.syncMeetingsFromDb(organizationId);
-    return this.meetings;
+    if (!actor) return this.meetings;
+    return this.meetings.filter((m) => this.canActorSeeMeeting(m, actor));
   }
 
   async getMeetingRoom(id: string, organizationId?: string) {
@@ -2651,6 +2695,12 @@ export class WorkspaceService implements OnModuleInit {
       endsAt: String(body.endsAt || new Date(Date.now() + 3600000).toISOString()),
       status: instant ? 'LIVE' : 'SCHEDULED',
       meetingScope: requestedScope,
+      allowedRoles:
+        Array.isArray(body.allowedRoles) && body.allowedRoles.length > 0
+          ? body.allowedRoles.map(String)
+          : ['ALL'],
+      invitedUserIds: Array.isArray(body.invitedUserIds) ? body.invitedUserIds.map(String) : [],
+      removedUserIds: [],
       allowExternalGuests,
       recordingAllowed,
       waitingRoomEnabled,
@@ -2699,14 +2749,33 @@ export class WorkspaceService implements OnModuleInit {
     return created;
   }
 
-  async updateMeeting(id: string, body: Record<string, unknown>, organizationId?: string) {
+  async updateMeeting(
+    id: string,
+    body: Record<string, unknown>,
+    organizationId?: string,
+    actor?: AuthUser,
+  ) {
     await this.syncMeetingsFromDb(organizationId, true);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
     if (body.status) {
-      mtg.status = body.status as MeetingItem['status'];
+      const nextStatus = body.status as MeetingItem['status'];
+      if (actor && (nextStatus === 'COMPLETED' || nextStatus === 'CANCELLED')) {
+        const canEnd =
+          mtg.organizerId === actor.id ||
+          mtg.organizerName === actor.fullName ||
+          (mtg.coHostIds ?? []).includes(actor.id) ||
+          this.isManagerOrAdmin(actor);
+        if (!canEnd) {
+          throw new ForbiddenException(
+            'Only the meeting host, co-host, or manager can end the meeting for everyone.',
+          );
+        }
+      }
+      mtg.status = nextStatus;
       if (mtg.status === 'COMPLETED' || mtg.status === 'CANCELLED') {
         mtg.participants = [];
+        mtg.waitingRoom = [];
       }
     }
     if (body.title !== undefined && String(body.title).trim().length >= 2) {
@@ -2765,8 +2834,13 @@ export class WorkspaceService implements OnModuleInit {
         actor.role === Role.ADMIN ||
         actor.role === Role.PROJECT_MANAGER ||
         (mtg.coHostIds ?? []).includes(actor.id);
+      const wasRemoved = (mtg.removedUserIds ?? []).includes(actor.id);
 
-      if (mtg.waitingRoomEnabled && !isHostOrManager && !existing) {
+      // If user was previously removed by Host, or Waiting Room is enabled for non-host, hold them in Waiting Room
+      if ((wasRemoved && !isHostOrManager) || (mtg.waitingRoomEnabled && !isHostOrManager && !existing)) {
+        if (existing) {
+          mtg.participants = mtg.participants.filter((p) => p.userId !== actor.id);
+        }
         mtg.waitingRoom = mtg.waitingRoom ?? [];
         if (!mtg.waitingRoom.some((w) => w.userId === actor.id)) {
           mtg.waitingRoom.push({
@@ -2777,6 +2851,17 @@ export class WorkspaceService implements OnModuleInit {
             requestedAt: joinedAt,
           });
           await this.persistStateNow(actor.organizationId);
+          await this.appendMeetingSignal(
+            mtg.id,
+            {
+              fromUserId: actor.id,
+              fromUserName: actor.fullName,
+              toUserId: '*',
+              type: 'waiting-room-updated',
+              payload: { userId: actor.id, fullName: actor.fullName, role: actor.role },
+            },
+            actor.organizationId,
+          );
         }
         return mtg;
       }
@@ -2903,7 +2988,10 @@ export class WorkspaceService implements OnModuleInit {
   async hostMeetingAction(
     actor: AuthUser,
     id: string,
-    body: { action: 'mute' | 'mute-all' | 'admit' | 'remove' | 'approve-screenshare'; targetUserId?: string },
+    body: {
+      action: 'mute' | 'mute-all' | 'admit' | 'remove' | 'approve-screenshare' | 'toggle-cohost';
+      targetUserId?: string;
+    },
   ) {
     await this.syncMeetingsFromDb(actor.organizationId, true);
     const mtg = this.meetings.find((m) => m.id === id);
@@ -2935,6 +3023,7 @@ export class WorkspaceService implements OnModuleInit {
       const waiting = mtg.waitingRoom ?? [];
       const entry = waiting.find((w) => w.userId === body.targetUserId);
       mtg.waitingRoom = waiting.filter((w) => w.userId !== body.targetUserId);
+      mtg.removedUserIds = (mtg.removedUserIds ?? []).filter((uid) => uid !== body.targetUserId);
       if (entry && !mtg.participants.some((p) => p.userId === entry.userId)) {
         mtg.participants.push({
           userId: entry.userId,
@@ -2954,10 +3043,58 @@ export class WorkspaceService implements OnModuleInit {
     }
 
     if (body.action === 'remove' && body.targetUserId) {
-      mtg.waitingRoom = (mtg.waitingRoom ?? []).filter((w) => w.userId !== body.targetUserId);
+      const removedFromCall = mtg.participants.find((p) => p.userId === body.targetUserId);
       mtg.participants = mtg.participants.filter((p) => p.userId !== body.targetUserId);
+      mtg.removedUserIds = Array.from(new Set([...(mtg.removedUserIds ?? []), body.targetUserId]));
+      if (removedFromCall) {
+        // Removed from active call -> move into Waiting Room so Host can re-admit them later
+        mtg.waitingRoom = mtg.waitingRoom ?? [];
+        if (!mtg.waitingRoom.some((w) => w.userId === removedFromCall.userId)) {
+          mtg.waitingRoom.push({
+            userId: removedFromCall.userId,
+            fullName: removedFromCall.fullName,
+            companyId: removedFromCall.companyId ?? null,
+            role: removedFromCall.role,
+            requestedAt: new Date().toISOString(),
+          });
+        }
+      } else {
+        // Denied while in Waiting Room -> remove from waitingRoom
+        mtg.waitingRoom = (mtg.waitingRoom ?? []).filter((w) => w.userId !== body.targetUserId);
+      }
       mtg.attendeeCount = mtg.participants.length;
       await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: body.targetUserId,
+          type: 'host-removed',
+          payload: { targetUserId: body.targetUserId, by: actor.fullName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'toggle-cohost' && body.targetUserId) {
+      const cur = new Set(mtg.coHostIds ?? []);
+      if (cur.has(body.targetUserId)) cur.delete(body.targetUserId);
+      else cur.add(body.targetUserId);
+      mtg.coHostIds = Array.from(cur);
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'cohost-updated',
+          payload: { coHostIds: mtg.coHostIds, targetUserId: body.targetUserId },
+        },
+        actor.organizationId,
+      );
       return mtg;
     }
 
@@ -3128,7 +3265,15 @@ export class WorkspaceService implements OnModuleInit {
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
     const text = String(body.body ?? '').trim();
-    if (!text) throw new BadRequestException('Message cannot be empty.');
+    const attachmentUrl =
+      typeof body.attachmentUrl === 'string' && body.attachmentUrl.startsWith('data:')
+        ? body.attachmentUrl
+        : null;
+    const attachmentName =
+      typeof body.attachmentName === 'string' && body.attachmentName.trim()
+        ? body.attachmentName.trim()
+        : null;
+    if (!text && !attachmentUrl) throw new BadRequestException('Message cannot be empty.');
     const senderParts = actor.fullName.trim().split(/\s+/).filter(Boolean);
     const senderLast = senderParts[senderParts.length - 1] || actor.fullName;
     const replyToId = body.replyToId ? String(body.replyToId) : null;
@@ -3143,12 +3288,14 @@ export class WorkspaceService implements OnModuleInit {
       id: `mc_${randomUUID().slice(0, 8)}`,
       senderId: actor.id,
       senderName: actor.companyId ? `${senderLast} · ${actor.companyId}` : senderLast,
-      body: text,
+      body: text || (attachmentName ? `Attachment: ${attachmentName}` : 'Attachment'),
       createdAt: new Date().toISOString(),
       replyToId,
       replyPreview,
       recipientId,
       recipientName,
+      attachmentUrl,
+      attachmentName,
     });
     await this.persistStateNow(actor.organizationId);
     return mtg;

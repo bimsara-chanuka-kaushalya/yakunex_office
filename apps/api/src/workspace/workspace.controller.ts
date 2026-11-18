@@ -353,7 +353,7 @@ export class WorkspaceController {
   @Get('meetings')
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   listMeetings(@CurrentUser() actor: AuthUser) {
-    return this.workspace.listMeetings(actor.organizationId);
+    return this.workspace.listMeetings(actor.organizationId, actor);
   }
 
   @Get('meetings/ice-config')
@@ -390,7 +390,7 @@ export class WorkspaceController {
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ) {
-    return this.workspace.updateMeeting(id, body, actor.organizationId);
+    return this.workspace.updateMeeting(id, body, actor.organizationId, actor);
   }
 
   @Post('meetings/:id/join')
@@ -476,7 +476,11 @@ export class WorkspaceController {
   hostMeetingAction(
     @CurrentUser() actor: AuthUser,
     @Param('id') id: string,
-    @Body() body: { action: 'mute' | 'mute-all' | 'admit' | 'remove' | 'approve-screenshare'; targetUserId?: string },
+    @Body()
+    body: {
+      action: 'mute' | 'mute-all' | 'admit' | 'remove' | 'approve-screenshare' | 'toggle-cohost';
+      targetUserId?: string;
+    },
   ) {
     return this.workspace.hostMeetingAction(actor, id, body);
   }

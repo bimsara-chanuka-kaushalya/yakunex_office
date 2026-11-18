@@ -962,6 +962,7 @@ export function MeetingsView() {
   const [startsAt, setStartsAt] = useState(() => new Date(Date.now() + 3600000).toISOString().slice(0, 16));
   const [notes, setNotes] = useState('');
   const [meetingScope, setMeetingScope] = useState('INTERNAL');
+  const [allowedRoles, setAllowedRoles] = useState<string[]>(['ALL']);
   const [waitingRoomEnabled, setWaitingRoomEnabled] = useState(false);
   const [allowExternalGuests, setAllowExternalGuests] = useState(false);
   const [recordingAllowed, setRecordingAllowed] = useState(false);
@@ -1157,6 +1158,7 @@ export function MeetingsView() {
       startsAt: new Date(startsAt).toISOString(),
       notes,
       meetingScope,
+      allowedRoles,
       waitingRoomEnabled,
       allowExternalGuests,
       recordingAllowed,
@@ -1485,7 +1487,7 @@ export function MeetingsView() {
             <Input id="mt-notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
           </Field>
           {policy && policy.allowedScopes.length > 0 && (
-            <Field label="Meeting Scope (Tier Access)" htmlFor="mt-scope">
+            <Field label="Meeting Scope" htmlFor="mt-scope">
               <Select id="mt-scope" value={meetingScope} onChange={(e) => setMeetingScope(e.target.value)}>
                 {policy.allowedScopes.map((sc) => (
                   <option key={sc} value={sc}>{sc}</option>
@@ -1493,6 +1495,47 @@ export function MeetingsView() {
               </Select>
             </Field>
           )}
+          <Field label="Who can see & join this meeting (Target Audience)" htmlFor="mt-audience">
+            <div id="mt-audience" className="flex flex-wrap gap-1.5 pt-1">
+              {[
+                { key: 'ALL', label: 'Everyone (All Roles)' },
+                { key: 'SUPER_ADMIN', label: 'Super Admin / MD / CEO' },
+                { key: 'ADMIN', label: 'Admin / C-Level / Legal' },
+                { key: 'PROJECT_MANAGER', label: 'Management / HR / PM' },
+                { key: 'STAFF', label: 'Core Staff / Engineers' },
+                { key: 'INTERN', label: 'Interns / Trainees' },
+              ].map((opt) => {
+                const selected = allowedRoles.includes(opt.key);
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => {
+                      if (opt.key === 'ALL') {
+                        setAllowedRoles(['ALL']);
+                        return;
+                      }
+                      const next = allowedRoles.filter((r) => r !== 'ALL');
+                      if (next.includes(opt.key)) {
+                        const filtered = next.filter((r) => r !== opt.key);
+                        setAllowedRoles(filtered.length > 0 ? filtered : ['ALL']);
+                      } else {
+                        setAllowedRoles([...next, opt.key]);
+                      }
+                    }}
+                    className={cn(
+                      'rounded-xl border px-2.5 py-1 text-xs font-medium transition',
+                      selected
+                        ? 'border-gold bg-gold/15 text-gold-strong dark:text-gold'
+                        : 'border-line bg-surface text-muted hover:text-ink',
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
           <div className="space-y-2 rounded-xl bg-ink/[0.04] p-3 text-xs dark:bg-white/[0.06]">
             <label className="flex cursor-pointer items-center gap-2">
               <input

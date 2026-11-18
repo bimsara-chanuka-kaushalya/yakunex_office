@@ -26,6 +26,7 @@ import {
   MicOff,
   Minimize2,
   MonitorUp,
+  Paperclip,
   PhoneOff,
   PictureInPicture2,
   Pin,
@@ -80,6 +81,8 @@ export interface MeetingChatMessage {
   replyPreview?: string | null;
   recipientId?: string | null;
   recipientName?: string | null;
+  attachmentUrl?: string | null;
+  attachmentName?: string | null;
 }
 
 export interface MeetingRow {
@@ -99,6 +102,9 @@ export interface MeetingRow {
   chatMessages: MeetingChatMessage[];
   waitingRoom?: Array<{ userId: string; fullName: string; role: string; requestedAt: string }>;
   screenShareApprovedIds?: string[];
+  coHostIds?: string[];
+  removedUserIds?: string[];
+  allowedRoles?: string[];
 }
 
 interface MeetingSignalItem {
@@ -654,6 +660,7 @@ export function MeetingStudio({
   initialCamId = '',
   currentUser,
   onExited,
+  onMovedToWaitingRoom,
   onMeetingUpdated,
   standalone = false,
 }: {
@@ -664,6 +671,7 @@ export function MeetingStudio({
   initialCamId?: string;
   currentUser: CurrentUserInfo;
   onExited: (endedForAll?: boolean) => void;
+  onMovedToWaitingRoom?: (room: MeetingRow) => void;
   onMeetingUpdated?: (room: MeetingRow) => void;
   standalone?: boolean;
 }) {
@@ -698,6 +706,8 @@ export function MeetingStudio({
   const hideControlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [chatReplyTo, setChatReplyTo] = useState<MeetingChatMessage | null>(null);
   const [chatRecipientId, setChatRecipientId] = useState<string>('ALL');
+  const [chatAttachment, setChatAttachment] = useState<{ name: string; dataUrl: string } | null>(null);
+  const chatFileRef = useRef<HTMLInputElement | null>(null);
   const [isPip, setIsPip] = useState(false);
   const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
   const [reactions, setReactions] = useState<FloatingReaction[]>([]);
@@ -764,10 +774,16 @@ export function MeetingStudio({
   sideTabRef.current = sideTab;
   participantsRef.current = room.participants;
 
+  const isPrimaryHost = useMemo(() => {
+    const r = currentUser.role.toUpperCase();
+    return room.organizerName === currentUser.fullName || r === 'SUPER_ADMIN';
+  }, [currentUser.fullName, currentUser.role, room.organizerName]);
+
   const canHostControl = useMemo(() => {
     const r = currentUser.role.toUpperCase();
     return (
       room.organizerName === currentUser.fullName ||
+      (room.coHostIds ?? []).includes(currentUser.id) ||
       r === 'SUPER_ADMIN' ||
       r === 'ADMIN' ||
       r === 'PROJECT_MANAGER' ||
@@ -775,7 +791,7 @@ export function MeetingStudio({
       r === 'DIRECTOR' ||
       r === 'PM'
     );
-  }, [currentUser.fullName, currentUser.role, room.organizerName]);
+  }, [currentUser.fullName, currentUser.id, currentUser.role, room.coHostIds, room.organizerName]);
 
   const showToast = useCallback((msg: string) => {
     setBannerNotice(msg);
@@ -1947,6 +1963,57 @@ export function MeetingStudio({
             ),
           }));
           showToast('Host approved your screen-share access! Click Share Screen to present.');
+        }
+        return;
+      }
+
+      if (sig.type === 'waiting-room-updated') {
+        const wName = String(payload.fullName ?? sig.fromUserName ?? 'Participant');
+        if (canHostControl) {
+          playAlertChime();
+          showDesktopNotification('Waiting Room', `${wName} is waiting to join the meeting.`);
+          showToast(`${wName} is in the Waiting Room.`);
+          void liveGet<MeetingRow>(`/meetings/${room.id}/room`)
+            .then((fresh) => setRoom((prev) => ({ ...prev, waitingRoom: fresh.waitingRoom })))
+            .catch(() => undefined);
+        }
+        return;
+      }
+
+      if (sig.type === 'host-removed') {
+        const removedId = String(payload.targetUserId ?? sig.toUserId ?? '');
+        if (removedId === currentUser.id) {
+          showToast('Host moved you to the Waiting Room.');
+          localStreamRef.current?.getTracks().forEach((t) => t.stop());
+          screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+          pcsRef.current.forEach((pc) => pc.close());
+          pcsRef.current.clear();
+          if (sfuRoomRef.current) {
+            void sfuRoomRef.current.disconnect().catch(() => undefined);
+            sfuRoomRef.current = null;
+          }
+          if (onMovedToWaitingRoom) {
+            onMovedToWaitingRoom(room);
+          } else {
+            void leaveCall(false);
+          }
+        } else {
+          closePeer(removedId);
+        }
+        return;
+      }
+
+      if (sig.type === 'cohost-updated') {
+        const nextCoHosts = Array.isArray(payload.coHostIds)
+          ? payload.coHostIds.map(String)
+          : [];
+        setRoom((prev) => ({ ...prev, coHostIds: nextCoHosts }));
+        if (String(payload.targetUserId ?? '') === currentUser.id) {
+          showToast(
+            nextCoHosts.includes(currentUser.id)
+              ? 'You have been assigned as a Co-Host.'
+              : 'Your Co-Host role was removed.',
+          );
         }
         return;
       }
@@ -3159,33 +3226,56 @@ export function MeetingStudio({
     }
   };
 
-  const hostRecipients = useMemo(
+  const directMessageRecipients = useMemo(
     () =>
       room.participants.filter(
         (p) =>
           p.userId !== currentUser.id &&
-          (p.fullName === room.organizerName ||
+          (canHostControl ||
+            p.fullName === room.organizerName ||
+            (room.coHostIds ?? []).includes(p.userId) ||
             ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'MANAGER', 'DIRECTOR', 'PM'].includes(
               p.role.toUpperCase(),
             )),
       ),
-    [currentUser.id, room.organizerName, room.participants],
+    [canHostControl, currentUser.id, room.coHostIds, room.organizerName, room.participants],
   );
+
+  const onPickChatFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 3 * 1024 * 1024) {
+      showToast('Chat attachment must be under 3 MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setChatAttachment({ name: file.name, dataUrl: reader.result });
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   const sendChat = async (e: FormEvent) => {
     e.preventDefault();
-    if (!chatInput.trim()) return;
+    if (!chatInput.trim() && !chatAttachment) return;
     const body = chatInput.trim();
-    const targetHost =
+    const targetRecipient =
       chatRecipientId !== 'ALL'
-        ? hostRecipients.find((h) => h.userId === chatRecipientId) ?? null
+        ? directMessageRecipients.find((h) => h.userId === chatRecipientId) ?? null
         : null;
     setChatInput('');
+    const att = chatAttachment;
+    setChatAttachment(null);
     const updated = await post<MeetingRow>(`/meetings/${room.id}/chat`, {
-      body,
+      body: body || (att ? `Attachment: ${att.name}` : ''),
       replyToId: chatReplyTo?.id ?? null,
-      recipientId: targetHost?.userId ?? null,
-      recipientName: targetHost?.fullName ?? null,
+      recipientId: targetRecipient?.userId ?? null,
+      recipientName: targetRecipient?.fullName ?? null,
+      attachmentUrl: att?.dataUrl ?? null,
+      attachmentName: att?.name ?? null,
     });
     setChatReplyTo(null);
     setRoom(updated);
@@ -3214,7 +3304,7 @@ export function MeetingStudio({
   };
 
   const hostAction = async (
-    action: 'admit' | 'remove' | 'approve-screenshare',
+    action: 'admit' | 'remove' | 'approve-screenshare' | 'toggle-cohost',
     targetUserId: string,
   ) => {
     try {
@@ -3231,8 +3321,10 @@ export function MeetingStudio({
         action === 'admit'
           ? 'Participant admitted from waiting room.'
           : action === 'remove'
-            ? 'Participant removed from meeting.'
-            : 'Screen-share permission granted to intern.';
+            ? 'Participant removed (rejoin will require waiting room approval).'
+            : action === 'toggle-cohost'
+              ? 'Co-Host permissions updated.'
+              : 'Screen-share permission granted to intern.';
       showToast(label);
     } catch {
       showToast('Host action failed or requires higher tier.');
@@ -3706,6 +3798,31 @@ export function MeetingStudio({
         </div>
       )}
 
+      {/* Host Waiting Room Live Banner */}
+      {canHostControl && (room.waitingRoom?.length ?? 0) > 0 && (
+        <div className="absolute left-1/2 top-16 z-30 flex -translate-x-1/2 flex-wrap items-center gap-3 rounded-2xl border border-amber-400/35 bg-slate-950/95 px-4 py-2 text-xs text-white shadow-2xl backdrop-blur-xl">
+          <Users className="h-4 w-4 text-amber-400" />
+          <span>
+            <strong>{room.waitingRoom![0].fullName}</strong> is in the Waiting Room
+            {room.waitingRoom!.length > 1 ? ` (+${room.waitingRoom!.length - 1} more)` : ''}
+          </span>
+          <button
+            type="button"
+            onClick={() => void hostAction('admit', room.waitingRoom![0].userId)}
+            className="rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-600"
+          >
+            Admit
+          </button>
+          <button
+            type="button"
+            onClick={() => void hostAction('remove', room.waitingRoom![0].userId)}
+            className="rounded-lg bg-rose-500/25 px-2 py-1 text-[11px] font-semibold text-rose-200 hover:bg-rose-500/40"
+          >
+            Deny
+          </button>
+        </div>
+      )}
+
       {/* Host Screen-Share Access Request Banner */}
       {canHostControl && shareRequests.length > 0 && (
         <div className="absolute left-1/2 top-24 z-30 flex -translate-x-1/2 flex-wrap items-center gap-3 rounded-2xl border border-sky-400/35 bg-slate-950/95 px-4 py-2.5 text-xs text-white shadow-2xl backdrop-blur-xl">
@@ -4014,6 +4131,7 @@ export function MeetingStudio({
                   {room.participants.map((p) => {
                     const isSelf = p.userId === currentUser.id;
                     const internApproved = (room.screenShareApprovedIds ?? []).includes(p.userId);
+                    const isCoHost = (room.coHostIds ?? []).includes(p.userId);
                     return (
                       <div
                         key={p.userId}
@@ -4027,7 +4145,9 @@ export function MeetingStudio({
                             <p className="truncate text-xs font-semibold text-white">
                               {formatParticipantDisplay(p)} {isSelf && '(You)'}
                             </p>
-                            <p className="text-[10px] text-white/50">{p.role}</p>
+                            <p className="text-[10px] text-white/50">
+                              {p.role}{isCoHost ? ' · Co-Host' : ''}
+                            </p>
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5">
@@ -4049,6 +4169,20 @@ export function MeetingStudio({
                           >
                             {pinnedUserId === p.userId ? 'Main' : 'Pin'}
                           </button>
+                          {isPrimaryHost && !isSelf && p.role !== 'INTERN' && (
+                            <button
+                              type="button"
+                              onClick={() => void hostAction('toggle-cohost', p.userId)}
+                              className={cn(
+                                'rounded px-1.5 py-0.5 text-[10px] font-semibold transition',
+                                isCoHost
+                                  ? 'bg-[#D4A843]/25 text-[#D4A843]'
+                                  : 'bg-white/10 text-white/70 hover:bg-white/20',
+                              )}
+                            >
+                              {isCoHost ? 'Co-Host ✓' : '+ Co-Host'}
+                            </button>
+                          )}
                           {canHostControl && !isSelf && p.role === 'INTERN' && (
                             internApproved ? (
                               <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
@@ -4124,11 +4258,10 @@ export function MeetingStudio({
                     (msg) =>
                       !msg.recipientId ||
                       msg.senderId === currentUser.id ||
-                      msg.recipientId === currentUser.id ||
-                      canHostControl,
+                      msg.recipientId === currentUser.id,
                   ).length === 0 ? (
                     <div className="mt-10 text-center text-xs text-white/45">
-                      In-meeting messages appear here for everyone or directly to Hosts / Co-Hosts.
+                      In-meeting messages appear here for everyone or as private direct messages.
                     </div>
                   ) : (
                     room.chatMessages
@@ -4136,8 +4269,7 @@ export function MeetingStudio({
                         (msg) =>
                           !msg.recipientId ||
                           msg.senderId === currentUser.id ||
-                          msg.recipientId === currentUser.id ||
-                          canHostControl,
+                          msg.recipientId === currentUser.id,
                       )
                       .map((msg) => {
                         const isMine =
@@ -4165,7 +4297,7 @@ export function MeetingStudio({
                                   'mb-1 inline-block rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider',
                                   isMine ? 'bg-black/15 text-slate-900' : 'bg-sky-500/25 text-sky-300',
                                 )}>
-                                  Direct to {msg.recipientName ?? 'Host'}
+                                  Direct · {isMine ? `To ${msg.recipientName ?? 'Host'}` : 'Private to You'}
                                 </p>
                               )}
                               {msg.replyPreview && (
@@ -4176,6 +4308,34 @@ export function MeetingStudio({
                                     : 'border-[#D4A843] bg-white/10 text-white/75',
                                 )}>
                                   {msg.replyPreview}
+                                </div>
+                              )}
+                              {msg.attachmentUrl && (
+                                <div className="mb-1.5">
+                                  {msg.attachmentUrl.startsWith('data:image/') ? (
+                                    <a
+                                      href={msg.attachmentUrl}
+                                      download={msg.attachmentName || 'image.png'}
+                                      className="block overflow-hidden rounded-xl border border-white/15"
+                                    >
+                                      <img
+                                        src={msg.attachmentUrl}
+                                        alt={msg.attachmentName || 'Attachment'}
+                                        className="max-h-40 w-auto rounded-xl object-cover"
+                                      />
+                                    </a>
+                                  ) : (
+                                    <a
+                                      href={msg.attachmentUrl}
+                                      download={msg.attachmentName || 'attachment'}
+                                      className="inline-flex items-center gap-1.5 rounded-lg bg-black/20 px-2.5 py-1 text-[11px] font-semibold underline"
+                                    >
+                                      <Download className="h-3 w-3" />
+                                      <span className="max-w-[160px] truncate">
+                                        {msg.attachmentName || 'Download file'}
+                                      </span>
+                                    </a>
+                                  )}
                                 </div>
                               )}
                               <p className="whitespace-pre-wrap break-words">{msg.body}</p>
@@ -4189,7 +4349,12 @@ export function MeetingStudio({
                               </span>
                               <button
                                 type="button"
-                                onClick={() => setChatReplyTo(msg)}
+                                onClick={() => {
+                                  setChatReplyTo(msg);
+                                  if (msg.recipientId && msg.senderId && msg.senderId !== currentUser.id) {
+                                    setChatRecipientId(msg.senderId);
+                                  }
+                                }}
                                 className="opacity-70 transition hover:text-[#D4A843] hover:opacity-100"
                               >
                                 Reply
@@ -4210,9 +4375,9 @@ export function MeetingStudio({
                       className="flex-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-[11px] text-white focus:outline-none"
                     >
                       <option value="ALL" className="bg-[#0F1522]">Everyone in meeting</option>
-                      {hostRecipients.map((h) => (
+                      {directMessageRecipients.map((h) => (
                         <option key={h.userId} value={h.userId} className="bg-[#0F1522]">
-                          Direct: {h.fullName} (Host / Co-Host)
+                          Direct: {h.fullName} ({h.role})
                         </option>
                       ))}
                     </select>
@@ -4231,16 +4396,43 @@ export function MeetingStudio({
                       </button>
                     </div>
                   )}
+                  {chatAttachment && (
+                    <div className="mb-1.5 flex items-center justify-between gap-2 rounded-lg bg-white/10 px-2.5 py-1 text-[11px] text-white/80">
+                      <span className="truncate">📎 {chatAttachment.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => setChatAttachment(null)}
+                        className="text-white/50 hover:text-white"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <form
                   onSubmit={sendChat}
-                  className="flex items-center gap-2 px-3 pb-3 pt-1"
+                  className="flex items-center gap-1.5 px-3 pb-3 pt-1"
                 >
+                  <input
+                    ref={chatFileRef}
+                    type="file"
+                    accept="image/*,.pdf,.doc,.docx,.txt,.zip"
+                    className="hidden"
+                    onChange={onPickChatFile}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => chatFileRef.current?.click()}
+                    title="Attach image or file"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/15 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
+                  >
+                    <Paperclip className="h-3.5 w-3.5" />
+                  </button>
                   <Input
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     placeholder={
-                      chatRecipientId === 'ALL' ? 'Message everyone...' : 'Direct message to Host...'
+                      chatRecipientId === 'ALL' ? 'Message everyone...' : 'Direct private message...'
                     }
                     className="h-9 border-white/15 bg-white/5 text-xs text-white placeholder:text-white/40"
                   />

@@ -244,6 +244,16 @@ function StandaloneMeetContent() {
           fullName: user.fullName ?? 'You',
           role: user.role ?? 'STAFF',
         }}
+        onMovedToWaitingRoom={(updatedRoom) => {
+          setWaitingSession({
+            room: updatedRoom,
+            micOn: activeSession.micOn,
+            camOn: activeSession.camOn,
+            micDeviceId: activeSession.micDeviceId,
+            camDeviceId: activeSession.camDeviceId,
+          });
+          setActiveSession(null);
+        }}
         onExited={handleExit}
       />
     );
