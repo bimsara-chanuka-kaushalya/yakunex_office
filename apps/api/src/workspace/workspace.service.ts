@@ -2699,9 +2699,20 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   async getMeetingRoom(id: string, organizationId?: string) {
-    await this.syncMeetingsFromDb(organizationId);
+    await this.syncMeetingsFromDb(organizationId, true);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting room not found.');
+    return mtg;
+  }
+
+  async getMeetingByCode(actor: AuthUser, roomCode: string) {
+    const normalized = String(roomCode ?? '').trim().toUpperCase();
+    if (!normalized) throw new BadRequestException('Room code is required.');
+    await this.syncMeetingsFromDb(actor.organizationId, true);
+    const mtg = this.meetings.find(
+      (m) => m.roomCode.toUpperCase() === normalized || m.id.toUpperCase() === normalized,
+    );
+    if (!mtg) throw new NotFoundException(`Meeting room "${normalized}" was not found.`);
     return mtg;
   }
 

@@ -1440,7 +1440,7 @@ export function MeetingsView() {
                     <Video className="h-3.5 w-3.5" />{' '}
                     {mtg.status === 'COMPLETED' ? 'Reopen & Join' : 'Join Meeting'}
                   </Button>
-                  {mtg.status !== 'COMPLETED' && mtg.status !== 'CANCELLED' && (
+                  {user?.role !== 'INTERN' && mtg.status !== 'COMPLETED' && mtg.status !== 'CANCELLED' && (
                     <Button
                       variant="ghost"
                       size="sm"

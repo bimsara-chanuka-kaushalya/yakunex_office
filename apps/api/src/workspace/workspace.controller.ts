@@ -363,6 +363,13 @@ export class WorkspaceController {
     return this.workspace.getMeetingIceConfig();
   }
 
+  @Get('meetings/by-code/:code')
+  @SkipThrottle()
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  getMeetingByCode(@CurrentUser() actor: AuthUser, @Param('code') code: string) {
+    return this.workspace.getMeetingByCode(actor, code);
+  }
+
   @Get('meetings/:id/sfu-token')
   @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)

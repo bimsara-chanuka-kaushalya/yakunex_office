@@ -83,10 +83,15 @@ function StandaloneMeetContent() {
         }
 
         if (roomParam) {
-          const list = await api<MeetingRow[]>('/meetings');
-          const match = list.find(
-            (m) => m.roomCode.toUpperCase() === roomParam || m.id.toUpperCase() === roomParam,
-          );
+          let match: MeetingRow | undefined;
+          try {
+            match = await api<MeetingRow>(`/meetings/by-code/${encodeURIComponent(roomParam)}`);
+          } catch {
+            const list = await api<MeetingRow[]>('/meetings');
+            match = list.find(
+              (m) => m.roomCode.toUpperCase() === roomParam || m.id.toUpperCase() === roomParam,
+            );
+          }
           if (!match) {
             if (active) setError(`Meeting room "${roomParam}" was not found.`);
             return;
