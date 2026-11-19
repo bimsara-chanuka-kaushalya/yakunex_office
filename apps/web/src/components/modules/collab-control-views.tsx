@@ -479,9 +479,11 @@ export function ChatView() {
                   className="h-8 w-full rounded-full bg-ink/[0.06] pl-8 pr-3 text-xs text-ink placeholder:text-muted/70 focus:bg-surface focus:outline-none focus:ring-2 focus:ring-gold/30 dark:bg-white/[0.1] dark:focus:bg-raised"
                 />
               </div>
-              <Button size="sm" variant="secondary" onClick={onStartChannelMeeting}>
-                <Video className="h-3.5 w-3.5" /> Meet
-              </Button>
+              {user?.role !== 'INTERN' && (
+                <Button size="sm" variant="secondary" onClick={onStartChannelMeeting}>
+                  <Video className="h-3.5 w-3.5" /> Meet
+                </Button>
+              )}
             </div>
           </div>
 
@@ -1272,7 +1274,7 @@ export function MeetingsView() {
             </Button>
           </form>
 
-          {(!policy || policy.canCreate) && (
+          {user?.role !== 'INTERN' && policy?.canCreate && (
             <>
               <Button
                 variant="primary"
@@ -1334,25 +1336,29 @@ export function MeetingsView() {
             No active or scheduled meetings yet
           </p>
           <p className="mx-auto mt-1 max-w-md text-sm">
-            Start a new instant video meeting with screen sharing or schedule a sprint review room.
+            {user?.role === 'INTERN'
+              ? 'Enter a room code above to join an invited meeting.'
+              : 'Start a new instant video meeting with screen sharing or schedule a sprint review room.'}
           </p>
-          <div className="mt-5 flex flex-wrap justify-center gap-3">
-            <Button
-              variant="primary"
-              onClick={() =>
-                setPreJoin({
-                  mode: 'instant',
-                  title: `${user?.fullName ?? 'Team'}'s Instant Meeting`,
-                  agenda: 'Live video sync & screen share huddle',
-                })
-              }
-            >
-              <Video className="h-4 w-4" /> Start Instant Meeting
-            </Button>
-            <Button variant="secondary" onClick={() => setModalOpen(true)}>
-              <Plus className="h-4 w-4" /> Schedule Meeting
-            </Button>
-          </div>
+          {user?.role !== 'INTERN' && policy?.canCreate && (
+            <div className="mt-5 flex flex-wrap justify-center gap-3">
+              <Button
+                variant="primary"
+                onClick={() =>
+                  setPreJoin({
+                    mode: 'instant',
+                    title: `${user?.fullName ?? 'Team'}'s Instant Meeting`,
+                    agenda: 'Live video sync & screen share huddle',
+                  })
+                }
+              >
+                <Video className="h-4 w-4" /> Start Instant Meeting
+              </Button>
+              <Button variant="secondary" onClick={() => setModalOpen(true)}>
+                <Plus className="h-4 w-4" /> Schedule Meeting
+              </Button>
+            </div>
+          )}
         </Card>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">

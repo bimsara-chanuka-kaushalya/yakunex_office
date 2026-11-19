@@ -95,6 +95,11 @@ function StandaloneMeetContent() {
           return;
         }
 
+        if (isInstant && user!.role === 'INTERN') {
+          if (active) setError('Interns have Join-Only meeting access and cannot start instant meetings.');
+          return;
+        }
+
         if (!isInstant) {
           if (active) setError('No meeting room specified.');
         }
@@ -259,7 +264,7 @@ function StandaloneMeetContent() {
     );
   }
 
-  if (error && !targetRoom && !isInstant) {
+  if (error && !targetRoom && (!isInstant || user.role === 'INTERN')) {
     return (
       <div className="flex h-screen w-screen flex-col items-center justify-center gap-4 bg-[#070B12] p-6 text-center text-white">
         <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
