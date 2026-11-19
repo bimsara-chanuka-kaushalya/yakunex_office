@@ -560,14 +560,14 @@ function ParticipantTile({
   return (
     <div
       className={cn(
-        'group relative overflow-hidden rounded-2xl border transition-all duration-200',
+        'group relative overflow-hidden rounded-[20px] border transition-all duration-200 ring-1 ring-inset ring-white/[0.07]',
         virtualBackdropClass,
         fillStage ? 'h-full w-full min-h-[360px]' : compact ? 'aspect-video w-full shrink-0' : 'aspect-video w-full',
         isSpotlight
-          ? 'border-[#D4A843] ring-2 ring-[#D4A843]/60 shadow-[0_0_28px_rgba(212,168,67,0.3)]'
+          ? 'border-[#F5C451] ring-2 ring-[#F5C451]/60 shadow-[0_0_32px_rgba(245,196,81,0.28)]'
           : isSpeaking && participant.micOn
-            ? 'border-[#10B981] ring-2 ring-[#10B981]/50 shadow-[0_0_24px_rgba(16,185,129,0.25)]'
-            : 'border-white/10',
+            ? 'border-[#22C55E] ring-2 ring-[#22C55E]/55 shadow-[0_0_24px_rgba(34,197,94,0.25)]'
+            : 'border-white/[0.08]',
       )}
     >
       {hasLiveVideo ? (
@@ -740,24 +740,24 @@ function ParticipantTile({
         </div>
       )}
 
-      {/* Bottom nameplate */}
-      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/85 via-black/45 to-transparent px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
+      {/* Zoom Bottom-Left Compact Frosted Nameplate Pill */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between p-2.5">
+        <div className="inline-flex max-w-[82%] items-center gap-1.5 rounded-lg border border-white/10 bg-black/60 px-2.5 py-1 backdrop-blur-md">
           <span
             className={cn(
-              'flex h-5 w-5 shrink-0 items-center justify-center rounded-full',
-              participant.micOn ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/90 text-white',
+              'flex h-4 w-4 shrink-0 items-center justify-center rounded-full',
+              participant.micOn ? 'text-[#30D158]' : 'text-[#FF453A]',
             )}
           >
             {participant.micOn ? <Mic className="h-3 w-3" /> : <MicOff className="h-3 w-3" />}
           </span>
-          <span className="truncate text-xs font-semibold text-white">
+          <span className="truncate text-[11px] font-semibold tracking-tight text-white">
             {formatParticipantDisplay(participant)}
             {isSelf ? ' (You)' : ''}
           </span>
         </div>
         {!compact && (
-          <span className="ml-2 shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-medium text-white/75">
+          <span className="rounded-md border border-white/10 bg-black/50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-white/70 backdrop-blur-md">
             {participant.isGuest ? 'GUEST' : participant.role}
           </span>
         )}
@@ -815,6 +815,7 @@ export function MeetingStudio({
   const [showReactionTray, setShowReactionTray] = useState(false);
   const [showLeaveMenu, setShowLeaveMenu] = useState(false);
   const [showSecurityMenu, setShowSecurityMenu] = useState(false);
+  const [showMeetingInfo, setShowMeetingInfo] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [showEffectsModal, setShowEffectsModal] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
@@ -4764,10 +4765,10 @@ export function MeetingStudio({
       onTouchStart={isFullscreen ? resetFullscreenAutoHide : undefined}
       onKeyDown={isFullscreen ? resetFullscreenAutoHide : undefined}
       className={cn(
-        'relative flex flex-col overflow-hidden bg-[#0B0F17] text-white shadow-2xl',
+        'relative flex flex-col overflow-hidden bg-[#08090C] text-white shadow-2xl',
         standalone || isFullscreen
           ? 'fixed inset-0 z-50 h-screen w-screen rounded-none border-0'
-          : 'h-[calc(100vh-110px)] min-h-[640px] rounded-3xl border border-white/10',
+          : 'h-[calc(100vh-110px)] min-h-[640px] rounded-[28px] border border-white/[0.08]',
         isFullscreen && controlsHidden && 'cursor-none',
       )}
     >
@@ -4803,82 +4804,115 @@ export function MeetingStudio({
           </div>
         ))}
 
-      {/* ─── TOP ZOOM + APPLE FROSTED HEADER ─────────────────────────────── */}
+      {/* ─── TOP ZOOM × APPLE ULTRA PRO MAX FROSTED BAR ──────────────────── */}
       <header
         className={cn(
-          'flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#0b0e16]/85 px-5 py-3 backdrop-blur-2xl transition-all duration-300',
+          'relative z-30 flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.08] bg-[#0A0C11]/90 px-4 py-2 backdrop-blur-2xl transition-all duration-300',
           isFullscreen && controlsHidden && 'pointer-events-none h-0 overflow-hidden border-0 py-0 opacity-0',
         )}
       >
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="flex h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-emerald-400 shadow-[0_0_10px_#34D399]" />
+        {/* Left: Zoom Green Shield Info Popover + Title + Tabular Timer + Live Status Pills */}
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowMeetingInfo((v) => !v)}
+              title="Meeting Information & Encryption"
+              className="flex h-8 w-8 items-center justify-center rounded-xl border border-emerald-400/25 bg-emerald-500/15 text-[#30D158] transition hover:bg-emerald-500/25"
+            >
+              <Shield className="h-4 w-4" />
+            </button>
+            {showMeetingInfo && (
+              <div className="absolute left-0 top-10 z-50 w-72 space-y-2.5 rounded-2xl border border-white/15 bg-[#121620]/95 p-4 text-xs text-white shadow-2xl backdrop-blur-2xl">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-white">{room.title}</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowMeetingInfo(false)}
+                    className="rounded-lg p-1 text-white/50 hover:bg-white/10 hover:text-white"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="space-y-1.5 border-t border-white/10 pt-2 text-[11px]">
+                  <div className="flex justify-between">
+                    <span className="text-white/50">Meeting ID</span>
+                    <span className="font-mono font-semibold text-white">{room.roomCode}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-white/50">Host</span>
+                    <span className="font-medium text-white">{room.organizerName}</span>
+                  </div>
+                  {room.passcode && canHostControl && (
+                    <div className="flex justify-between">
+                      <span className="text-white/50">Passcode</span>
+                      <span className="font-mono font-semibold text-[#F5C451]">{room.passcode}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <span className="text-white/50">Encryption</span>
+                    <span className="font-semibold text-[#30D158]">DTLS-SRTP Verified</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void copyInviteLink()}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#2D8CFF] py-2 text-xs font-semibold text-white transition hover:bg-[#3B96FF]"
+                >
+                  {copiedCode ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copiedCode ? 'Invite Link Copied!' : 'Copy Invite Link'}
+                </button>
+              </div>
+            )}
+          </div>
+
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="truncate font-display text-base font-semibold text-white">
+              <h2 className="max-w-[200px] truncate font-display text-sm font-semibold tracking-tight text-white sm:max-w-[300px]">
                 {room.title}
               </h2>
-              <button
-                type="button"
-                onClick={copyInviteLink}
-                title="Copy meeting invite link"
-                className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-2.5 py-0.5 text-[11px] font-medium text-white/80 transition hover:bg-white/10"
-              >
-                {copiedCode ? (
-                  <>
-                    <Check className="h-3 w-3 text-emerald-400" /> Copied Link
-                  </>
-                ) : (
-                  <>
-                    <Copy className="h-3 w-3 text-[#D4A843]" /> {room.roomCode}
-                  </>
-                )}
-              </button>
-              <span className="rounded-full bg-white/10 px-2.5 py-0.5 font-mono text-[11px] text-white/80">
+              <span className="rounded-lg border border-white/[0.08] bg-white/[0.05] px-2 py-0.5 font-mono text-[11px] tabular-nums text-white/80">
                 {formatDuration(elapsedSec)}
               </span>
               {room.isLocked && (
-                <span className="inline-flex items-center gap-1 rounded-full border border-rose-400/35 bg-rose-500/20 px-2.5 py-0.5 text-[10px] font-bold text-rose-200">
+                <span className="inline-flex items-center gap-1 rounded-lg bg-[#FF453A]/20 px-2 py-0.5 text-[10px] font-semibold text-[#FF6961]">
                   <Lock className="h-3 w-3" /> Locked
                 </span>
               )}
               {sfuActive && (
-                <span className="rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-300">
-                  SFU · 100+ Ready
+                <span className="hidden rounded-lg border border-[#30D158]/25 bg-[#30D158]/10 px-2 py-0.5 text-[10px] font-semibold text-[#30D158] md:inline-block">
+                  HD · SFU
                 </span>
               )}
               {(recording || room.recordingActive) && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-600/95 px-2.5 py-0.5 text-[11px] font-semibold text-white shadow">
-                  <Radio className="h-3 w-3 animate-pulse" />
+                <span className="inline-flex items-center gap-1.5 rounded-lg bg-[#FF453A]/90 px-2.5 py-0.5 text-[10px] font-bold tracking-wide text-white shadow">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
                   {recording
                     ? `${recordingPaused ? 'PAUSED' : 'REC'} ${formatDuration(recordingSec)}`
                     : `REC · ${room.recordingByName || 'Host'}`}
                 </span>
               )}
               {bandwidthSaver && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                <span className="inline-flex items-center gap-1 rounded-lg bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
                   <Wifi className="h-3 w-3" /> Audio-Only
                 </span>
               )}
             </div>
-            <p className="truncate text-[11px] text-white/55">
-              {room.projectName} · Host: {room.organizerName}
-              {room.passcode && canHostControl ? ` · Passcode: ${room.passcode}` : ''}
-            </p>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Live Network Health Signal Bars Pill */}
+        {/* Right: Apple Signal Meter + Zoom View Segmented Control + PiP + Fullscreen */}
+        <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
             onClick={() => setShowStatsModal(true)}
-            title="View Network Health Statistics"
-            className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.06] px-2.5 py-1.5 text-[11px] font-semibold text-white/85 transition hover:bg-white/15"
+            title="Live Network Statistics"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-white/[0.05] px-2.5 py-1.5 text-[11px] font-medium tabular-nums text-white/80 transition hover:bg-white/10"
           >
             <Activity
               className={cn(
                 'h-3.5 w-3.5',
-                networkStats.bars >= 3 ? 'text-emerald-400' : networkStats.bars === 2 ? 'text-amber-400' : 'text-rose-400',
+                networkStats.bars >= 3 ? 'text-[#30D158]' : networkStats.bars === 2 ? 'text-amber-400' : 'text-[#FF453A]',
               )}
             />
             <span className="hidden sm:inline">{networkStats.rttMs}ms</span>
@@ -4888,20 +4922,20 @@ export function MeetingStudio({
             <button
               type="button"
               onClick={unlockRoomAudio}
-              className="inline-flex items-center gap-1.5 rounded-full bg-amber-400 px-3 py-1.5 text-xs font-bold text-slate-950 shadow-lg transition hover:bg-amber-300"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-1.5 text-xs font-bold text-slate-950 shadow-lg transition hover:bg-amber-300"
             >
-              <Volume2 className="h-3.5 w-3.5" /> Enable Room Audio
+              <Volume2 className="h-3.5 w-3.5" /> Enable Audio
             </button>
           )}
 
           {!activeScreenShare && (
-            <div className="inline-flex rounded-full border border-white/10 bg-white/[0.06] p-0.5 text-xs backdrop-blur-md">
+            <div className="inline-flex rounded-xl border border-white/[0.08] bg-white/[0.05] p-0.5 text-[11px] backdrop-blur-md">
               <button
                 type="button"
                 onClick={() => setLayoutMode('gallery')}
                 className={cn(
-                  'inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-medium transition',
-                  layoutMode === 'gallery' ? 'bg-white/20 text-white shadow-2xs' : 'text-white/60 hover:text-white',
+                  'inline-flex items-center gap-1 rounded-lg px-2.5 py-1 font-semibold transition',
+                  layoutMode === 'gallery' ? 'bg-white/20 text-white shadow-sm' : 'text-white/60 hover:text-white',
                 )}
               >
                 <LayoutGrid className="h-3.5 w-3.5" /> Gallery
@@ -4910,8 +4944,8 @@ export function MeetingStudio({
                 type="button"
                 onClick={() => setLayoutMode('speaker')}
                 className={cn(
-                  'inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-medium transition',
-                  layoutMode === 'speaker' ? 'bg-white/20 text-white shadow-2xs' : 'text-white/60 hover:text-white',
+                  'inline-flex items-center gap-1 rounded-lg px-2.5 py-1 font-semibold transition',
+                  layoutMode === 'speaker' ? 'bg-white/20 text-white shadow-sm' : 'text-white/60 hover:text-white',
                 )}
               >
                 <Sparkles className="h-3.5 w-3.5" /> Speaker
@@ -4922,16 +4956,16 @@ export function MeetingStudio({
           <button
             type="button"
             onClick={() => void togglePictureInPicture()}
-            title={isPip ? 'Exit Picture-in-Picture' : 'Enter Picture-in-Picture'}
+            title={isPip ? 'Exit Picture-in-Picture' : 'Picture-in-Picture'}
             className={cn(
-              'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold backdrop-blur-md transition',
+              'inline-flex h-8 items-center gap-1 rounded-xl border px-2.5 text-[11px] font-semibold transition',
               isPip
-                ? 'border-emerald-400/50 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30'
-                : 'border-white/15 bg-white/[0.06] text-white/85 hover:bg-white/15 hover:text-white',
+                ? 'border-[#30D158]/40 bg-[#30D158]/15 text-[#30D158]'
+                : 'border-white/[0.08] bg-white/[0.05] text-white/80 hover:bg-white/10 hover:text-white',
             )}
           >
             <PictureInPicture2 className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">{isPip ? 'Exit PiP' : 'PiP'}</span>
+            <span className="hidden md:inline">PiP</span>
           </button>
 
           <button
@@ -4939,23 +4973,14 @@ export function MeetingStudio({
             onClick={() => void toggleFullscreen()}
             title={isFullscreen ? 'Exit Fullscreen (Esc)' : 'Enter Fullscreen'}
             className={cn(
-              'inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold backdrop-blur-md transition',
+              'inline-flex h-8 items-center gap-1 rounded-xl border px-2.5 text-[11px] font-semibold transition',
               isFullscreen
-                ? 'border-[#D4A843]/50 bg-[#D4A843]/20 text-[#F3D27A] hover:bg-[#D4A843]/30'
-                : 'border-white/15 bg-white/[0.06] text-white/85 hover:bg-white/15 hover:text-white',
+                ? 'border-[#2D8CFF]/40 bg-[#2D8CFF]/20 text-[#6BB0FF]'
+                : 'border-white/[0.08] bg-white/[0.05] text-white/80 hover:bg-white/10 hover:text-white',
             )}
           >
-            {isFullscreen ? (
-              <>
-                <Minimize2 className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Exit Fullscreen</span>
-              </>
-            ) : (
-              <>
-                <Maximize2 className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Fullscreen</span>
-              </>
-            )}
+            {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+            <span className="hidden md:inline">{isFullscreen ? 'Exit' : 'Full'}</span>
           </button>
         </div>
       </header>
@@ -5496,11 +5521,11 @@ export function MeetingStudio({
           )}
         </div>
 
-        {/* Collapsible Right Drawer: Participants | Chat | Polls & Q&A | Notes */}
+        {/* Collapsible Right Inspector Panel: Participants | Chat | Polls & Q&A | Notes */}
         {sideTab !== 'closed' && (
-          <aside className="flex w-full max-w-[350px] shrink-0 flex-col border-l border-white/10 bg-[#0F1522]">
-            <div className="flex items-center justify-between border-b border-white/10 px-3 py-2.5">
-              <div className="flex flex-wrap gap-1">
+          <aside className="flex w-full max-w-[348px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0D1017]/95 backdrop-blur-2xl">
+            <div className="flex items-center justify-between border-b border-white/[0.08] px-3 py-2.5">
+              <div className="flex flex-wrap gap-0.5 rounded-xl bg-white/[0.05] p-0.5">
                 {(
                   [
                     ['participants', `People (${room.participants.length})`],
@@ -5514,10 +5539,10 @@ export function MeetingStudio({
                     type="button"
                     onClick={() => setSideTab(tabKey)}
                     className={cn(
-                      'rounded-lg px-2 py-1.5 text-[11px] font-semibold transition',
+                      'rounded-lg px-2 py-1 text-[11px] font-semibold transition',
                       sideTab === tabKey
-                        ? 'bg-[#D4A843] text-slate-950'
-                        : 'text-white/65 hover:bg-white/10 hover:text-white',
+                        ? 'bg-[#2D8CFF] text-white shadow-sm'
+                        : 'text-white/60 hover:text-white',
                     )}
                   >
                     {label}
@@ -6106,40 +6131,42 @@ export function MeetingStudio({
         )}
       </div>
 
-      {/* ─── FLOATING BOTTOM ZOOM CONTROL BAR ────────────────────────────── */}
+      {/* ─── 1000% ZOOM DESKTOP × APPLE LIQUID GLASS BOTTOM CONTROL DOCK ─── */}
       <footer
         className={cn(
-          'relative flex flex-wrap items-center justify-between gap-2 border-t border-white/10 bg-[#0F1522]/95 px-4 py-3 backdrop-blur-md transition-all duration-300',
+          'relative z-30 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.08] bg-[#0A0C11]/95 px-4 py-2 backdrop-blur-2xl transition-all duration-300',
           isFullscreen && controlsHidden && 'pointer-events-none h-0 overflow-hidden border-0 py-0 opacity-0',
         )}
       >
-        {/* Left: Audio & Video + Speaker Output + Audio Profile + Video Effects */}
-        <div className="flex items-center gap-2">
-          <div className="relative flex items-center rounded-xl bg-white/5 p-0.5">
+        {/* Left: Zoom Exact Split Audio & Video Controls (Icon Above Label + Up-Chevron) */}
+        <div className="flex items-center gap-1.5">
+          <div className="relative flex items-stretch rounded-2xl border border-white/[0.06] bg-white/[0.03]">
             <button
               type="button"
               onClick={() => void toggleMic()}
               title="Mute / Unmute (Alt+A · Hold Space for Push-to-Talk)"
               className={cn(
-                'flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition',
-                micOn ? 'text-white hover:bg-white/10' : 'bg-rose-500 text-white hover:bg-rose-600',
+                'flex min-w-[60px] flex-col items-center justify-center gap-1 rounded-l-2xl px-3 py-2 text-[11px] font-medium transition active:scale-95',
+                micOn
+                  ? 'text-white/90 hover:bg-white/[0.08]'
+                  : 'bg-[#FF453A]/15 text-[#FF6961] hover:bg-[#FF453A]/25',
               )}
             >
-              {micOn ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
-              <span className="hidden sm:inline">{micOn ? 'Mute' : 'Unmute'}</span>
+              {micOn ? <Mic className="h-[18px] w-[18px]" /> : <MicOff className="h-[18px] w-[18px]" />}
+              <span className="hidden text-[10px] tracking-tight sm:inline">{micOn ? 'Mute' : 'Unmute'}</span>
             </button>
             <button
               type="button"
               onClick={() => setDeviceMenu((m) => (m === 'mic' ? null : 'mic'))}
               title="Audio, Speaker & Mic Settings"
-              className="rounded-lg px-1.5 py-2 text-white/60 hover:bg-white/10 hover:text-white"
+              className="flex items-center rounded-r-2xl border-l border-white/[0.06] px-1.5 text-white/55 transition hover:bg-white/[0.08] hover:text-white"
             >
               <ChevronUp className="h-3.5 w-3.5" />
             </button>
             {deviceMenu === 'mic' && (
-              <div className="absolute bottom-14 left-0 z-50 max-h-[70vh] w-72 overflow-y-auto rounded-2xl border border-white/15 bg-[#161F30] p-2.5 shadow-2xl">
+              <div className="absolute bottom-16 left-0 z-50 max-h-[70vh] w-72 overflow-y-auto rounded-2xl border border-white/15 bg-[#121620]/95 p-2.5 shadow-2xl backdrop-blur-2xl">
                 <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white/45">
-                  Microphone
+                  Select a Microphone
                 </p>
                 {audioDevices.length === 0 ? (
                   <p className="px-2 py-1.5 text-xs text-white/50">Default microphone</p>
@@ -6149,10 +6176,10 @@ export function MeetingStudio({
                       key={d.deviceId}
                       type="button"
                       onClick={() => void switchDevice('audio', d.deviceId)}
-                      className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs text-white hover:bg-white/10"
+                      className="flex w-full items-center justify-between rounded-xl px-2 py-1.5 text-left text-xs text-white hover:bg-white/10"
                     >
                       <span className="truncate">{d.label || 'Microphone'}</span>
-                      {selectedMicId === d.deviceId && <Check className="h-3.5 w-3.5 text-emerald-400" />}
+                      {selectedMicId === d.deviceId && <Check className="h-3.5 w-3.5 text-[#30D158]" />}
                     </button>
                   ))
                 )}
@@ -6160,12 +6187,12 @@ export function MeetingStudio({
                 <div className="my-2 border-t border-white/10" />
                 <div className="flex items-center justify-between px-2 py-1">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-white/45">
-                    Speaker Output
+                    Select a Speaker
                   </p>
                   <button
                     type="button"
                     onClick={() => void playSpeakerTestTone(selectedSpeakerId || undefined)}
-                    className="rounded bg-[#D4A843]/20 px-2 py-0.5 text-[10px] font-bold text-[#D4A843] hover:bg-[#D4A843]/30"
+                    className="rounded-lg bg-[#2D8CFF]/20 px-2 py-0.5 text-[10px] font-bold text-[#6BB0FF] hover:bg-[#2D8CFF]/30"
                   >
                     Test Speaker
                   </button>
@@ -6181,10 +6208,10 @@ export function MeetingStudio({
                         setSelectedSpeakerId(d.deviceId);
                         showToast(`Speaker switched to ${d.label || 'selected output'}.`);
                       }}
-                      className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs text-white hover:bg-white/10"
+                      className="flex w-full items-center justify-between rounded-xl px-2 py-1.5 text-left text-xs text-white hover:bg-white/10"
                     >
                       <span className="truncate">{d.label || 'Speaker'}</span>
-                      {selectedSpeakerId === d.deviceId && <Check className="h-3.5 w-3.5 text-emerald-400" />}
+                      {selectedSpeakerId === d.deviceId && <Check className="h-3.5 w-3.5 text-[#30D158]" />}
                     </button>
                   ))
                 )}
@@ -6194,7 +6221,7 @@ export function MeetingStudio({
                   Audio Processing
                 </p>
                 <div className="space-y-1 px-1 text-xs">
-                  <label className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 hover:bg-white/5">
+                  <label className="flex cursor-pointer items-center justify-between rounded-xl px-2 py-1 hover:bg-white/5">
                     <span>Noise Suppression</span>
                     <input
                       type="checkbox"
@@ -6204,7 +6231,7 @@ export function MeetingStudio({
                       }
                     />
                   </label>
-                  <label className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 hover:bg-white/5">
+                  <label className="flex cursor-pointer items-center justify-between rounded-xl px-2 py-1 hover:bg-white/5">
                     <span>Echo Cancellation</span>
                     <input
                       type="checkbox"
@@ -6214,7 +6241,7 @@ export function MeetingStudio({
                       }
                     />
                   </label>
-                  <label className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 hover:bg-white/5">
+                  <label className="flex cursor-pointer items-center justify-between rounded-xl px-2 py-1 hover:bg-white/5">
                     <span>Original Sound (Studio)</span>
                     <input
                       type="checkbox"
@@ -6227,31 +6254,35 @@ export function MeetingStudio({
             )}
           </div>
 
-          <div className="relative flex items-center rounded-xl bg-white/5 p-0.5">
+          <div className="relative flex items-stretch rounded-2xl border border-white/[0.06] bg-white/[0.03]">
             <button
               type="button"
               onClick={() => void toggleCam()}
               title="Start / Stop Video (Alt+V)"
               className={cn(
-                'flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition',
-                camOn ? 'text-white hover:bg-white/10' : 'bg-rose-500 text-white hover:bg-rose-600',
+                'flex min-w-[68px] flex-col items-center justify-center gap-1 rounded-l-2xl px-3 py-2 text-[11px] font-medium transition active:scale-95',
+                camOn
+                  ? 'text-white/90 hover:bg-white/[0.08]'
+                  : 'bg-[#FF453A]/15 text-[#FF6961] hover:bg-[#FF453A]/25',
               )}
             >
-              {camOn ? <Camera className="h-4 w-4" /> : <CameraOff className="h-4 w-4" />}
-              <span className="hidden sm:inline">{camOn ? 'Stop Video' : 'Start Video'}</span>
+              {camOn ? <Camera className="h-[18px] w-[18px]" /> : <CameraOff className="h-[18px] w-[18px]" />}
+              <span className="hidden text-[10px] tracking-tight sm:inline">
+                {camOn ? 'Stop Video' : 'Start Video'}
+              </span>
             </button>
             <button
               type="button"
               onClick={() => setDeviceMenu((m) => (m === 'cam' ? null : 'cam'))}
               title="Camera & Virtual Background Settings"
-              className="rounded-lg px-1.5 py-2 text-white/60 hover:bg-white/10 hover:text-white"
+              className="flex items-center rounded-r-2xl border-l border-white/[0.06] px-1.5 text-white/55 transition hover:bg-white/[0.08] hover:text-white"
             >
               <ChevronUp className="h-3.5 w-3.5" />
             </button>
             {deviceMenu === 'cam' && (
-              <div className="absolute bottom-14 left-0 z-50 w-64 rounded-2xl border border-white/15 bg-[#161F30] p-2.5 shadow-2xl">
+              <div className="absolute bottom-16 left-0 z-50 w-64 rounded-2xl border border-white/15 bg-[#121620]/95 p-2.5 shadow-2xl backdrop-blur-2xl">
                 <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white/45">
-                  Camera
+                  Select a Camera
                 </p>
                 {videoDevices.length === 0 ? (
                   <p className="px-2 py-1.5 text-xs text-white/50">Default camera</p>
@@ -6261,10 +6292,10 @@ export function MeetingStudio({
                       key={d.deviceId}
                       type="button"
                       onClick={() => void switchDevice('video', d.deviceId)}
-                      className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs text-white hover:bg-white/10"
+                      className="flex w-full items-center justify-between rounded-xl px-2 py-1.5 text-left text-xs text-white hover:bg-white/10"
                     >
                       <span className="truncate">{d.label || 'Camera'}</span>
-                      {selectedCamId === d.deviceId && <Check className="h-3.5 w-3.5 text-emerald-400" />}
+                      {selectedCamId === d.deviceId && <Check className="h-3.5 w-3.5 text-[#30D158]" />}
                     </button>
                   ))
                 )}
@@ -6275,11 +6306,11 @@ export function MeetingStudio({
                     setDeviceMenu(null);
                     setShowEffectsModal(true);
                   }}
-                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-semibold text-[#D4A843] hover:bg-white/10"
+                  className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left text-xs font-semibold text-[#6BB0FF] hover:bg-white/10"
                 >
-                  <Sparkles className="h-3.5 w-3.5" /> Virtual Background &amp; Blur...
+                  <Sparkles className="h-3.5 w-3.5" /> Choose Virtual Background...
                 </button>
-                <label className="mt-1 flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 text-xs hover:bg-white/5">
+                <label className="mt-1 flex cursor-pointer items-center justify-between rounded-xl px-2 py-1 text-xs hover:bg-white/5">
                   <span>Mirror My Video</span>
                   <input
                     type="checkbox"
@@ -6292,24 +6323,24 @@ export function MeetingStudio({
           </div>
         </div>
 
-        {/* Center: Complete Zoom Pro Collaboration Controls */}
-        <div className="flex flex-wrap items-center gap-1.5">
+        {/* Center: Exact Zoom Icon-Above-Label Ergonomics */}
+        <div className="flex flex-wrap items-center justify-center gap-1">
           {canHostControl && (
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setShowSecurityMenu((v) => !v)}
                 className={cn(
-                  'flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
+                  'flex min-w-[58px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95',
                   room.isLocked || room.suspendedActivities
-                    ? 'bg-rose-500/25 text-rose-200 ring-1 ring-rose-400/50'
+                    ? 'bg-[#FF453A]/20 text-[#FF6961]'
                     : showSecurityMenu
-                      ? 'bg-[#D4A843]/25 text-[#D4A843]'
-                      : 'bg-white/5 text-white/80 hover:bg-white/10',
+                      ? 'bg-white/15 text-white'
+                      : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
                 )}
               >
-                <Shield className="h-4 w-4" />
-                <span className="hidden lg:inline">Security</span>
+                <Shield className="h-[18px] w-[18px]" />
+                <span className="hidden text-[10px] font-medium md:inline">Security</span>
               </button>
               {showSecurityMenu && (
                 <SecurityPopover
@@ -6327,20 +6358,22 @@ export function MeetingStudio({
             onClick={() => setSideTab((s) => (s === 'participants' ? 'closed' : 'participants'))}
             title="Participants (Alt+U)"
             className={cn(
-              'relative flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
+              'relative flex min-w-[64px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95',
               sideTab === 'participants'
-                ? 'bg-white/20 text-white'
-                : 'bg-white/5 text-white/80 hover:bg-white/10',
+                ? 'bg-white/15 text-white'
+                : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
             )}
           >
-            <Users className="h-4 w-4" />
-            <span className="hidden md:inline">Participants</span>
-            <Badge tone="neutral" className="bg-white/15 text-[10px] text-white">
-              {room.participants.length}
-            </Badge>
-            {canHostControl && (room.waitingRoom?.length ?? 0) > 0 && (
-              <span className="h-2 w-2 rounded-full bg-amber-400" />
-            )}
+            <div className="relative">
+              <Users className="h-[18px] w-[18px]" />
+              <span className="absolute -right-3 -top-1.5 rounded-full bg-white/15 px-1 text-[9px] font-bold tabular-nums text-white">
+                {room.participants.length}
+              </span>
+              {canHostControl && (room.waitingRoom?.length ?? 0) > 0 && (
+                <span className="absolute -left-1.5 -top-1 h-2 w-2 rounded-full bg-amber-400" />
+              )}
+            </div>
+            <span className="hidden text-[10px] font-medium md:inline">Participants</span>
           </button>
 
           <button
@@ -6348,37 +6381,70 @@ export function MeetingStudio({
             onClick={() => setSideTab((s) => (s === 'chat' ? 'closed' : 'chat'))}
             title="Chat (Alt+H)"
             className={cn(
-              'relative flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
+              'relative flex min-w-[54px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95',
               sideTab === 'chat'
-                ? 'bg-white/20 text-white'
-                : 'bg-white/5 text-white/80 hover:bg-white/10',
+                ? 'bg-white/15 text-white'
+                : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
             )}
           >
-            <MessagesSquare className="h-4 w-4" />
-            <span className="hidden md:inline">Chat</span>
-            {unreadChat > 0 && (
-              <span className="ml-0.5 rounded-full bg-rose-500 px-1.5 py-0.2 text-[10px] font-bold text-white">
-                {unreadChat}
-              </span>
-            )}
+            <div className="relative">
+              <MessagesSquare className="h-[18px] w-[18px]" />
+              {unreadChat > 0 && (
+                <span className="absolute -right-2.5 -top-1.5 rounded-full bg-[#FF453A] px-1.5 text-[9px] font-bold text-white">
+                  {unreadChat}
+                </span>
+              )}
+            </div>
+            <span className="hidden text-[10px] font-medium md:inline">Chat</span>
           </button>
 
+          {/* Zoom Signature Vibrant Emerald Share Screen */}
           <button
             type="button"
             onClick={() => void toggleScreenShare()}
             title="Share Screen (Alt+S)"
             className={cn(
-              'flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition',
+              'flex min-w-[74px] flex-col items-center justify-center gap-1 rounded-2xl px-3 py-2 transition active:scale-95',
               screenOn
-                ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/25 hover:bg-emerald-600'
-                : 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25',
+                ? 'bg-[#0EBA64] text-white shadow-[0_8px_22px_-4px_rgba(14,186,100,0.55)] hover:bg-[#12CC6F]'
+                : 'bg-[#0EBA64]/12 text-[#2EE588] hover:bg-[#0EBA64]/20',
             )}
           >
-            <MonitorUp className="h-4 w-4" />
-            <span className="hidden sm:inline">
-              {screenOn ? 'Stop Share' : isScreenShareLockedForSelf ? 'Request Share' : 'Share Screen'}
+            <MonitorUp className="h-[18px] w-[18px]" />
+            <span className="hidden text-[10px] font-semibold sm:inline">
+              {screenOn ? 'Stop Share' : isScreenShareLockedForSelf ? 'Request' : 'Share'}
             </span>
           </button>
+
+          {/* Policy-gated Record with Pause/Resume */}
+          {canRecord && (
+            <div className="hidden items-center gap-0.5 md:flex">
+              <button
+                type="button"
+                onClick={toggleRecording}
+                className={cn(
+                  'flex min-w-[56px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95',
+                  recording
+                    ? 'bg-[#FF453A]/20 text-[#FF6961]'
+                    : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
+                )}
+              >
+                <Radio className={cn('h-[18px] w-[18px]', recording && !recordingPaused && 'animate-pulse')} />
+                <span className="text-[10px] font-medium">{recording ? 'Stop Rec' : 'Record'}</span>
+              </button>
+              {recording && (
+                <button
+                  type="button"
+                  onClick={togglePauseRecording}
+                  title={recordingPaused ? 'Resume Recording' : 'Pause Recording'}
+                  className="flex flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2 text-amber-300 hover:bg-white/[0.08]"
+                >
+                  {recordingPaused ? <Play className="h-[18px] w-[18px]" /> : <Pause className="h-[18px] w-[18px]" />}
+                  <span className="text-[10px] font-medium">{recordingPaused ? 'Resume' : 'Pause'}</span>
+                </button>
+              )}
+            </div>
+          )}
 
           <div className="relative">
             <button
@@ -6386,18 +6452,18 @@ export function MeetingStudio({
               onClick={() => setShowReactionTray((v) => !v)}
               title="Reactions & Raise Hand (Alt+Y)"
               className={cn(
-                'flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
+                'flex min-w-[56px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95',
                 handRaised
-                  ? 'bg-amber-400 text-slate-950'
-                  : 'bg-white/5 text-white/80 hover:bg-white/10',
+                  ? 'bg-amber-400/20 text-amber-300'
+                  : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
               )}
             >
-              <Smile className="h-4 w-4" />
-              <span className="hidden lg:inline">React</span>
+              <Smile className="h-[18px] w-[18px]" />
+              <span className="hidden text-[10px] font-medium md:inline">React</span>
             </button>
             {showReactionTray && (
-              <div className="absolute bottom-14 left-1/2 z-50 flex -translate-x-1/2 flex-col gap-2 rounded-2xl border border-white/15 bg-[#161F30] p-2.5 shadow-2xl">
-                <div className="flex items-center gap-1.5">
+              <div className="absolute bottom-16 left-1/2 z-50 flex -translate-x-1/2 flex-col gap-2 rounded-2xl border border-white/15 bg-[#121620]/95 p-2.5 shadow-2xl backdrop-blur-2xl">
+                <div className="flex items-center gap-1">
                   {QUICK_REACTIONS.map((emoji) => (
                     <button
                       key={emoji}
@@ -6429,14 +6495,14 @@ export function MeetingStudio({
             type="button"
             onClick={() => setSideTab((s) => (s === 'polls' ? 'closed' : 'polls'))}
             className={cn(
-              'hidden items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition lg:flex',
+              'hidden min-w-[56px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95 lg:flex',
               sideTab === 'polls'
-                ? 'bg-[#D4A843]/25 text-[#D4A843]'
-                : 'bg-white/5 text-white/80 hover:bg-white/10',
+                ? 'bg-white/15 text-white'
+                : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
             )}
           >
-            <BarChart3 className="h-4 w-4" />
-            <span>Polls</span>
+            <BarChart3 className="h-[18px] w-[18px]" />
+            <span className="text-[10px] font-medium">Polls</span>
           </button>
 
           <button
@@ -6445,14 +6511,14 @@ export function MeetingStudio({
               setWhiteboardMode((m) => (m === 'whiteboard' ? 'closed' : 'whiteboard'))
             }
             className={cn(
-              'hidden items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition xl:flex',
+              'hidden min-w-[66px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95 xl:flex',
               whiteboardMode === 'whiteboard'
-                ? 'bg-[#D4A843]/25 text-[#D4A843]'
-                : 'bg-white/5 text-white/80 hover:bg-white/10',
+                ? 'bg-[#2D8CFF]/25 text-[#6BB0FF]'
+                : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
             )}
           >
-            <PenTool className="h-4 w-4" />
-            <span>Whiteboard</span>
+            <PenTool className="h-[18px] w-[18px]" />
+            <span className="text-[10px] font-medium">Whiteboard</span>
           </button>
 
           <button
@@ -6460,60 +6526,31 @@ export function MeetingStudio({
             onClick={() => setCaptionsOn((v) => !v)}
             title="Live Captions (Alt+C)"
             className={cn(
-              'hidden items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition xl:flex',
+              'hidden min-w-[56px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95 xl:flex',
               captionsOn
-                ? 'bg-emerald-500/25 text-emerald-300'
-                : 'bg-white/5 text-white/80 hover:bg-white/10',
+                ? 'bg-[#30D158]/20 text-[#30D158]'
+                : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
             )}
           >
-            <Captions className="h-4 w-4" />
-            <span>CC</span>
+            <Captions className="h-[18px] w-[18px]" />
+            <span className="text-[10px] font-medium">Captions</span>
           </button>
 
-          {/* Policy-gated Recording Button (strictly hidden for Interns & Tier 4 NONE tiers) */}
-          {canRecord && (
-            <div className="hidden items-center gap-1 md:flex">
-              <button
-                type="button"
-                onClick={toggleRecording}
-                className={cn(
-                  'flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
-                  recording
-                    ? 'bg-rose-600 text-white'
-                    : 'bg-white/5 text-white/80 hover:bg-white/10',
-                )}
-              >
-                <Radio className={cn('h-4 w-4', recording && !recordingPaused && 'animate-pulse')} />
-                <span className="hidden xl:inline">{recording ? 'Stop Rec' : 'Record'}</span>
-              </button>
-              {recording && (
-                <button
-                  type="button"
-                  onClick={togglePauseRecording}
-                  title={recordingPaused ? 'Resume Recording' : 'Pause Recording'}
-                  className="rounded-xl bg-amber-500/20 p-2 text-amber-300 hover:bg-amber-500/35"
-                >
-                  {recordingPaused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* Zoom Responsive "More (•••)" Menu — makes ALL tools accessible on Mobile & Desktop */}
+          {/* Zoom More (•••) Responsive Popover */}
           <div className="relative">
             <button
               type="button"
               onClick={() => setShowMoreMenu((v) => !v)}
-              title="More Zoom Pro Tools"
+              title="More Zoom Tools"
               className={cn(
-                'flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
+                'flex min-w-[52px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95',
                 showMoreMenu
-                  ? 'bg-white/20 text-white'
-                  : 'bg-white/5 text-white/80 hover:bg-white/10',
+                  ? 'bg-white/15 text-white'
+                  : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
               )}
             >
-              <MoreHorizontal className="h-4 w-4" />
-              <span className="hidden sm:inline">More</span>
+              <MoreHorizontal className="h-[18px] w-[18px]" />
+              <span className="hidden text-[10px] font-medium sm:inline">More</span>
             </button>
             {showMoreMenu && (
               <MoreToolsPopover
@@ -6548,23 +6585,24 @@ export function MeetingStudio({
           </div>
         </div>
 
-        {/* Right: Leave / End Meeting */}
+        {/* Right: Authentic Zoom Crimson End / Leave Pill */}
         <div className="relative">
           <button
             type="button"
             onClick={() =>
               canHostControl ? setShowLeaveMenu((v) => !v) : void leaveCall(false)
             }
-            className="flex items-center gap-1.5 rounded-xl bg-rose-600 px-4 py-2 text-xs font-bold text-white shadow-lg shadow-rose-600/25 transition hover:bg-rose-500"
+            className="flex h-10 items-center gap-1.5 rounded-xl bg-[#E53935] px-4 text-xs font-bold text-white shadow-[0_8px_20px_-4px_rgba(229,57,53,0.55)] transition hover:bg-[#F44336] active:scale-95"
           >
-            <PhoneOff className="h-4 w-4" /> Leave
+            <PhoneOff className="h-4 w-4" />
+            <span>{canHostControl ? 'End' : 'Leave'}</span>
           </button>
           {showLeaveMenu && (
-            <div className="absolute bottom-14 right-0 z-50 w-56 space-y-1.5 rounded-2xl border border-white/15 bg-[#161F30] p-2 shadow-2xl">
+            <div className="absolute bottom-14 right-0 z-50 w-56 space-y-1.5 rounded-2xl border border-white/15 bg-[#121620]/95 p-2 shadow-2xl backdrop-blur-2xl">
               <button
                 type="button"
                 onClick={() => void leaveCall(true)}
-                className="w-full rounded-xl bg-rose-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-rose-500"
+                className="w-full rounded-xl bg-[#E53935] px-3 py-2 text-xs font-bold text-white transition hover:bg-[#F44336]"
               >
                 End Meeting for All
               </button>
@@ -6573,7 +6611,7 @@ export function MeetingStudio({
                 onClick={() => void leaveCall(false)}
                 className="w-full rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/20"
               >
-                Leave Meeting Only
+                Leave Meeting
               </button>
             </div>
           )}
@@ -6956,10 +6994,8 @@ export function PreJoinGreenRoom({
           </div>
 
           <div className="flex flex-col gap-2 pt-1">
-            <Button
-              variant="primary"
-              size="lg"
-              className="w-full justify-center"
+            <button
+              type="button"
               disabled={joining}
               onClick={() => {
                 previewStream?.getTracks().forEach((t) => t.stop());
@@ -6971,19 +7007,20 @@ export function PreJoinGreenRoom({
                   speakerDeviceId: selectedSpeakerId || undefined,
                 });
               }}
+              className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-b from-[#2D8CFF] to-[#0E71EB] px-5 text-sm font-bold text-white shadow-[0_12px_28px_-6px_rgba(14,113,235,0.55)] ring-1 ring-inset ring-white/25 transition hover:brightness-110 active:scale-[0.99] disabled:opacity-50"
             >
-              <Video className="h-4 w-4" /> {joining ? 'Connecting to Room...' : 'Join Meeting Now'}
-            </Button>
-            <Button
-              variant="secondary"
-              className="w-full justify-center border-white/15 bg-white/10 text-white hover:bg-white/20"
+              <Video className="h-4 w-4" /> {joining ? 'Connecting to Room...' : 'Join Meeting'}
+            </button>
+            <button
+              type="button"
               onClick={() => {
                 previewStream?.getTracks().forEach((t) => t.stop());
                 onCancel();
               }}
+              className="flex h-10 w-full items-center justify-center rounded-2xl border border-white/10 bg-white/[0.06] text-xs font-semibold text-white/80 transition hover:bg-white/10 hover:text-white"
             >
-              Back to Meetings Lobby
-            </Button>
+              Cancel &amp; Close
+            </button>
           </div>
         </div>
       </div>

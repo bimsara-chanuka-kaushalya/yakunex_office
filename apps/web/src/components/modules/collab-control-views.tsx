@@ -1089,10 +1089,33 @@ export function MeetingsView() {
     }
   }, [loading, meetings]);
 
-  const openMeetingPopup = (params: Record<string, string>): boolean => {
+  const openPendingMeetingTab = (): Window | null => {
+    if (typeof window === 'undefined') return null;
+    const tab = window.open('about:blank', '_blank');
+    if (tab) {
+      try {
+        tab.document.write(
+          '<!doctype html><html><head><title>Launching Yakunex Meet...</title><style>body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#08090c;color:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,Inter,system-ui,sans-serif;font-size:14px;}</style></head><body>Launching Yakunex Meeting Studio...</body></html>',
+        );
+        tab.document.close();
+      } catch {
+        // Ignore cross-origin doc write restrictions
+      }
+      tab.focus();
+    }
+    return tab;
+  };
+
+  const openMeetingPopup = (params: Record<string, string>, existingTab?: Window | null): boolean => {
     if (typeof window === 'undefined') return false;
     const qs = new URLSearchParams(params).toString();
-    const win = window.open(`/meet?${qs}`, '_blank');
+    const targetUrl = `${window.location.origin}/meet?${qs}`;
+    if (existingTab && !existingTab.closed) {
+      existingTab.location.href = targetUrl;
+      existingTab.focus();
+      return true;
+    }
+    const win = window.open(targetUrl, '_blank');
     if (win) {
       win.focus();
       return true;
@@ -1125,6 +1148,7 @@ export function MeetingsView() {
     camDeviceId?: string;
   }) => {
     if (!preJoin) return;
+    const preTab = openPendingMeetingTab();
     setJoining(true);
     setJoinError(null);
     try {
@@ -1148,25 +1172,29 @@ export function MeetingsView() {
       setPreJoin(null);
       void load();
       if (
-        !openMeetingPopup({
-          room: joined.roomCode,
-          mic: String(micOn),
-          cam: String(camOn),
-          ...(micDeviceId ? { micId: micDeviceId } : {}),
-          ...(camDeviceId ? { camId: camDeviceId } : {}),
-          autojoin: '1',
-        })
+        !openMeetingPopup(
+          {
+            room: joined.roomCode,
+            mic: String(micOn),
+            cam: String(camOn),
+            ...(micDeviceId ? { micId: micDeviceId } : {}),
+            ...(camDeviceId ? { camId: camDeviceId } : {}),
+            autojoin: '1',
+          },
+          preTab,
+        )
       ) {
         setActiveSession({ room: joined, micOn, camOn, micDeviceId, camDeviceId });
       }
     } catch (err) {
+      if (preTab && !preTab.closed) preTab.close();
       setJoinError(err instanceof Error ? err.message : 'Unable to enter meeting room.');
     } finally {
       setJoining(false);
     }
   };
 
-  // Clean single-step Join by Code (removed redundant double API call)
+  // Clean single-step Join by Code — always opens synchronously in a dedicated new browser tab
   const onJoinByCode = async (e: FormEvent) => {
     e.preventDefault();
     const code = roomCodeInput.trim().toUpperCase();
@@ -1189,10 +1217,12 @@ export function MeetingsView() {
   const onSubmitMeetingForm = async (e: FormEvent) => {
     e.preventDefault();
     if (modalMode === 'closed') return;
+    const isInstant = modalMode === 'instant';
+    // Open tab SYNCHRONOUSLY inside user click gesture so browser popup blockers NEVER block it
+    const preTab = isInstant ? openPendingMeetingTab() : null;
     setCreatingRoom(true);
     setJoinError(null);
     try {
-      const isInstant = modalMode === 'instant';
       const created = await post<MeetingRow>('/meetings', {
         title: title.trim() || `${user?.fullName ?? 'Team'}'s Meeting`,
         agenda: agenda.trim() || 'Live team sync & screen share huddle',
@@ -1224,17 +1254,21 @@ export function MeetingsView() {
       await load();
       if (isInstant) {
         if (
-          !openMeetingPopup({
-            room: created.roomCode,
-            mic: 'true',
-            cam: 'true',
-            autojoin: '1',
-          })
+          !openMeetingPopup(
+            {
+              room: created.roomCode,
+              mic: 'true',
+              cam: 'true',
+              autojoin: '1',
+            },
+            preTab,
+          )
         ) {
           setActiveSession({ room: created, micOn: true, camOn: true });
         }
       }
     } catch (err) {
+      if (preTab && !preTab.closed) preTab.close();
       setJoinError(err instanceof Error ? err.message : 'Unable to create meeting room.');
     } finally {
       setCreatingRoom(false);
@@ -1340,73 +1374,103 @@ export function MeetingsView() {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h2 className="font-display text-3xl font-semibold">
-            Yakunex Hub Meet — Enterprise Video Studio
-          </h2>
-          <p className="mt-1 text-sm text-muted">
-            Full Zoom-grade HD video, security shield, waiting rooms, whiteboard, polls, breakout rooms,
-            live captions &amp; instant notifications.
-          </p>
-        </div>
+      {/* Zoom Workplace × Apple Ultra Pro Max Launch Deck */}
+      <section className="relative overflow-hidden rounded-[28px] border border-white/10 bg-gradient-to-br from-[#0F1219] via-[#131722] to-[#090B10] p-6 text-white shadow-2xl md:p-7">
+        <div className="pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full bg-[#2D8CFF]/15 blur-[100px]" />
+        <div className="pointer-events-none absolute -bottom-24 left-12 h-64 w-64 rounded-full bg-[#F97316]/10 blur-[100px]" />
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          <form onSubmit={onJoinByCode} className="flex items-center gap-2">
-            <div className="relative">
-              <KeyRound className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
-              <Input
-                value={roomCodeInput}
-                onChange={(e) => setRoomCodeInput(e.target.value)}
-                placeholder="Room code (YH-ROOM-...)"
-                className="h-10 w-48 pl-9 text-xs uppercase"
-              />
+        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+          {/* Left: Zoom Iconic Squircle Launch Tiles */}
+          <div className="space-y-4">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2D8CFF]">
+                Yakunex Workplace · Zoom Studio
+              </p>
+              <h2 className="mt-1 font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
+                Meetings &amp; Live Video
+              </h2>
+              <p className="mt-1 text-xs text-white/60 sm:text-sm">
+                Every session launches in a dedicated full-screen browser tab with end-to-end controls.
+              </p>
             </div>
-            <Button type="submit" variant="secondary" disabled={joining || !roomCodeInput.trim()}>
-              Join Code
-            </Button>
-          </form>
 
-          {user?.role !== 'INTERN' && policy?.canCreate && (
-            <>
-              <Button variant="primary" onClick={() => openCreateModal('instant')}>
-                <Video className="h-4 w-4" /> New Meeting
-              </Button>
-              <Button variant="secondary" onClick={() => openCreateModal('schedule')}>
-                <Plus className="h-4 w-4" /> Schedule
-              </Button>
-            </>
-          )}
+            <div className="flex flex-wrap items-center gap-4 pt-1">
+              {user?.role !== 'INTERN' && policy?.canCreate && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => openCreateModal('instant')}
+                    className="group flex flex-col items-center gap-2 focus:outline-none"
+                  >
+                    <span className="flex h-16 w-16 items-center justify-center rounded-[20px] bg-gradient-to-b from-[#FF7A2F] to-[#EA580C] text-white shadow-[0_12px_28px_-6px_rgba(234,88,12,0.55)] ring-1 ring-inset ring-white/25 transition duration-200 group-hover:-translate-y-0.5 group-hover:brightness-110 group-active:scale-95">
+                      <Video className="h-7 w-7" />
+                    </span>
+                    <span className="text-xs font-semibold text-white/90">New Meeting</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => openCreateModal('schedule')}
+                    className="group flex flex-col items-center gap-2 focus:outline-none"
+                  >
+                    <span className="flex h-16 w-16 items-center justify-center rounded-[20px] bg-gradient-to-b from-[#2D8CFF] to-[#0E71EB] text-white shadow-[0_12px_28px_-6px_rgba(14,113,235,0.5)] ring-1 ring-inset ring-white/25 transition duration-200 group-hover:-translate-y-0.5 group-hover:brightness-110 group-active:scale-95">
+                      <Calendar className="h-7 w-7" />
+                    </span>
+                    <span className="text-xs font-semibold text-white/90">Schedule</span>
+                  </button>
+                </>
+              )}
+
+              {/* Direct Join by Code Apple Frosted Capsule */}
+              <form
+                onSubmit={onJoinByCode}
+                className="flex flex-1 flex-wrap items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.06] p-2 backdrop-blur-xl sm:min-w-[300px]"
+              >
+                <div className="relative flex-1">
+                  <KeyRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/45" />
+                  <input
+                    value={roomCodeInput}
+                    onChange={(e) => setRoomCodeInput(e.target.value)}
+                    placeholder="Enter room code (YH-ROOM-...)"
+                    className="h-11 w-full rounded-xl bg-black/35 pl-9 pr-3 font-mono text-xs uppercase text-white placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-[#2D8CFF]"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={joining || !roomCodeInput.trim()}
+                  className="h-11 rounded-xl bg-[#2D8CFF] px-5 text-xs font-bold text-white shadow-lg shadow-[#2D8CFF]/25 transition hover:bg-[#3B96FF] disabled:opacity-40"
+                >
+                  Join in New Tab
+                </button>
+              </form>
+            </div>
+          </div>
+
+          {/* Right: Live Apple Frosted Telemetry Pill Grid */}
+          <div className="grid grid-cols-3 gap-2.5 lg:w-[320px]">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3.5 backdrop-blur-xl">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-white/45">Live Now</p>
+              <p className="mt-1 font-display text-2xl font-bold tabular-nums text-emerald-400">{liveCount}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3.5 backdrop-blur-xl">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-white/45">In Call</p>
+              <p className="mt-1 font-display text-2xl font-bold tabular-nums text-white">{activePeople}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3.5 backdrop-blur-xl">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-white/45">Upcoming</p>
+              <p className="mt-1 font-display text-2xl font-bold tabular-nums text-[#2D8CFF]">
+                {meetings.filter((m) => m.status === 'SCHEDULED').length}
+              </p>
+            </div>
+          </div>
         </div>
-      </header>
+      </section>
 
       {joinError && (
         <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-500">
           {joinError}
         </div>
       )}
-
-      {/* Quick overview strip */}
-      <div className="grid gap-4 sm:grid-cols-3">
-        <StatCard
-          label="Live Rooms"
-          value={String(liveCount)}
-          hint={liveCount > 0 ? 'Active calls happening now' : 'Start an instant call anytime'}
-          icon={<Video className="h-5 w-5" />}
-        />
-        <StatCard
-          label="People In Call"
-          value={String(activePeople)}
-          hint="Connected with live mic & camera"
-          icon={<Users className="h-5 w-5" />}
-        />
-        <StatCard
-          label="Scheduled Rooms"
-          value={String(meetings.filter((m) => m.status === 'SCHEDULED').length)}
-          hint="Upcoming team standups & reviews"
-          icon={<Clock className="h-5 w-5" />}
-        />
-      </div>
 
       {loading ? (
         <Skeleton className="h-56 rounded-2xl" />
@@ -1535,18 +1599,20 @@ export function MeetingsView() {
 
                 <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3.5">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Button
-                      variant={isLive ? 'primary' : 'secondary'}
-                      size="sm"
-                      onClick={() => {
-                        if (!openMeetingPopup({ room: mtg.roomCode })) {
-                          setPreJoin({ mode: 'existing', meeting: mtg });
-                        }
-                      }}
+                    <a
+                      href={`/meet?room=${encodeURIComponent(mtg.roomCode)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={cn(
+                        'inline-flex h-8 items-center gap-1.5 rounded-xl px-3.5 text-xs font-semibold transition',
+                        isLive
+                          ? 'bg-[#2D8CFF] text-white shadow-sm shadow-[#2D8CFF]/30 hover:bg-[#3B96FF]'
+                          : 'border border-line bg-surface text-ink hover:bg-canvas',
+                      )}
                     >
-                      <Video className="h-3.5 w-3.5" />{' '}
+                      <Video className="h-3.5 w-3.5" />
                       {mtg.status === 'COMPLETED' ? 'Reopen & Join' : 'Join Meeting'}
-                    </Button>
+                    </a>
                     <Button
                       variant="ghost"
                       size="sm"
