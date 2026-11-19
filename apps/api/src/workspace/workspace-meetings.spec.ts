@@ -186,4 +186,143 @@ describe('WorkspaceService meetings signaling & ICE config', () => {
     expect(typeof activeSfu.token).toBe('string');
     expect((activeSfu.token ?? '').split('.').length).toBe(3);
   });
+
+  it('enforces Zoom Pro security, passcode, role audience, polls/Q&A, breakouts, guest join, attendance & zero-delay meeting start notifications', async () => {
+    const svc = makeService();
+    const host: AuthUser = {
+      id: 'usr_zhost',
+      organizationId: 'org_test',
+      companyId: 'YNX-DIR-0001',
+      email: 'director@yakunex.local',
+      fullName: 'Director Host',
+      role: Role.SUPER_ADMIN,
+      status: UserStatus.ACTIVE,
+      mustChangePassword: false,
+    };
+    const staff: AuthUser = {
+      id: 'usr_zstaff',
+      organizationId: 'org_test',
+      companyId: 'YNX-SE-0002',
+      email: 'dev@yakunex.local',
+      fullName: 'Engineer Staff',
+      role: Role.STAFF,
+      status: UserStatus.ACTIVE,
+      mustChangePassword: false,
+    };
+    const intern: AuthUser = {
+      id: 'usr_zintern',
+      organizationId: 'org_test',
+      companyId: 'YNX-INT-0003',
+      email: 'intern@yakunex.local',
+      fullName: 'Trainee Intern',
+      role: Role.INTERN,
+      status: UserStatus.ACTIVE,
+      mustChangePassword: false,
+    };
+
+    const emitted: Array<{ title: string; isLiveMeeting?: boolean }> = [];
+    const unsub = svc.onNotificationEvent(({ notification }) => {
+      emitted.push({ title: notification.title, isLiveMeeting: notification.isLiveMeeting });
+    });
+
+    const room = await svc.scheduleMeeting(host, {
+      title: 'Zoom Pro Architecture Sync',
+      instant: true,
+      allowedRoles: ['STAFF', 'SUPER_ADMIN'],
+      waitingRoomEnabled: true,
+      passcode: '654321',
+      allowExternalGuests: true,
+      recordingAllowed: true,
+      muteUponEntry: true,
+    });
+    unsub();
+
+    // Instant zero-delay notification fired immediately on meeting start
+    expect(emitted.length).toBe(1);
+    expect(emitted[0].isLiveMeeting).toBe(true);
+
+    // Staff sees notification, Intern does not (restricted to STAFF + SUPER_ADMIN)
+    const staffNotifs = await svc.listNotifications(staff);
+    const internNotifs = await svc.listNotifications(intern);
+    expect(staffNotifs.some((n) => n.roomCode === room.roomCode)).toBe(true);
+    expect(internNotifs.some((n) => n.roomCode === room.roomCode)).toBe(false);
+
+    // Intern cannot join role-restricted room
+    await expect(
+      svc.joinMeetingRoom(intern, room.id, { passcode: '654321' }),
+    ).rejects.toThrow(/permission/i);
+
+    // Wrong passcode rejected for Staff
+    await expect(
+      svc.joinMeetingRoom(staff, room.id, { passcode: '000000' }),
+    ).rejects.toThrow(/PASSCODE_REQUIRED/i);
+
+    // Correct passcode puts Staff into Waiting Room
+    const waiting = await svc.joinMeetingRoom(staff, room.id, { passcode: '654321' });
+    expect(waiting.waitingRoom?.some((w) => w.userId === staff.id)).toBe(true);
+
+    // Host broadcasts message to Waiting Room & Admits All
+    await svc.hostMeetingAction(host, room.id, {
+      action: 'waiting-room-message',
+      payload: { message: 'Starting in 1 minute!' },
+    });
+    const admitted = await svc.hostMeetingAction(host, room.id, { action: 'admit-all' });
+    expect(admitted.participants.some((p) => p.userId === staff.id)).toBe(true);
+    expect(admitted.waitingRoom?.length).toBe(0);
+    // Mute upon entry honored
+    expect(admitted.participants.find((p) => p.userId === staff.id)?.micOn).toBe(false);
+
+    // Spotlight, Polls, Q&A, Breakout Rooms
+    const spotted = await svc.hostMeetingAction(host, room.id, {
+      action: 'spotlight',
+      targetUserId: staff.id,
+    });
+    expect(spotted.spotlightUserId).toBe(staff.id);
+
+    const withPoll = await svc.manageMeetingPoll(host, room.id, {
+      action: 'create',
+      question: 'Ship Zoom Pro today?',
+      options: ['Yes', 'Absolutely'],
+    });
+    expect(withPoll.polls?.length).toBe(1);
+    const voted = await svc.manageMeetingPoll(staff, room.id, {
+      action: 'vote',
+      pollId: withPoll.polls![0].id,
+      optionIds: [withPoll.polls![0].options[0].id],
+    });
+    expect(voted.polls![0].options[0].votes).toContain(staff.id);
+
+    const withQa = await svc.manageMeetingQa(staff, room.id, {
+      action: 'ask',
+      question: 'Does breakout work with SFU?',
+    });
+    expect(withQa.qaItems?.length).toBe(1);
+
+    const withBr = await svc.manageBreakoutRooms(host, room.id, {
+      action: 'open',
+      rooms: [{ name: 'Dev Room', participantIds: [staff.id] }],
+      durationMinutes: 10,
+    });
+    expect(withBr.breakoutRooms?.[0]?.active).toBe(true);
+
+    // External Guest Public Join works with passcode & returns guestToken
+    const pubInfo = await svc.getPublicMeetingInfo(room.roomCode);
+    expect(pubInfo.allowExternalGuests).toBe(true);
+    expect(pubInfo.requiresPasscode).toBe(true);
+    const guestJoined = await svc.joinPublicMeetingAsGuest(room.roomCode, {
+      fullName: 'Client Guest',
+      passcode: '654321',
+    });
+    expect(guestJoined.guestToken).toBeTruthy();
+
+    // Panic Suspend locks room & disables chat
+    const suspended = await svc.hostMeetingAction(host, room.id, { action: 'panic-suspend' });
+    expect(suspended.isLocked).toBe(true);
+    expect(suspended.chatPermission).toBe('DISABLED');
+    await expect(svc.postMeetingChat(staff, room.id, { body: 'hello' })).rejects.toThrow(/disabled/i);
+
+    // Attendance report tracks join entries
+    const attendance = await svc.getMeetingAttendance(host, room.id);
+    expect(attendance.entries.length).toBeGreaterThanOrEqual(2);
+  });
 });

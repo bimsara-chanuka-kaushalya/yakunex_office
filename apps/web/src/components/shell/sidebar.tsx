@@ -8,7 +8,7 @@ import { useAuth, useLang } from '@/components/providers';
 import { YakunexMark } from '@/components/brand/logo';
 import { Avatar } from '@/components/ui/avatar';
 import { playAlertChime, showDesktopNotification } from '@/lib/alerts';
-import { api } from '@/lib/api';
+import { liveGet } from '@/lib/api';
 import { NAV_SECTIONS, isModuleLockedForRole } from '@/lib/nav';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
@@ -24,25 +24,25 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const prevBadgesRef = useRef<{ notifications: number; approvals: number } | null>(null);
 
   useEffect(() => {
-    if (!user || user.role === 'INTERN') return;
+    if (!user) return;
     let active = true;
+    const isIntern = user.role === 'INTERN';
     const poll = async () => {
       try {
         const [notifs, apps] = await Promise.all([
-          api<Array<{ read?: boolean }>>('/notifications').catch(() => []),
-          api<Array<{ status?: string }>>('/approvals').catch(() => []),
+          liveGet<Array<{ read?: boolean }>>('/notifications').catch(() => []),
+          isIntern ? Promise.resolve([]) : liveGet<Array<{ status?: string }>>('/approvals').catch(() => []),
         ]);
         if (!active) return;
         const nextNotifs = Array.isArray(notifs) ? notifs.filter((n) => !n.read).length : 0;
         const nextApprovals = Array.isArray(apps) ? apps.filter((a) => a.status === 'PENDING').length : 0;
         const prev = prevBadgesRef.current;
-        if (prev && (nextNotifs > prev.notifications || nextApprovals > prev.approvals)) {
+        if (prev && nextApprovals > prev.approvals) {
           playAlertChime();
-          const label =
-            nextNotifs > prev.notifications
-              ? `You have ${nextNotifs} unread notification(s).`
-              : `You have ${nextApprovals} pending approval(s).`;
-          showDesktopNotification('Yakunex Hub Alert', label);
+          showDesktopNotification(
+            'Yakunex Hub Approval',
+            `You have ${nextApprovals} pending approval(s).`,
+          );
         }
         prevBadgesRef.current = { notifications: nextNotifs, approvals: nextApprovals };
         setBadges({ notifications: nextNotifs, approvals: nextApprovals });
@@ -55,16 +55,18 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       if (typeof document !== 'undefined' && !document.hidden) {
         void poll();
       }
-    }, 5_000);
-    const onFocus = () => void poll();
+    }, 3_500);
+    const onRefresh = () => void poll();
     if (typeof window !== 'undefined') {
-      window.addEventListener('focus', onFocus);
+      window.addEventListener('focus', onRefresh);
+      window.addEventListener('yakunex:notifications-updated', onRefresh);
     }
     return () => {
       active = false;
       clearInterval(id);
       if (typeof window !== 'undefined') {
-        window.removeEventListener('focus', onFocus);
+        window.removeEventListener('focus', onRefresh);
+        window.removeEventListener('yakunex:notifications-updated', onRefresh);
       }
     };
   }, [user]);

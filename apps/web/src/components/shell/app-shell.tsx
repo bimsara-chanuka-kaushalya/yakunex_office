@@ -6,6 +6,7 @@ import { useAuth, useLang } from '@/components/providers';
 import { Sidebar } from './sidebar';
 import { Topbar } from './topbar';
 import { ForcePasswordChange } from './force-password-change';
+import { MeetingAlertListener } from './meeting-alert-listener';
 import { Skeleton } from '@/components/ui/skeleton';
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -60,6 +61,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </main>
       </div>
 
+      <MeetingAlertListener />
       {user.mustChangePassword && <ForcePasswordChange />}
     </div>
   );

@@ -15,7 +15,8 @@ import {
   StageStatus,
   TaskStatus,
 } from '@prisma/client';
-import { randomUUID } from 'crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
+import { EventEmitter } from 'events';
 import { AccessToken } from 'livekit-server-sdk';
 import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../common/types';
@@ -273,11 +274,13 @@ export interface MeetingParticipant {
   companyId?: string | null;
   fullName: string;
   role: string;
+  isGuest?: boolean;
   micOn: boolean;
   camOn: boolean;
   screenSharing: boolean;
   screenStreamId?: string | null;
   handRaised: boolean;
+  breakoutRoomId?: string | null;
   joinedAt: string;
 }
 
@@ -293,6 +296,49 @@ export interface MeetingChatMessage {
   recipientName?: string | null;
   attachmentUrl?: string | null;
   attachmentName?: string | null;
+}
+
+export interface MeetingPollItem {
+  id: string;
+  question: string;
+  multipleChoice: boolean;
+  options: Array<{ id: string; label: string; votes: string[] }>;
+  status: 'OPEN' | 'CLOSED';
+  createdById: string;
+  createdByName: string;
+  createdAt: string;
+}
+
+export interface MeetingQaItem {
+  id: string;
+  authorId: string;
+  authorName: string;
+  question: string;
+  upvoterIds: string[];
+  answered: boolean;
+  answerText?: string | null;
+  answeredByName?: string | null;
+  createdAt: string;
+}
+
+export interface BreakoutRoomItem {
+  id: string;
+  name: string;
+  roomCode: string;
+  participantIds: string[];
+  active: boolean;
+  endsAt?: string | null;
+}
+
+export interface MeetingAttendanceEntry {
+  userId: string;
+  fullName: string;
+  companyId?: string | null;
+  role: string;
+  isGuest?: boolean;
+  joinedAt: string;
+  leftAt?: string | null;
+  durationSec?: number;
 }
 
 export interface MeetingItem {
@@ -314,15 +360,35 @@ export interface MeetingItem {
   allowExternalGuests?: boolean;
   recordingAllowed?: boolean;
   waitingRoomEnabled?: boolean;
+  waitingRoomMessage?: string | null;
+  passcode?: string | null;
+  recurrence?: 'NONE' | 'DAILY' | 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY';
+  isLocked?: boolean;
+  suspendedActivities?: boolean;
+  muteUponEntry?: boolean;
+  allowUnmuteSelf?: boolean;
+  allowStartVideo?: boolean;
+  allowRenameSelf?: boolean;
+  chatPermission?: 'EVERYONE_DM' | 'EVERYONE_PUBLIC' | 'HOST_ONLY' | 'DISABLED';
+  screenShareMode?: 'ALL' | 'HOST_ONLY' | 'APPROVAL_REQUIRED';
+  spotlightUserId?: string | null;
+  recordingActive?: boolean;
+  recordingByName?: string | null;
   waitingRoom?: Array<{
     userId: string;
     fullName: string;
     companyId?: string | null;
     role: string;
+    isGuest?: boolean;
     requestedAt: string;
   }>;
   coHostIds?: string[];
   screenShareApprovedIds?: string[];
+  polls?: MeetingPollItem[];
+  qaItems?: MeetingQaItem[];
+  breakoutRooms?: BreakoutRoomItem[];
+  breakoutBroadcast?: { message: string; sentAt: string } | null;
+  attendanceLog?: MeetingAttendanceEntry[];
   attendeeCount: number;
   notes: string;
   participants: MeetingParticipant[];
@@ -603,12 +669,21 @@ export class WorkspaceService implements OnModuleInit {
     createdAt: string;
   }> = [];
 
+  private readonly notificationBus = new EventEmitter();
+
   private notifications: Array<{
     id: string;
     type: 'ANNOUNCEMENT' | 'APPROVAL' | 'MEETING' | 'TASK' | 'SYSTEM';
     title: string;
     body: string;
     targetUserId: string; // '*' for company-wide
+    allowedRoles?: string[];
+    targetUserIds?: string[];
+    meetingId?: string | null;
+    roomCode?: string | null;
+    actionUrl?: string | null;
+    hostName?: string | null;
+    isLiveMeeting?: boolean;
     readByIds: string[];
     authorName: string;
     createdAt: string;
@@ -2705,6 +2780,173 @@ export class WorkspaceService implements OnModuleInit {
     return mtg;
   }
 
+  private getGuestTokenSecret(): string {
+    return (
+      process.env.JWT_ACCESS_SECRET ||
+      process.env.JWT_SECRET ||
+      'yakunex-hub-guest-meeting-secret-2026'
+    );
+  }
+
+  private signGuestToken(payload: {
+    guestId: string;
+    meetingId: string;
+    roomCode: string;
+    fullName: string;
+    organizationId: string;
+    exp: number;
+  }): string {
+    const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+    const sig = createHmac('sha256', this.getGuestTokenSecret())
+      .update(encoded)
+      .digest('base64url');
+    return `${encoded}.${sig}`;
+  }
+
+  verifyGuestToken(token: string): {
+    guestId: string;
+    meetingId: string;
+    roomCode: string;
+    fullName: string;
+    organizationId: string;
+    exp: number;
+  } {
+    const parts = String(token ?? '').split('.');
+    if (parts.length !== 2) throw new ForbiddenException('Invalid guest meeting token.');
+    const [encoded, sig] = parts;
+    const expected = createHmac('sha256', this.getGuestTokenSecret())
+      .update(encoded)
+      .digest('base64url');
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      throw new ForbiddenException('Invalid guest meeting token.');
+    }
+    const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as {
+      guestId: string;
+      meetingId: string;
+      roomCode: string;
+      fullName: string;
+      organizationId: string;
+      exp: number;
+    };
+    if (!parsed.exp || Date.now() > parsed.exp) {
+      throw new ForbiddenException('Guest meeting session expired. Please rejoin.');
+    }
+    return parsed;
+  }
+
+  private createGuestActor(token: string): AuthUser {
+    const g = this.verifyGuestToken(token);
+    return {
+      id: g.guestId,
+      email: `${g.guestId}@guest.yakunex.com`,
+      fullName: g.fullName,
+      companyId: 'GUEST',
+      role: Role.INTERN,
+      status: 'ACTIVE',
+      mustChangePassword: false,
+      organizationId: g.organizationId,
+      permissions: [],
+    } as AuthUser;
+  }
+
+  private recordAttendanceJoin(
+    mtg: MeetingItem,
+    user: { userId: string; fullName: string; companyId?: string | null; role: string; isGuest?: boolean },
+    joinedAt: string,
+  ): void {
+    mtg.attendanceLog = mtg.attendanceLog ?? [];
+    const openEntry = mtg.attendanceLog.find((a) => a.userId === user.userId && !a.leftAt);
+    if (!openEntry) {
+      mtg.attendanceLog.push({
+        userId: user.userId,
+        fullName: user.fullName,
+        companyId: user.companyId ?? null,
+        role: user.role,
+        isGuest: user.isGuest,
+        joinedAt,
+        leftAt: null,
+        durationSec: 0,
+      });
+    }
+  }
+
+  private recordAttendanceLeave(mtg: MeetingItem, userId: string, leftAtIso = new Date().toISOString()): void {
+    if (!Array.isArray(mtg.attendanceLog)) return;
+    const leftMs = new Date(leftAtIso).getTime();
+    for (const entry of mtg.attendanceLog) {
+      if (entry.userId === userId && !entry.leftAt) {
+        entry.leftAt = leftAtIso;
+        entry.durationSec = Math.max(0, Math.round((leftMs - new Date(entry.joinedAt).getTime()) / 1000));
+      }
+    }
+  }
+
+  private isMeetingHostOrCoHost(mtg: MeetingItem, actor: AuthUser): boolean {
+    if (!actor || actor.id.startsWith('guest_')) return false;
+    return (
+      mtg.organizerId === actor.id ||
+      mtg.organizerName === actor.fullName ||
+      Boolean(mtg.coHostIds?.includes(actor.id))
+    );
+  }
+
+  private canControlMeeting(mtg: MeetingItem, actor: AuthUser): boolean {
+    if (!actor || actor.id.startsWith('guest_')) return false;
+    const policy = this.resolveMeetingAccessPolicy(actor);
+    if (policy.waitingRoomControl === 'NONE') return false;
+    const isHostOrCoHost = this.isMeetingHostOrCoHost(mtg, actor);
+    return (
+      policy.waitingRoomControl === 'AUTO_OVERRIDE' ||
+      (policy.waitingRoomControl === 'BOARD_HOST' &&
+        isHostOrCoHost &&
+        (mtg.meetingScope === 'BOARD' || mtg.meetingScope === 'LEGAL')) ||
+      ((policy.waitingRoomControl === 'HOSTED' ||
+        policy.waitingRoomControl === 'HOST_COHOST' ||
+        policy.waitingRoomControl === 'HOST' ||
+        policy.waitingRoomControl === 'COHOST') &&
+        isHostOrCoHost) ||
+      this.isManagerOrAdmin(actor)
+    );
+  }
+
+  private async pushMeetingNotification(
+    actor: AuthUser,
+    mtg: MeetingItem,
+    kind: 'STARTED' | 'SCHEDULED',
+  ): Promise<void> {
+    const isLive = kind === 'STARTED';
+    const item = {
+      id: `ntf_${randomUUID().slice(0, 8)}`,
+      type: 'MEETING' as const,
+      title: isLive ? `LIVE Meeting Started: ${mtg.title}` : `Meeting Scheduled: ${mtg.title}`,
+      body: isLive
+        ? `${actor.fullName} started "${mtg.title}" (${mtg.roomCode}). Join now!`
+        : `${actor.fullName} scheduled "${mtg.title}" (${mtg.roomCode}) for ${new Date(mtg.startsAt).toLocaleString('en-LK', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Colombo' })}.`,
+      targetUserId: '*',
+      allowedRoles: mtg.allowedRoles && mtg.allowedRoles.length > 0 ? mtg.allowedRoles : ['ALL'],
+      targetUserIds: mtg.invitedUserIds && mtg.invitedUserIds.length > 0 ? mtg.invitedUserIds : undefined,
+      meetingId: mtg.id,
+      roomCode: mtg.roomCode,
+      actionUrl: `/meet?room=${mtg.roomCode}`,
+      hostName: mtg.organizerName,
+      isLiveMeeting: isLive,
+      readByIds: [actor.id],
+      authorName: actor.fullName,
+      createdAt: new Date().toISOString(),
+    };
+    this.notifications.unshift(item);
+    if (this.notifications.length > 150) {
+      this.notifications = this.notifications.slice(0, 150);
+    }
+    this.notificationBus.emit('notification', {
+      organizationId: actor.organizationId,
+      notification: item,
+    });
+    await this.persistStateNow(actor.organizationId);
+  }
+
   async getMeetingByCode(actor: AuthUser, roomCode: string) {
     const normalized = String(roomCode ?? '').trim().toUpperCase();
     if (!normalized) throw new BadRequestException('Room code is required.');
@@ -2725,7 +2967,10 @@ export class WorkspaceService implements OnModuleInit {
     const title = String(body.title ?? '').trim();
     if (title.length < 2) throw new BadRequestException('Meeting title is required.');
 
-    const requestedScope = String(body.meetingScope ?? policy.allowedScopes[0] ?? 'INTERNAL').toUpperCase() as NonNullable<MeetingItem['meetingScope']>;
+    const defaultScope = (policy.allowedScopes as readonly string[]).includes('INTERNAL')
+      ? 'INTERNAL'
+      : policy.allowedScopes[0] ?? 'INTERNAL';
+    const requestedScope = String(body.meetingScope ?? defaultScope).toUpperCase() as NonNullable<MeetingItem['meetingScope']>;
     if (!(policy.allowedScopes as readonly string[]).includes(requestedScope)) {
       throw new ForbiddenException(`${policy.tier} cannot create ${requestedScope} meetings (${policy.createLabel}).`);
     }
@@ -2733,6 +2978,25 @@ export class WorkspaceService implements OnModuleInit {
     const allowExternalGuests = Boolean(body.allowExternalGuests) && policy.canInviteExternal;
     const recordingAllowed = Boolean(body.recordingAllowed) && policy.recordingScope !== 'NONE';
     const waitingRoomEnabled = body.waitingRoomEnabled !== undefined ? Boolean(body.waitingRoomEnabled) : false;
+    const passcodeRaw = typeof body.passcode === 'string' ? body.passcode.trim() : '';
+    const passcode = passcodeRaw.length > 0 ? passcodeRaw.slice(0, 16) : null;
+    const allowedRecurrences = ['NONE', 'DAILY', 'WEEKLY', 'BIWEEKLY', 'MONTHLY'] as const;
+    const recurrenceRaw = String(body.recurrence ?? 'NONE').toUpperCase();
+    const recurrence = (allowedRecurrences as readonly string[]).includes(recurrenceRaw)
+      ? (recurrenceRaw as MeetingItem['recurrence'])
+      : 'NONE';
+    const chatPermRaw = String(body.chatPermission ?? 'EVERYONE_DM').toUpperCase();
+    const chatPermission = (['EVERYONE_DM', 'EVERYONE_PUBLIC', 'HOST_ONLY', 'DISABLED'] as const).includes(
+      chatPermRaw as 'EVERYONE_DM',
+    )
+      ? (chatPermRaw as MeetingItem['chatPermission'])
+      : 'EVERYONE_DM';
+    const shareModeRaw = String(body.screenShareMode ?? 'ALL').toUpperCase();
+    const screenShareMode = (['ALL', 'HOST_ONLY', 'APPROVAL_REQUIRED'] as const).includes(
+      shareModeRaw as 'ALL',
+    )
+      ? (shareModeRaw as MeetingItem['screenShareMode'])
+      : 'ALL';
 
     const project = this.projects.find((p) => p.id === body.projectId) ?? null;
     let roomCode = `YH-ROOM-${Math.floor(100 + Math.random() * 900)}`;
@@ -2742,6 +3006,13 @@ export class WorkspaceService implements OnModuleInit {
     const instant = Boolean(body.instant);
     const micOn = body.micOn !== undefined ? Boolean(body.micOn) : true;
     const camOn = body.camOn !== undefined ? Boolean(body.camOn) : true;
+    const nowIso = new Date().toISOString();
+    const durationMins = Math.max(15, Math.min(480, Number(body.durationMinutes) || 60));
+    const startsAtIso = String(body.startsAt || nowIso);
+    const endsAtIso = String(
+      body.endsAt || new Date(new Date(startsAtIso).getTime() + durationMins * 60_000).toISOString(),
+    );
+
     const created: MeetingItem = {
       id: `mtg_${randomUUID().slice(0, 8)}`,
       roomCode,
@@ -2751,8 +3022,8 @@ export class WorkspaceService implements OnModuleInit {
       organizerName: actor.fullName,
       title,
       agenda: String(body.agenda ?? '').trim() || 'Live team sync & screen share session',
-      startsAt: String(body.startsAt || new Date().toISOString()),
-      endsAt: String(body.endsAt || new Date(Date.now() + 3600000).toISOString()),
+      startsAt: startsAtIso,
+      endsAt: endsAtIso,
       status: instant ? 'LIVE' : 'SCHEDULED',
       meetingScope: requestedScope,
       allowedRoles:
@@ -2764,9 +3035,40 @@ export class WorkspaceService implements OnModuleInit {
       allowExternalGuests,
       recordingAllowed,
       waitingRoomEnabled,
+      waitingRoomMessage: null,
+      passcode,
+      recurrence,
+      isLocked: false,
+      suspendedActivities: false,
+      muteUponEntry: Boolean(body.muteUponEntry),
+      allowUnmuteSelf: body.allowUnmuteSelf !== undefined ? Boolean(body.allowUnmuteSelf) : true,
+      allowStartVideo: body.allowStartVideo !== undefined ? Boolean(body.allowStartVideo) : true,
+      allowRenameSelf: body.allowRenameSelf !== undefined ? Boolean(body.allowRenameSelf) : true,
+      chatPermission,
+      screenShareMode,
+      spotlightUserId: null,
+      recordingActive: false,
+      recordingByName: null,
       waitingRoom: [],
       coHostIds: Array.isArray(body.coHostIds) ? body.coHostIds.map(String) : [],
       screenShareApprovedIds: [],
+      polls: [],
+      qaItems: [],
+      breakoutRooms: [],
+      breakoutBroadcast: null,
+      attendanceLog: instant
+        ? [
+            {
+              userId: actor.id,
+              fullName: actor.fullName,
+              companyId: actor.companyId ?? null,
+              role: actor.role,
+              joinedAt: nowIso,
+              leftAt: null,
+              durationSec: 0,
+            },
+          ]
+        : [],
       attendeeCount: instant ? 1 : 0,
       notes: String(body.notes ?? '').trim(),
       participants: instant
@@ -2780,14 +3082,14 @@ export class WorkspaceService implements OnModuleInit {
               camOn,
               screenSharing: false,
               handRaised: false,
-              joinedAt: new Date().toISOString(),
+              joinedAt: nowIso,
             },
           ]
         : [],
       chatMessages: [],
     };
     this.meetings.unshift(created);
-    await this.persistStateNow(actor.organizationId);
+    await this.pushMeetingNotification(actor, created, instant ? 'STARTED' : 'SCHEDULED');
 
     void this.prisma.meeting?.upsert?.({
       where: { id: created.id },
@@ -2834,8 +3136,62 @@ export class WorkspaceService implements OnModuleInit {
       }
       mtg.status = nextStatus;
       if (mtg.status === 'COMPLETED' || mtg.status === 'CANCELLED') {
+        const nowIso = new Date().toISOString();
+        for (const p of mtg.participants) {
+          this.recordAttendanceLeave(mtg, p.userId, nowIso);
+        }
         mtg.participants = [];
         mtg.waitingRoom = [];
+        mtg.recordingActive = false;
+        mtg.recordingByName = null;
+        mtg.spotlightUserId = null;
+
+        // If recurring meeting completed, auto-schedule next occurrence
+        if (mtg.status === 'COMPLETED' && mtg.recurrence && mtg.recurrence !== 'NONE') {
+          const stepDays =
+            mtg.recurrence === 'DAILY'
+              ? 1
+              : mtg.recurrence === 'WEEKLY'
+                ? 7
+                : mtg.recurrence === 'BIWEEKLY'
+                  ? 14
+                  : 30;
+          const prevStart = new Date(mtg.startsAt).getTime();
+          const prevEnd = new Date(mtg.endsAt).getTime();
+          const dur = Math.max(15 * 60_000, prevEnd - prevStart);
+          const nextStart = new Date(Math.max(Date.now(), prevStart) + stepDays * 86400_000);
+          let nextCode = `YH-ROOM-${Math.floor(100 + Math.random() * 900)}`;
+          while (this.meetings.some((m) => m.roomCode === nextCode)) {
+            nextCode = `YH-ROOM-${Math.floor(100 + Math.random() * 900)}`;
+          }
+          const alreadySpawned = this.meetings.some(
+            (m) =>
+              m.status === 'SCHEDULED' &&
+              m.title === mtg.title &&
+              m.organizerId === mtg.organizerId &&
+              Math.abs(new Date(m.startsAt).getTime() - nextStart.getTime()) < 3600_000,
+          );
+          if (!alreadySpawned) {
+            this.meetings.unshift({
+              ...mtg,
+              id: `mtg_${randomUUID().slice(0, 8)}`,
+              roomCode: nextCode,
+              startsAt: nextStart.toISOString(),
+              endsAt: new Date(nextStart.getTime() + dur).toISOString(),
+              status: 'SCHEDULED',
+              isLocked: false,
+              suspendedActivities: false,
+              waitingRoom: [],
+              participants: [],
+              chatMessages: [],
+              polls: [],
+              qaItems: [],
+              breakoutRooms: [],
+              attendanceLog: [],
+              attendeeCount: 0,
+            });
+          }
+        }
       }
     }
     if (body.title !== undefined && String(body.title).trim().length >= 2) {
@@ -2874,26 +3230,65 @@ export class WorkspaceService implements OnModuleInit {
   async joinMeetingRoom(
     actor: AuthUser,
     id: string,
-    body?: { micOn?: boolean; camOn?: boolean },
+    body?: { micOn?: boolean; camOn?: boolean; passcode?: string; isGuest?: boolean },
   ) {
     return this.withMeetingLock(async () => {
       await this.syncMeetingsFromDb(actor.organizationId, true);
       const mtg = this.meetings.find((m) => m.id === id);
       if (!mtg) throw new NotFoundException('Meeting not found.');
-      if (mtg.status === 'SCHEDULED' || mtg.status === 'COMPLETED') {
-        mtg.status = 'LIVE';
-      }
-      const micOn = body?.micOn !== undefined ? Boolean(body.micOn) : true;
-      const camOn = body?.camOn !== undefined ? Boolean(body.camOn) : true;
-      const joinedAt = new Date().toISOString();
+
+      const isGuest = Boolean(body?.isGuest || actor.id.startsWith('guest_'));
       const existing = mtg.participants.find((p) => p.userId === actor.id);
       const isHostOrManager =
-        mtg.organizerId === actor.id ||
-        mtg.organizerName === actor.fullName ||
-        actor.role === Role.SUPER_ADMIN ||
-        actor.role === Role.ADMIN ||
-        actor.role === Role.PROJECT_MANAGER ||
-        (mtg.coHostIds ?? []).includes(actor.id);
+        !isGuest &&
+        (mtg.organizerId === actor.id ||
+          mtg.organizerName === actor.fullName ||
+          actor.role === Role.SUPER_ADMIN ||
+          actor.role === Role.ADMIN ||
+          actor.role === Role.PROJECT_MANAGER ||
+          (mtg.coHostIds ?? []).includes(actor.id));
+
+      // Enforce explicit Role-Based Target Audience for internal users
+      const hasExplicitRoleRestriction =
+        Array.isArray(mtg.allowedRoles) &&
+        mtg.allowedRoles.length > 0 &&
+        !mtg.allowedRoles.includes('ALL');
+      if (
+        !isGuest &&
+        !isHostOrManager &&
+        !existing &&
+        hasExplicitRoleRestriction &&
+        !mtg.allowedRoles!.includes(actor.role) &&
+        !(mtg.invitedUserIds ?? []).includes(actor.id)
+      ) {
+        throw new ForbiddenException('You do not have permission to join this role-restricted meeting.');
+      }
+
+      // Enforce Security Lock
+      if (mtg.isLocked && !isHostOrManager && !existing) {
+        throw new ForbiddenException('This meeting has been locked by the host. No new participants can join.');
+      }
+
+      // Enforce Passcode (unless host/co-host/SuperAdmin or already in room)
+      if (mtg.passcode && !isHostOrManager && !existing) {
+        const supplied = String(body?.passcode ?? '').trim();
+        if (!supplied || supplied !== mtg.passcode) {
+          throw new ForbiddenException('PASSCODE_REQUIRED: Invalid or missing meeting passcode.');
+        }
+      }
+
+      const wasNotLive = mtg.status === 'SCHEDULED' || mtg.status === 'COMPLETED';
+      if (wasNotLive) {
+        mtg.status = 'LIVE';
+      }
+
+      let micOn = body?.micOn !== undefined ? Boolean(body.micOn) : true;
+      let camOn = body?.camOn !== undefined ? Boolean(body.camOn) : true;
+      if (!isHostOrManager) {
+        if (mtg.muteUponEntry || mtg.suspendedActivities || mtg.allowUnmuteSelf === false) micOn = false;
+        if (mtg.suspendedActivities || mtg.allowStartVideo === false) camOn = false;
+      }
+      const joinedAt = new Date().toISOString();
       const wasRemoved = (mtg.removedUserIds ?? []).includes(actor.id);
 
       // If user was previously removed by Host, or Waiting Room is enabled for non-host, hold them in Waiting Room
@@ -2907,7 +3302,8 @@ export class WorkspaceService implements OnModuleInit {
             userId: actor.id,
             fullName: actor.fullName,
             companyId: actor.companyId ?? null,
-            role: actor.role,
+            role: isGuest ? 'GUEST' : actor.role,
+            isGuest,
             requestedAt: joinedAt,
           });
           await this.persistStateNow(actor.organizationId);
@@ -2918,7 +3314,7 @@ export class WorkspaceService implements OnModuleInit {
               fromUserName: actor.fullName,
               toUserId: '*',
               type: 'waiting-room-updated',
-              payload: { userId: actor.id, fullName: actor.fullName, role: actor.role },
+              payload: { userId: actor.id, fullName: actor.fullName, role: isGuest ? 'GUEST' : actor.role, isGuest },
             },
             actor.organizationId,
           );
@@ -2939,7 +3335,8 @@ export class WorkspaceService implements OnModuleInit {
           userId: actor.id,
           companyId: actor.companyId ?? null,
           fullName: actor.fullName,
-          role: actor.role,
+          role: isGuest ? 'GUEST' : actor.role,
+          isGuest,
           micOn,
           camOn,
           screenSharing: false,
@@ -2947,8 +3344,25 @@ export class WorkspaceService implements OnModuleInit {
           joinedAt,
         });
       }
+      this.recordAttendanceJoin(
+        mtg,
+        {
+          userId: actor.id,
+          fullName: actor.fullName,
+          companyId: actor.companyId ?? null,
+          role: isGuest ? 'GUEST' : actor.role,
+          isGuest,
+        },
+        joinedAt,
+      );
       mtg.attendeeCount = Math.max(mtg.attendeeCount, mtg.participants.length);
-      await this.persistStateNow(actor.organizationId);
+
+      if (wasNotLive && !isGuest) {
+        await this.pushMeetingNotification(actor, mtg, 'STARTED');
+      } else {
+        await this.persistStateNow(actor.organizationId);
+      }
+
       await this.appendMeetingSignal(
         mtg.id,
         {
@@ -2967,7 +3381,7 @@ export class WorkspaceService implements OnModuleInit {
   async joinMeetingByCode(
     actor: AuthUser,
     roomCode: string,
-    body?: { micOn?: boolean; camOn?: boolean },
+    body?: { micOn?: boolean; camOn?: boolean; passcode?: string },
   ) {
     const normalized = String(roomCode ?? '').trim().toUpperCase();
     if (!normalized) throw new BadRequestException('Room code is required.');
@@ -2985,6 +3399,9 @@ export class WorkspaceService implements OnModuleInit {
       const mtg = this.meetings.find((m) => m.id === id);
       if (!mtg) throw new NotFoundException('Meeting not found.');
       mtg.participants = mtg.participants.filter((p) => p.userId !== actor.id);
+      mtg.waitingRoom = (mtg.waitingRoom ?? []).filter((w) => w.userId !== actor.id);
+      if (mtg.spotlightUserId === actor.id) mtg.spotlightUserId = null;
+      this.recordAttendanceLeave(mtg, actor.id);
       await this.persistStateNow(actor.organizationId);
       await this.appendMeetingSignal(
         id,
@@ -3006,32 +3423,50 @@ export class WorkspaceService implements OnModuleInit {
       await this.syncMeetingsFromDb(actor.organizationId, true);
       const mtg = this.meetings.find((m) => m.id === id);
       if (!mtg) throw new NotFoundException('Meeting not found.');
+      const isHost = this.canControlMeeting(mtg, actor);
       let participant = mtg.participants.find((p) => p.userId === actor.id);
       if (!participant) {
         participant = {
           userId: actor.id,
           companyId: actor.companyId ?? null,
           fullName: actor.fullName,
-          role: actor.role,
-          micOn: true,
-          camOn: true,
+          role: actor.id.startsWith('guest_') ? 'GUEST' : actor.role,
+          isGuest: actor.id.startsWith('guest_'),
+          micOn: !mtg.muteUponEntry,
+          camOn: mtg.allowStartVideo !== false,
           screenSharing: false,
           handRaised: false,
           joinedAt: new Date().toISOString(),
         };
         mtg.participants.push(participant);
       }
-      if (body.micOn !== undefined) participant.micOn = Boolean(body.micOn);
-      if (body.camOn !== undefined) participant.camOn = Boolean(body.camOn);
+      if (body.micOn !== undefined) {
+        const wantMic = Boolean(body.micOn);
+        if (wantMic && !isHost && (mtg.suspendedActivities || mtg.allowUnmuteSelf === false)) {
+          throw new ForbiddenException('Host has disabled unmuting yourself.');
+        }
+        participant.micOn = wantMic;
+      }
+      if (body.camOn !== undefined) {
+        const wantCam = Boolean(body.camOn);
+        if (wantCam && !isHost && (mtg.suspendedActivities || mtg.allowStartVideo === false)) {
+          throw new ForbiddenException('Host has disabled starting video.');
+        }
+        participant.camOn = wantCam;
+      }
       if (body.screenSharing !== undefined) {
         const wantShare = Boolean(body.screenSharing);
         const policy = this.resolveMeetingAccessPolicy(actor);
-        if (
-          wantShare &&
-          policy.screenShareRequiresApproval &&
-          !mtg.screenShareApprovedIds?.includes(actor.id)
-        ) {
-          throw new ForbiddenException('Trainees / Interns require Host Approval before screen sharing.');
+        if (wantShare && !isHost) {
+          if (mtg.suspendedActivities || mtg.screenShareMode === 'HOST_ONLY') {
+            throw new ForbiddenException('Only the host can share their screen right now.');
+          }
+          if (
+            (policy.screenShareRequiresApproval || mtg.screenShareMode === 'APPROVAL_REQUIRED') &&
+            !mtg.screenShareApprovedIds?.includes(actor.id)
+          ) {
+            throw new ForbiddenException('Host Approval is required before screen sharing.');
+          }
         }
         participant.screenSharing = wantShare;
         if (!participant.screenSharing) participant.screenStreamId = null;
@@ -3049,33 +3484,61 @@ export class WorkspaceService implements OnModuleInit {
     actor: AuthUser,
     id: string,
     body: {
-      action: 'mute' | 'mute-all' | 'admit' | 'remove' | 'approve-screenshare' | 'toggle-cohost';
+      action:
+        | 'mute'
+        | 'mute-all'
+        | 'admit'
+        | 'admit-all'
+        | 'waiting-room-message'
+        | 'remove'
+        | 'approve-screenshare'
+        | 'toggle-cohost'
+        | 'ask-unmute'
+        | 'stop-video'
+        | 'spotlight'
+        | 'lower-all-hands'
+        | 'rename'
+        | 'transfer-host'
+        | 'update-security'
+        | 'panic-suspend'
+        | 'recording-status';
       targetUserId?: string;
+      payload?: Record<string, unknown>;
     },
   ) {
     await this.syncMeetingsFromDb(actor.organizationId, true);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
+
+    // Recording status toggle allowed for tiers with recordingScope !== 'NONE'
+    if (body.action === 'recording-status') {
+      const policy = this.resolveMeetingAccessPolicy(actor);
+      if (policy.recordingScope === 'NONE') {
+        throw new ForbiddenException('Your tier does not have recording permission.');
+      }
+      const active = Boolean(body.payload?.active);
+      mtg.recordingActive = active;
+      mtg.recordingByName = active ? actor.fullName : null;
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'recording-updated',
+          payload: { active, by: actor.fullName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
     const policy = this.resolveMeetingAccessPolicy(actor);
     if (policy.waitingRoomControl === 'NONE') {
       throw new ForbiddenException('Trainees cannot run host or waiting room controls.');
     }
-    const isHostOrCoHost =
-      mtg.organizerId === actor.id ||
-      mtg.organizerName === actor.fullName ||
-      Boolean(mtg.coHostIds?.includes(actor.id));
-    const canHost =
-      policy.waitingRoomControl === 'AUTO_OVERRIDE' ||
-      (policy.waitingRoomControl === 'BOARD_HOST' &&
-        isHostOrCoHost &&
-        (mtg.meetingScope === 'BOARD' || mtg.meetingScope === 'LEGAL')) ||
-      ((policy.waitingRoomControl === 'HOSTED' ||
-        policy.waitingRoomControl === 'HOST_COHOST' ||
-        policy.waitingRoomControl === 'HOST' ||
-        policy.waitingRoomControl === 'COHOST') &&
-        isHostOrCoHost) ||
-      this.isManagerOrAdmin(actor);
-    if (!canHost) {
+    if (!this.canControlMeeting(mtg, actor)) {
       throw new ForbiddenException('You do not have host or waiting room control for this meeting.');
     }
 
@@ -3085,29 +3548,99 @@ export class WorkspaceService implements OnModuleInit {
       mtg.waitingRoom = waiting.filter((w) => w.userId !== body.targetUserId);
       mtg.removedUserIds = (mtg.removedUserIds ?? []).filter((uid) => uid !== body.targetUserId);
       if (entry && !mtg.participants.some((p) => p.userId === entry.userId)) {
+        const nowIso = new Date().toISOString();
         mtg.participants.push({
           userId: entry.userId,
           companyId: entry.companyId ?? null,
           fullName: entry.fullName,
           role: entry.role,
-          micOn: false,
-          camOn: true,
+          isGuest: entry.isGuest,
+          micOn: !mtg.muteUponEntry && mtg.allowUnmuteSelf !== false,
+          camOn: mtg.allowStartVideo !== false,
           screenSharing: false,
           handRaised: false,
-          joinedAt: new Date().toISOString(),
+          joinedAt: nowIso,
         });
-        mtg.attendeeCount = mtg.participants.length;
+        this.recordAttendanceJoin(mtg, entry, nowIso);
+        mtg.attendeeCount = Math.max(mtg.attendeeCount, mtg.participants.length);
       }
       await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: body.targetUserId,
+          type: 'waiting-room-admitted',
+          payload: { userId: body.targetUserId },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'admit-all') {
+      const waiting = [...(mtg.waitingRoom ?? [])];
+      const nowIso = new Date().toISOString();
+      for (const entry of waiting) {
+        mtg.removedUserIds = (mtg.removedUserIds ?? []).filter((uid) => uid !== entry.userId);
+        if (!mtg.participants.some((p) => p.userId === entry.userId)) {
+          mtg.participants.push({
+            userId: entry.userId,
+            companyId: entry.companyId ?? null,
+            fullName: entry.fullName,
+            role: entry.role,
+            isGuest: entry.isGuest,
+            micOn: !mtg.muteUponEntry && mtg.allowUnmuteSelf !== false,
+            camOn: mtg.allowStartVideo !== false,
+            screenSharing: false,
+            handRaised: false,
+            joinedAt: nowIso,
+          });
+          this.recordAttendanceJoin(mtg, entry, nowIso);
+        }
+      }
+      mtg.waitingRoom = [];
+      mtg.attendeeCount = Math.max(mtg.attendeeCount, mtg.participants.length);
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'waiting-room-admitted',
+          payload: { all: true },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'waiting-room-message') {
+      const msg = String(body.payload?.message ?? '').trim().slice(0, 300);
+      mtg.waitingRoomMessage = msg || null;
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'waiting-room-message',
+          payload: { message: mtg.waitingRoomMessage, by: actor.fullName },
+        },
+        actor.organizationId,
+      );
       return mtg;
     }
 
     if (body.action === 'remove' && body.targetUserId) {
       const removedFromCall = mtg.participants.find((p) => p.userId === body.targetUserId);
       mtg.participants = mtg.participants.filter((p) => p.userId !== body.targetUserId);
+      this.recordAttendanceLeave(mtg, body.targetUserId);
       mtg.removedUserIds = Array.from(new Set([...(mtg.removedUserIds ?? []), body.targetUserId]));
       if (removedFromCall) {
-        // Removed from active call -> move into Waiting Room so Host can re-admit them later
         mtg.waitingRoom = mtg.waitingRoom ?? [];
         if (!mtg.waitingRoom.some((w) => w.userId === removedFromCall.userId)) {
           mtg.waitingRoom.push({
@@ -3115,13 +3648,14 @@ export class WorkspaceService implements OnModuleInit {
             fullName: removedFromCall.fullName,
             companyId: removedFromCall.companyId ?? null,
             role: removedFromCall.role,
+            isGuest: removedFromCall.isGuest,
             requestedAt: new Date().toISOString(),
           });
         }
       } else {
-        // Denied while in Waiting Room -> remove from waitingRoom
         mtg.waitingRoom = (mtg.waitingRoom ?? []).filter((w) => w.userId !== body.targetUserId);
       }
+      if (mtg.spotlightUserId === body.targetUserId) mtg.spotlightUserId = null;
       mtg.attendeeCount = mtg.participants.length;
       await this.persistStateNow(actor.organizationId);
       await this.appendMeetingSignal(
@@ -3163,6 +3697,17 @@ export class WorkspaceService implements OnModuleInit {
         new Set([...(mtg.screenShareApprovedIds ?? []), body.targetUserId]),
       );
       await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: body.targetUserId,
+          type: 'screenshare-approved',
+          payload: { targetUserId: body.targetUserId, by: actor.fullName },
+        },
+        actor.organizationId,
+      );
       return mtg;
     }
 
@@ -3206,7 +3751,629 @@ export class WorkspaceService implements OnModuleInit {
       return mtg;
     }
 
+    if (body.action === 'ask-unmute' && body.targetUserId) {
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: body.targetUserId,
+          type: 'host-ask-unmute',
+          payload: { by: actor.fullName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'stop-video' && body.targetUserId) {
+      const target = mtg.participants.find((p) => p.userId === body.targetUserId);
+      if (target) target.camOn = false;
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: body.targetUserId,
+          type: 'host-stop-video',
+          payload: { by: actor.fullName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'spotlight') {
+      mtg.spotlightUserId = body.targetUserId ? String(body.targetUserId) : null;
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'spotlight-updated',
+          payload: { spotlightUserId: mtg.spotlightUserId, by: actor.fullName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'lower-all-hands') {
+      for (const participant of mtg.participants) {
+        participant.handRaised = false;
+      }
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'hands-lowered',
+          payload: { by: actor.fullName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'rename' && body.targetUserId) {
+      const newName = String(body.payload?.newName ?? '').trim().slice(0, 60);
+      if (newName.length < 2) throw new BadRequestException('Name must be at least 2 characters.');
+      const target = mtg.participants.find((p) => p.userId === body.targetUserId);
+      if (target) target.fullName = newName;
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'participant-renamed',
+          payload: { userId: body.targetUserId, newName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'transfer-host' && body.targetUserId) {
+      const target = mtg.participants.find((p) => p.userId === body.targetUserId);
+      if (!target || target.isGuest) {
+        throw new BadRequestException('Host role can only be transferred to an active internal participant.');
+      }
+      mtg.organizerId = target.userId;
+      mtg.organizerName = target.fullName;
+      mtg.coHostIds = Array.from(new Set([...(mtg.coHostIds ?? []), actor.id]));
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'host-transferred',
+          payload: { newHostId: target.userId, newHostName: target.fullName, by: actor.fullName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'update-security') {
+      const p = body.payload ?? {};
+      if (p.isLocked !== undefined) mtg.isLocked = Boolean(p.isLocked);
+      if (p.waitingRoomEnabled !== undefined) mtg.waitingRoomEnabled = Boolean(p.waitingRoomEnabled);
+      if (p.muteUponEntry !== undefined) mtg.muteUponEntry = Boolean(p.muteUponEntry);
+      if (p.allowUnmuteSelf !== undefined) mtg.allowUnmuteSelf = Boolean(p.allowUnmuteSelf);
+      if (p.allowStartVideo !== undefined) mtg.allowStartVideo = Boolean(p.allowStartVideo);
+      if (p.allowRenameSelf !== undefined) mtg.allowRenameSelf = Boolean(p.allowRenameSelf);
+      if (p.suspendedActivities !== undefined) mtg.suspendedActivities = Boolean(p.suspendedActivities);
+      if (p.chatPermission !== undefined) {
+        const cp = String(p.chatPermission).toUpperCase();
+        if (['EVERYONE_DM', 'EVERYONE_PUBLIC', 'HOST_ONLY', 'DISABLED'].includes(cp)) {
+          mtg.chatPermission = cp as MeetingItem['chatPermission'];
+        }
+      }
+      if (p.screenShareMode !== undefined) {
+        const sm = String(p.screenShareMode).toUpperCase();
+        if (['ALL', 'HOST_ONLY', 'APPROVAL_REQUIRED'].includes(sm)) {
+          mtg.screenShareMode = sm as MeetingItem['screenShareMode'];
+        }
+      }
+      if (p.passcode !== undefined) {
+        const pc = String(p.passcode ?? '').trim();
+        mtg.passcode = pc.length > 0 ? pc.slice(0, 16) : null;
+      }
+      if (p.allowExternalGuests !== undefined && policy.canInviteExternal) {
+        mtg.allowExternalGuests = Boolean(p.allowExternalGuests);
+      }
+      if (p.recordingAllowed !== undefined && policy.recordingScope !== 'NONE') {
+        mtg.recordingAllowed = Boolean(p.recordingAllowed);
+      }
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'security-updated',
+          payload: {
+            isLocked: mtg.isLocked,
+            waitingRoomEnabled: mtg.waitingRoomEnabled,
+            muteUponEntry: mtg.muteUponEntry,
+            allowUnmuteSelf: mtg.allowUnmuteSelf,
+            allowStartVideo: mtg.allowStartVideo,
+            allowRenameSelf: mtg.allowRenameSelf,
+            chatPermission: mtg.chatPermission,
+            screenShareMode: mtg.screenShareMode,
+            suspendedActivities: mtg.suspendedActivities,
+            by: actor.fullName,
+          },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'panic-suspend') {
+      mtg.isLocked = true;
+      mtg.suspendedActivities = true;
+      mtg.allowUnmuteSelf = false;
+      mtg.allowStartVideo = false;
+      mtg.allowRenameSelf = false;
+      mtg.chatPermission = 'DISABLED';
+      mtg.screenShareMode = 'HOST_ONLY';
+      for (const participant of mtg.participants) {
+        if (participant.userId !== actor.id) {
+          participant.micOn = false;
+          participant.camOn = false;
+          participant.screenSharing = false;
+          participant.screenStreamId = null;
+        }
+      }
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'panic-suspended',
+          payload: { by: actor.fullName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
     throw new BadRequestException('Unsupported host action.');
+  }
+
+  async renameSelfInMeeting(actor: AuthUser, id: string, newNameRaw: string) {
+    await this.syncMeetingsFromDb(actor.organizationId, true);
+    const mtg = this.meetings.find((m) => m.id === id);
+    if (!mtg) throw new NotFoundException('Meeting not found.');
+    const isHost = this.canControlMeeting(mtg, actor);
+    if (!isHost && (mtg.allowRenameSelf === false || mtg.suspendedActivities)) {
+      throw new ForbiddenException('Host has disabled renaming yourself.');
+    }
+    const newName = String(newNameRaw ?? '').trim().slice(0, 60);
+    if (newName.length < 2) throw new BadRequestException('Name must be at least 2 characters.');
+    const target = mtg.participants.find((p) => p.userId === actor.id);
+    if (target) target.fullName = newName;
+    await this.persistStateNow(actor.organizationId);
+    await this.appendMeetingSignal(
+      id,
+      {
+        fromUserId: actor.id,
+        fromUserName: newName,
+        toUserId: '*',
+        type: 'participant-renamed',
+        payload: { userId: actor.id, newName },
+      },
+      actor.organizationId,
+    );
+    return mtg;
+  }
+
+  async manageMeetingPoll(
+    actor: AuthUser,
+    id: string,
+    body: {
+      action: 'create' | 'vote' | 'close';
+      question?: string;
+      options?: string[];
+      multipleChoice?: boolean;
+      pollId?: string;
+      optionIds?: string[];
+    },
+  ) {
+    await this.syncMeetingsFromDb(actor.organizationId, true);
+    const mtg = this.meetings.find((m) => m.id === id);
+    if (!mtg) throw new NotFoundException('Meeting not found.');
+    mtg.polls = mtg.polls ?? [];
+
+    if (body.action === 'create') {
+      if (!this.canControlMeeting(mtg, actor)) {
+        throw new ForbiddenException('Only hosts or co-hosts can launch polls.');
+      }
+      const question = String(body.question ?? '').trim();
+      const opts = (Array.isArray(body.options) ? body.options : [])
+        .map((o) => String(o ?? '').trim())
+        .filter(Boolean);
+      if (question.length < 2 || opts.length < 2) {
+        throw new BadRequestException('Poll question and at least 2 options are required.');
+      }
+      const poll: MeetingPollItem = {
+        id: `poll_${randomUUID().slice(0, 8)}`,
+        question,
+        multipleChoice: Boolean(body.multipleChoice),
+        options: opts.map((label, idx) => ({ id: `opt_${idx + 1}`, label, votes: [] })),
+        status: 'OPEN',
+        createdById: actor.id,
+        createdByName: actor.fullName,
+        createdAt: new Date().toISOString(),
+      };
+      mtg.polls.unshift(poll);
+    } else if (body.action === 'vote') {
+      const poll = mtg.polls.find((p) => p.id === body.pollId);
+      if (!poll) throw new NotFoundException('Poll not found.');
+      if (poll.status !== 'OPEN') throw new BadRequestException('Poll is closed.');
+      const chosen = Array.isArray(body.optionIds) ? body.optionIds.map(String) : [];
+      if (chosen.length === 0) throw new BadRequestException('Select at least one option.');
+      const targetIds = poll.multipleChoice ? chosen : [chosen[0]];
+      for (const opt of poll.options) {
+        opt.votes = opt.votes.filter((uid) => uid !== actor.id);
+        if (targetIds.includes(opt.id)) opt.votes.push(actor.id);
+      }
+    } else if (body.action === 'close') {
+      if (!this.canControlMeeting(mtg, actor)) {
+        throw new ForbiddenException('Only hosts or co-hosts can close polls.');
+      }
+      const poll = mtg.polls.find((p) => p.id === body.pollId);
+      if (!poll) throw new NotFoundException('Poll not found.');
+      poll.status = 'CLOSED';
+    } else {
+      throw new BadRequestException('Unsupported poll action.');
+    }
+
+    await this.persistStateNow(actor.organizationId);
+    await this.appendMeetingSignal(
+      id,
+      {
+        fromUserId: actor.id,
+        fromUserName: actor.fullName,
+        toUserId: '*',
+        type: 'polls-updated',
+        payload: { polls: mtg.polls },
+      },
+      actor.organizationId,
+    );
+    return mtg;
+  }
+
+  async manageMeetingQa(
+    actor: AuthUser,
+    id: string,
+    body: {
+      action: 'ask' | 'upvote' | 'answer';
+      question?: string;
+      qaId?: string;
+      answerText?: string;
+    },
+  ) {
+    await this.syncMeetingsFromDb(actor.organizationId, true);
+    const mtg = this.meetings.find((m) => m.id === id);
+    if (!mtg) throw new NotFoundException('Meeting not found.');
+    mtg.qaItems = mtg.qaItems ?? [];
+
+    if (body.action === 'ask') {
+      if (mtg.suspendedActivities) throw new ForbiddenException('Activities are suspended by the host.');
+      const q = String(body.question ?? '').trim();
+      if (q.length < 2) throw new BadRequestException('Question cannot be empty.');
+      mtg.qaItems.unshift({
+        id: `qa_${randomUUID().slice(0, 8)}`,
+        authorId: actor.id,
+        authorName: actor.fullName,
+        question: q,
+        upvoterIds: [actor.id],
+        answered: false,
+        answerText: null,
+        answeredByName: null,
+        createdAt: new Date().toISOString(),
+      });
+    } else if (body.action === 'upvote') {
+      const item = mtg.qaItems.find((q) => q.id === body.qaId);
+      if (!item) throw new NotFoundException('Question not found.');
+      if (item.upvoterIds.includes(actor.id)) {
+        item.upvoterIds = item.upvoterIds.filter((uid) => uid !== actor.id);
+      } else {
+        item.upvoterIds.push(actor.id);
+      }
+    } else if (body.action === 'answer') {
+      if (!this.canControlMeeting(mtg, actor)) {
+        throw new ForbiddenException('Only hosts or co-hosts can answer Q&A items.');
+      }
+      const item = mtg.qaItems.find((q) => q.id === body.qaId);
+      if (!item) throw new NotFoundException('Question not found.');
+      item.answered = true;
+      item.answerText = String(body.answerText ?? '').trim() || 'Answered live';
+      item.answeredByName = actor.fullName;
+    } else {
+      throw new BadRequestException('Unsupported Q&A action.');
+    }
+
+    await this.persistStateNow(actor.organizationId);
+    await this.appendMeetingSignal(
+      id,
+      {
+        fromUserId: actor.id,
+        fromUserName: actor.fullName,
+        toUserId: '*',
+        type: 'qa-updated',
+        payload: { qaItems: mtg.qaItems },
+      },
+      actor.organizationId,
+    );
+    return mtg;
+  }
+
+  async manageBreakoutRooms(
+    actor: AuthUser,
+    id: string,
+    body: {
+      action: 'configure' | 'open' | 'broadcast' | 'close-all' | 'join-room' | 'leave-room';
+      rooms?: Array<{ id?: string; name: string; participantIds?: string[] }>;
+      durationMinutes?: number;
+      message?: string;
+      roomId?: string;
+    },
+  ) {
+    await this.syncMeetingsFromDb(actor.organizationId, true);
+    const mtg = this.meetings.find((m) => m.id === id);
+    if (!mtg) throw new NotFoundException('Meeting not found.');
+    mtg.breakoutRooms = mtg.breakoutRooms ?? [];
+
+    if (body.action === 'join-room' && body.roomId) {
+      const p = mtg.participants.find((x) => x.userId === actor.id);
+      if (p) p.breakoutRoomId = body.roomId;
+      await this.persistStateNow(actor.organizationId);
+      return mtg;
+    }
+    if (body.action === 'leave-room') {
+      const p = mtg.participants.find((x) => x.userId === actor.id);
+      if (p) p.breakoutRoomId = null;
+      await this.persistStateNow(actor.organizationId);
+      return mtg;
+    }
+
+    if (!this.canControlMeeting(mtg, actor)) {
+      throw new ForbiddenException('Only hosts or co-hosts can manage breakout rooms.');
+    }
+
+    if (body.action === 'configure' || body.action === 'open') {
+      const list = Array.isArray(body.rooms) ? body.rooms : [];
+      const endsAt =
+        body.durationMinutes && Number(body.durationMinutes) > 0
+          ? new Date(Date.now() + Number(body.durationMinutes) * 60_000).toISOString()
+          : null;
+      if (list.length > 0) {
+        mtg.breakoutRooms = list.map((r, idx) => ({
+          id: r.id || `br_${idx + 1}_${randomUUID().slice(0, 4)}`,
+          name: String(r.name || `Breakout Room ${idx + 1}`).trim(),
+          roomCode: `${mtg.roomCode}-BR${idx + 1}`,
+          participantIds: Array.isArray(r.participantIds) ? r.participantIds.map(String) : [],
+          active: body.action === 'open',
+          endsAt: body.action === 'open' ? endsAt : null,
+        }));
+      } else if (body.action === 'open') {
+        for (const br of mtg.breakoutRooms) {
+          br.active = true;
+          br.endsAt = endsAt;
+        }
+      }
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'breakout-updated',
+          payload: { breakoutRooms: mtg.breakoutRooms, opened: body.action === 'open' },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'broadcast') {
+      const message = String(body.message ?? '').trim().slice(0, 300);
+      if (!message) throw new BadRequestException('Broadcast message cannot be empty.');
+      mtg.breakoutBroadcast = { message, sentAt: new Date().toISOString() };
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'breakout-broadcast',
+          payload: { message, by: actor.fullName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    if (body.action === 'close-all') {
+      for (const br of mtg.breakoutRooms) {
+        br.active = false;
+        br.endsAt = null;
+      }
+      for (const p of mtg.participants) {
+        p.breakoutRoomId = null;
+      }
+      await this.persistStateNow(actor.organizationId);
+      await this.appendMeetingSignal(
+        id,
+        {
+          fromUserId: actor.id,
+          fromUserName: actor.fullName,
+          toUserId: '*',
+          type: 'breakout-closed',
+          payload: { by: actor.fullName },
+        },
+        actor.organizationId,
+      );
+      return mtg;
+    }
+
+    throw new BadRequestException('Unsupported breakout action.');
+  }
+
+  async getMeetingAttendance(actor: AuthUser, id: string) {
+    await this.syncMeetingsFromDb(actor.organizationId, true);
+    const mtg = this.meetings.find((m) => m.id === id);
+    if (!mtg) throw new NotFoundException('Meeting not found.');
+    const nowMs = Date.now();
+    const entries = (mtg.attendanceLog ?? []).map((entry) => ({
+      ...entry,
+      durationSec: entry.leftAt
+        ? entry.durationSec ?? Math.max(0, Math.round((new Date(entry.leftAt).getTime() - new Date(entry.joinedAt).getTime()) / 1000))
+        : Math.max(0, Math.round((nowMs - new Date(entry.joinedAt).getTime()) / 1000)),
+    }));
+    return {
+      meetingId: mtg.id,
+      roomCode: mtg.roomCode,
+      title: mtg.title,
+      organizerName: mtg.organizerName,
+      startsAt: mtg.startsAt,
+      status: mtg.status,
+      notes: mtg.notes,
+      entries,
+    };
+  }
+
+  // ─── External Guest Public Meeting Access (No Company Login Required) ─────
+  async getPublicMeetingInfo(roomCode: string) {
+    const normalized = String(roomCode ?? '').trim().toUpperCase();
+    if (!normalized) throw new BadRequestException('Room code is required.');
+    await this.syncMeetingsFromDb(undefined, true);
+    const mtg = this.meetings.find(
+      (m) => m.roomCode.toUpperCase() === normalized || m.id.toUpperCase() === normalized,
+    );
+    if (!mtg) throw new NotFoundException(`Meeting room "${normalized}" was not found.`);
+    if (!mtg.allowExternalGuests) {
+      throw new ForbiddenException('INTERNAL_ONLY: This Yakunex meeting requires a company account login.');
+    }
+    return {
+      id: mtg.id,
+      roomCode: mtg.roomCode,
+      title: mtg.title,
+      agenda: mtg.agenda,
+      organizerName: mtg.organizerName,
+      status: mtg.status,
+      allowExternalGuests: true,
+      requiresPasscode: Boolean(mtg.passcode),
+      waitingRoomEnabled: Boolean(mtg.waitingRoomEnabled),
+      isLocked: Boolean(mtg.isLocked),
+    };
+  }
+
+  async joinPublicMeetingAsGuest(
+    roomCode: string,
+    body: { fullName: string; passcode?: string; micOn?: boolean; camOn?: boolean },
+  ) {
+    const normalized = String(roomCode ?? '').trim().toUpperCase();
+    const fullName = String(body?.fullName ?? '').trim().slice(0, 60);
+    if (fullName.length < 2) throw new BadRequestException('Please enter your display name.');
+    await this.syncMeetingsFromDb(undefined, true);
+    const mtg = this.meetings.find(
+      (m) => m.roomCode.toUpperCase() === normalized || m.id.toUpperCase() === normalized,
+    );
+    if (!mtg) throw new NotFoundException(`Meeting room "${normalized}" was not found.`);
+    if (!mtg.allowExternalGuests) {
+      throw new ForbiddenException('External guest access is not enabled for this meeting.');
+    }
+    const orgId = (await this.resolveOrgId()) ?? 'org_default';
+    const guestId = `guest_${randomUUID().slice(0, 10)}`;
+    const guestToken = this.signGuestToken({
+      guestId,
+      meetingId: mtg.id,
+      roomCode: mtg.roomCode,
+      fullName: `${fullName} (Guest)`,
+      organizationId: orgId,
+      exp: Date.now() + 6 * 3600_000,
+    });
+    const guestActor = this.createGuestActor(guestToken);
+    const joined = await this.joinMeetingRoom(guestActor, mtg.id, {
+      micOn: body.micOn,
+      camOn: body.camOn,
+      passcode: body.passcode,
+      isGuest: true,
+    });
+    return {
+      guestToken,
+      guestUser: {
+        id: guestId,
+        companyId: 'GUEST',
+        fullName: `${fullName} (Guest)`,
+        role: 'GUEST',
+      },
+      room: joined,
+    };
+  }
+
+  async getGuestMeetingRoom(token: string, id: string) {
+    const g = this.verifyGuestToken(token);
+    if (g.meetingId !== id) throw new ForbiddenException('Token does not match meeting room.');
+    return this.getMeetingRoom(id, g.organizationId);
+  }
+
+  async getGuestSfuToken(token: string, id: string) {
+    const g = this.verifyGuestToken(token);
+    if (g.meetingId !== id) throw new ForbiddenException('Token does not match meeting room.');
+    return this.getMeetingSfuToken(this.createGuestActor(token), id);
+  }
+
+  async guestUpdateParticipant(token: string, id: string, body: Record<string, unknown>) {
+    const g = this.verifyGuestToken(token);
+    if (g.meetingId !== id) throw new ForbiddenException('Token does not match meeting room.');
+    return this.updateParticipantState(this.createGuestActor(token), id, body);
+  }
+
+  async guestPostChat(token: string, id: string, body: Record<string, unknown>) {
+    const g = this.verifyGuestToken(token);
+    if (g.meetingId !== id) throw new ForbiddenException('Token does not match meeting room.');
+    return this.postMeetingChat(this.createGuestActor(token), id, body);
+  }
+
+  async guestSendSignal(
+    token: string,
+    id: string,
+    body: { toUserId?: string; type?: string; payload?: unknown; batch?: Array<{ toUserId?: string; type: string; payload?: unknown }> },
+  ) {
+    const g = this.verifyGuestToken(token);
+    if (g.meetingId !== id) throw new ForbiddenException('Token does not match meeting room.');
+    return this.sendMeetingSignal(this.createGuestActor(token), id, body);
+  }
+
+  async guestPollSignals(token: string, id: string, after: number) {
+    const g = this.verifyGuestToken(token);
+    if (g.meetingId !== id) throw new ForbiddenException('Token does not match meeting room.');
+    return this.pollMeetingSignals(this.createGuestActor(token), id, after);
+  }
+
+  async guestLeaveMeeting(token: string, id: string) {
+    const g = this.verifyGuestToken(token);
+    if (g.meetingId !== id) throw new ForbiddenException('Token does not match meeting room.');
+    return this.leaveMeetingRoom(this.createGuestActor(token), id);
   }
 
   async sendMeetingSignal(
@@ -3324,6 +4491,29 @@ export class WorkspaceService implements OnModuleInit {
     await this.syncMeetingsFromDb(actor.organizationId, true);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
+
+    const isHost = this.canControlMeeting(mtg, actor);
+    const chatPerm = mtg.chatPermission ?? 'EVERYONE_DM';
+    const recipientId = body.recipientId ? String(body.recipientId) : null;
+    const recipientName = body.recipientName ? String(body.recipientName) : null;
+
+    if (!isHost) {
+      if (mtg.suspendedActivities || chatPerm === 'DISABLED') {
+        throw new ForbiddenException('Chat is currently disabled by the host.');
+      }
+      if (chatPerm === 'HOST_ONLY') {
+        const isToHost =
+          recipientId &&
+          (recipientId === mtg.organizerId || (mtg.coHostIds ?? []).includes(recipientId));
+        if (!isToHost) {
+          throw new ForbiddenException('Host has restricted chat to Host-only messages.');
+        }
+      }
+      if (chatPerm === 'EVERYONE_PUBLIC' && recipientId) {
+        throw new ForbiddenException('Private direct messages are disabled by the host.');
+      }
+    }
+
     const text = String(body.body ?? '').trim();
     const attachmentUrl =
       typeof body.attachmentUrl === 'string' && body.attachmentUrl.startsWith('data:')
@@ -3341,8 +4531,6 @@ export class WorkspaceService implements OnModuleInit {
     const replyPreview = replyTarget
       ? `${replyTarget.senderName}: ${replyTarget.body.slice(0, 60)}${replyTarget.body.length > 60 ? '…' : ''}`
       : null;
-    const recipientId = body.recipientId ? String(body.recipientId) : null;
-    const recipientName = body.recipientName ? String(body.recipientName) : null;
 
     mtg.chatMessages.push({
       id: `mc_${randomUUID().slice(0, 8)}`,
@@ -3685,10 +4873,15 @@ export class WorkspaceService implements OnModuleInit {
    * LIVEKIT_API_SECRET are configured, enabling 100+ simultaneous cameras & mics with zero lag.
    * Falls back cleanly to `{ enabled: false, provider: 'mesh' }` when no SFU is configured.
    */
-  async getMeetingSfuToken(actor: AuthUser, id: string) {
+  async getMeetingSfuToken(actor: AuthUser, id: string, breakoutRoomCode?: string) {
     await this.syncMeetingsFromDb(actor.organizationId);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting room not found.');
+
+    const targetRoomName =
+      breakoutRoomCode && mtg.breakoutRooms?.some((b) => b.roomCode === breakoutRoomCode && b.active)
+        ? breakoutRoomCode
+        : mtg.roomCode;
 
     const url = process.env.LIVEKIT_URL?.trim();
     const apiKey = process.env.LIVEKIT_API_KEY?.trim();
@@ -3699,7 +4892,7 @@ export class WorkspaceService implements OnModuleInit {
         provider: 'mesh' as const,
         url: null,
         token: null,
-        roomName: mtg.roomCode,
+        roomName: targetRoomName,
       };
     }
 
@@ -3713,7 +4906,7 @@ export class WorkspaceService implements OnModuleInit {
     });
     at.addGrant({
       roomJoin: true,
-      room: mtg.roomCode,
+      room: targetRoomName,
       canPublish: true,
       canSubscribe: true,
       canPublishData: true,
@@ -3724,7 +4917,7 @@ export class WorkspaceService implements OnModuleInit {
       provider: 'livekit' as const,
       url,
       token,
-      roomName: mtg.roomCode,
+      roomName: targetRoomName,
     };
   }
 
@@ -4048,14 +5241,41 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   // ─── Notifications & Announcements ────────────────────────────────────────
-  async listNotifications(actor: AuthUser) {
-    await this.syncSnapshotFromSupabase(actor.organizationId);
+  isNotificationVisibleToActor(
+    n: WorkspaceService['notifications'][number],
+    actor: AuthUser,
+  ): boolean {
+    if (n.targetUserId !== '*' && n.targetUserId !== actor.id) return false;
+    if (actor.role === Role.SUPER_ADMIN) return true;
+    const hasSpecificUsers = Array.isArray(n.targetUserIds) && n.targetUserIds.length > 0;
+    const hasCustomRoles =
+      Array.isArray(n.allowedRoles) &&
+      n.allowedRoles.length > 0 &&
+      !n.allowedRoles.includes('ALL');
+    if (hasSpecificUsers && n.targetUserIds!.includes(actor.id)) return true;
+    if (hasCustomRoles) return n.allowedRoles!.includes(actor.role);
+    if (hasSpecificUsers) return false;
+    return true;
+  }
+
+  async listNotifications(actor: AuthUser, forceFresh = true) {
+    await this.syncSnapshotFromSupabase(actor.organizationId, forceFresh);
     return this.notifications
-      .filter((n) => n.targetUserId === '*' || n.targetUserId === actor.id)
+      .filter((n) => this.isNotificationVisibleToActor(n, actor))
       .map((n) => ({
         ...n,
         read: n.readByIds.includes(actor.id),
       }));
+  }
+
+  onNotificationEvent(
+    listener: (evt: { organizationId?: string; notification: WorkspaceService['notifications'][number] }) => void,
+  ): () => void {
+    this.notificationBus.setMaxListeners(200);
+    this.notificationBus.on('notification', listener);
+    return () => {
+      this.notificationBus.off('notification', listener);
+    };
   }
 
   async createAnnouncement(actor: AuthUser, body: Record<string, unknown>) {
@@ -4076,6 +5296,10 @@ export class WorkspaceService implements OnModuleInit {
       createdAt: new Date().toISOString(),
     };
     this.notifications.unshift(item);
+    this.notificationBus.emit('notification', {
+      organizationId: actor.organizationId,
+      notification: item,
+    });
     await this.persistStateNow(actor.organizationId);
     return item;
   }

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
+  Calendar,
   BarChart3,
   Check,
   CheckCheck,
@@ -10,7 +11,9 @@ import {
   Copy,
   Download,
   Edit2,
+  FileDown,
   FolderKanban,
+  Globe,
   Hash,
   KeyRound,
   Lock,
@@ -19,9 +22,11 @@ import {
   Paperclip,
   Pin,
   Plus,
+  Repeat,
   Reply,
   Search,
   Send,
+  Shield,
   Trash2,
   Users,
   Video,
@@ -32,6 +37,12 @@ import {
   PreJoinGreenRoom,
   type MeetingRow,
 } from '@/components/modules/meeting-studio';
+import {
+  downloadMeetingIcs,
+  exportMeetingAttendancePdf,
+  openGoogleCalendarInvite,
+} from '@/components/modules/meeting/calendar-export';
+import type { MeetingAccessPolicy } from '@/components/modules/meeting/meeting-types';
 import { useAuth, useLang } from '@/components/providers';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -937,37 +948,41 @@ export function ChatView() {
 
 // ─── 2. MEETINGS PAGE (/meetings) — ZOOM-GRADE WEBRTC STUDIO ───────────────
 
-interface MeetingAccessPolicy {
-  tier: string;
-  rolesLabel: string;
-  canCreate: boolean;
-  createLabel: string;
-  allowedScopes: string[];
-  waitingRoomControl: string;
-  waitingRoomLabel: string;
-  canInviteExternal: boolean;
-  recordingScope: string;
-  externalAndRecordingLabel: string;
-  screenShareRequiresApproval: boolean;
-}
+const ROLE_AUDIENCE_OPTIONS = [
+  { key: 'ALL', label: 'Everyone (All Roles)' },
+  { key: 'SUPER_ADMIN', label: 'Super Admin / MD / CEO' },
+  { key: 'ADMIN', label: 'Admin / C-Level / Legal' },
+  { key: 'PROJECT_MANAGER', label: 'Management / HR / PM' },
+  { key: 'STAFF', label: 'Core Staff / Engineers' },
+  { key: 'INTERN', label: 'Interns / Trainees' },
+] as const;
 
 export function MeetingsView() {
   const { user } = useAuth();
   const [meetings, setMeetings] = useState<MeetingRow[]>([]);
   const [policy, setPolicy] = useState<MeetingAccessPolicy | null>(null);
   const [loading, setLoading] = useState(true);
-  const [modalOpen, setModalOpen] = useState(false);
+  const [modalMode, setModalMode] = useState<'closed' | 'instant' | 'schedule'>('closed');
 
-  // Schedule form state
+  // Unified Instant + Schedule form state
   const [title, setTitle] = useState('');
   const [agenda, setAgenda] = useState('');
   const [startsAt, setStartsAt] = useState(() => new Date(Date.now() + 3600000).toISOString().slice(0, 16));
+  const [durationMinutes, setDurationMinutes] = useState(60);
+  const [recurrence, setRecurrence] = useState<'NONE' | 'DAILY' | 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY'>('NONE');
   const [notes, setNotes] = useState('');
   const [meetingScope, setMeetingScope] = useState('INTERNAL');
   const [allowedRoles, setAllowedRoles] = useState<string[]>(['ALL']);
   const [waitingRoomEnabled, setWaitingRoomEnabled] = useState(false);
+  const [passcode, setPasscode] = useState('');
   const [allowExternalGuests, setAllowExternalGuests] = useState(false);
   const [recordingAllowed, setRecordingAllowed] = useState(false);
+  const [muteUponEntry, setMuteUponEntry] = useState(false);
+  const [allowUnmuteSelf, setAllowUnmuteSelf] = useState(true);
+  const [allowStartVideo, setAllowStartVideo] = useState(true);
+  const [screenShareMode, setScreenShareMode] = useState<'ALL' | 'APPROVAL_REQUIRED' | 'HOST_ONLY'>('ALL');
+  const [chatPermission, setChatPermission] = useState<'EVERYONE_DM' | 'EVERYONE_PUBLIC' | 'HOST_ONLY' | 'DISABLED'>('EVERYONE_DM');
+  const [creatingRoom, setCreatingRoom] = useState(false);
 
   // Join by room code & pre-join green room state
   const [roomCodeInput, setRoomCodeInput] = useState('');
@@ -976,7 +991,7 @@ export function MeetingsView() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [preJoin, setPreJoin] = useState<
     | { mode: 'existing'; meeting: MeetingRow }
-    | { mode: 'instant'; title: string; agenda: string }
+    | { mode: 'instant'; title: string; agenda: string; config?: Record<string, unknown> }
     | null
   >(null);
   const [activeSession, setActiveSession] = useState<{
@@ -988,18 +1003,43 @@ export function MeetingsView() {
   } | null>(null);
   const handledUrlParamRef = useRef(false);
 
+  const openCreateModal = (mode: 'instant' | 'schedule') => {
+    setJoinError(null);
+    setModalMode(mode);
+    if (mode === 'instant') {
+      setTitle(`${user?.fullName ?? 'Team'}'s Instant Meeting`);
+      setAgenda('Live video sync & screen share huddle');
+      setRecurrence('NONE');
+    } else {
+      setTitle('');
+      setAgenda('');
+      setStartsAt(new Date(Date.now() + 3600000).toISOString().slice(0, 16));
+    }
+    setPasscode('');
+    setAllowedRoles(['ALL']);
+    setWaitingRoomEnabled(false);
+    setMuteUponEntry(false);
+    setAllowUnmuteSelf(true);
+    setAllowStartVideo(true);
+    setScreenShareMode('ALL');
+    setChatPermission('EVERYONE_DM');
+    setAllowExternalGuests(false);
+    setRecordingAllowed(Boolean(policy && policy.recordingScope !== 'NONE'));
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const [list, pol] = await Promise.all([
-        api<MeetingRow[]>('/meetings'),
+        liveGet<MeetingRow[]>('/meetings'),
         api<MeetingAccessPolicy>('/meetings/access-policy').catch(() => null),
       ]);
       setMeetings(list);
       if (pol) {
         setPolicy(pol);
         if (pol.allowedScopes.length > 0) {
-          setMeetingScope((prev) => (pol.allowedScopes.includes(prev) ? prev : pol.allowedScopes[0]));
+          const preferred = pol.allowedScopes.includes('INTERNAL') ? 'INTERNAL' : pol.allowedScopes[0];
+          setMeetingScope((prev) => (pol.allowedScopes.includes(prev) ? prev : preferred));
         }
       }
     } finally {
@@ -1017,7 +1057,7 @@ export function MeetingsView() {
     let cancelled = false;
     const loop = async () => {
       while (!cancelled) {
-        await new Promise((r) => setTimeout(r, 6000));
+        await new Promise((r) => setTimeout(r, 4000));
         if (cancelled) break;
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') continue;
         if (typeof navigator !== 'undefined' && navigator.onLine === false) continue;
@@ -1060,6 +1100,19 @@ export function MeetingsView() {
     return false;
   };
 
+  const broadcastLocalAlert = () => {
+    try {
+      const bc = new BroadcastChannel('yakunex_live_alerts');
+      bc.postMessage({ type: 'meeting-started' });
+      bc.close();
+    } catch {
+      // ignore
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('yakunex:meeting-started'));
+    }
+  };
+
   const confirmPreJoin = async ({
     micOn,
     camOn,
@@ -1083,7 +1136,9 @@ export function MeetingsView() {
           instant: true,
           micOn,
           camOn,
+          ...(preJoin.config ?? {}),
         });
+        broadcastLocalAlert();
       } else {
         joined = await post<MeetingRow>(`/meetings/${preJoin.meeting.id}/join`, {
           micOn,
@@ -1111,65 +1166,79 @@ export function MeetingsView() {
     }
   };
 
+  // Clean single-step Join by Code (removed redundant double API call)
   const onJoinByCode = async (e: FormEvent) => {
     e.preventDefault();
     const code = roomCodeInput.trim().toUpperCase();
     if (!code) return;
     setJoinError(null);
-    const localMatch = meetings.find(
-      (m) => m.roomCode.toUpperCase() === code || m.id.toUpperCase() === code,
-    );
-    if (localMatch) {
-      setRoomCodeInput('');
-      if (!openMeetingPopup({ room: localMatch.roomCode })) {
-        setPreJoin({ mode: 'existing', meeting: localMatch });
+    setRoomCodeInput('');
+    if (!openMeetingPopup({ room: code })) {
+      setJoining(true);
+      try {
+        const match = await liveGet<MeetingRow>(`/meetings/by-code/${encodeURIComponent(code)}`);
+        setPreJoin({ mode: 'existing', meeting: match });
+      } catch (err) {
+        setJoinError(err instanceof Error ? err.message : 'Invalid meeting room code.');
+      } finally {
+        setJoining(false);
       }
-      return;
-    }
-    setJoining(true);
-    try {
-      const joined = await post<MeetingRow>('/meetings/join-by-code', {
-        roomCode: code,
-        micOn: true,
-        camOn: true,
-      });
-      setRoomCodeInput('');
-      void load();
-      if (
-        !openMeetingPopup({
-          room: joined.roomCode,
-          mic: 'true',
-          cam: 'true',
-          autojoin: '1',
-        })
-      ) {
-        setActiveSession({ room: joined, micOn: true, camOn: true });
-      }
-    } catch (err) {
-      setJoinError(err instanceof Error ? err.message : 'Invalid meeting room code.');
-    } finally {
-      setJoining(false);
     }
   };
 
-  const onSchedule = async (e: FormEvent) => {
+  const onSubmitMeetingForm = async (e: FormEvent) => {
     e.preventDefault();
-    await post<MeetingRow>('/meetings', {
-      title,
-      agenda,
-      startsAt: new Date(startsAt).toISOString(),
-      notes,
-      meetingScope,
-      allowedRoles,
-      waitingRoomEnabled,
-      allowExternalGuests,
-      recordingAllowed,
-    });
-    setModalOpen(false);
-    setTitle('');
-    setAgenda('');
-    setNotes('');
-    await load();
+    if (modalMode === 'closed') return;
+    setCreatingRoom(true);
+    setJoinError(null);
+    try {
+      const isInstant = modalMode === 'instant';
+      const created = await post<MeetingRow>('/meetings', {
+        title: title.trim() || `${user?.fullName ?? 'Team'}'s Meeting`,
+        agenda: agenda.trim() || 'Live team sync & screen share huddle',
+        startsAt: isInstant ? new Date().toISOString() : new Date(startsAt).toISOString(),
+        durationMinutes,
+        recurrence: isInstant ? 'NONE' : recurrence,
+        notes,
+        meetingScope,
+        allowedRoles,
+        waitingRoomEnabled,
+        passcode: passcode.trim() || undefined,
+        allowExternalGuests,
+        recordingAllowed,
+        muteUponEntry,
+        allowUnmuteSelf,
+        allowStartVideo,
+        screenShareMode,
+        chatPermission,
+        instant: isInstant,
+        micOn: true,
+        camOn: true,
+      });
+      broadcastLocalAlert();
+      setModalMode('closed');
+      setTitle('');
+      setAgenda('');
+      setNotes('');
+      setPasscode('');
+      await load();
+      if (isInstant) {
+        if (
+          !openMeetingPopup({
+            room: created.roomCode,
+            mic: 'true',
+            cam: 'true',
+            autojoin: '1',
+          })
+        ) {
+          setActiveSession({ room: created, micOn: true, camOn: true });
+        }
+      }
+    } catch (err) {
+      setJoinError(err instanceof Error ? err.message : 'Unable to create meeting room.');
+    } finally {
+      setCreatingRoom(false);
+    }
   };
 
   const markCompleted = async (id: string) => {
@@ -1179,9 +1248,32 @@ export function MeetingsView() {
 
   const copyInvite = async (mtg: MeetingRow) => {
     const url = `${window.location.origin}/meet?room=${mtg.roomCode}`;
-    await navigator.clipboard.writeText(url).catch(() => undefined);
+    const text = mtg.passcode
+      ? `Yakunex Hub Meeting: ${mtg.title}\nJoin Link: ${url}\nRoom Code: ${mtg.roomCode}\nPasscode: ${mtg.passcode}`
+      : url;
+    await navigator.clipboard.writeText(text).catch(() => undefined);
     setCopiedId(mtg.id);
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const exportAttendance = async (mtg: MeetingRow) => {
+    try {
+      const report = await liveGet<{ entries?: MeetingRow['attendanceLog'] }>(
+        `/meetings/${mtg.id}/attendance`,
+      );
+      exportMeetingAttendancePdf({
+        meeting: mtg,
+        entries: report?.entries,
+        generatedByName: user?.fullName,
+        generatedByEmail: user?.email,
+      });
+    } catch {
+      exportMeetingAttendancePdf({
+        meeting: mtg,
+        generatedByName: user?.fullName,
+        generatedByEmail: user?.email,
+      });
+    }
   };
 
   if (activeSession) {
@@ -1192,6 +1284,7 @@ export function MeetingsView() {
         initialCamOn={activeSession.camOn}
         initialMicId={activeSession.micDeviceId}
         initialCamId={activeSession.camDeviceId}
+        policy={policy}
         currentUser={{
           id: user?.id ?? '',
           companyId: user?.companyId ?? null,
@@ -1250,11 +1343,11 @@ export function MeetingsView() {
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="font-display text-3xl font-semibold">
-            Yakunex Hub Meet — Live Video & Screen Share
+            Yakunex Hub Meet — Enterprise Video Studio
           </h2>
           <p className="mt-1 text-sm text-muted">
-            Zoom-grade peer-to-peer HD video, crystal clear two-way audio, screen sharing,
-            reactions & live room chat inside your browser.
+            Full Zoom-grade HD video, security shield, waiting rooms, whiteboard, polls, breakout rooms,
+            live captions &amp; instant notifications.
           </p>
         </div>
 
@@ -1276,22 +1369,10 @@ export function MeetingsView() {
 
           {user?.role !== 'INTERN' && policy?.canCreate && (
             <>
-              <Button
-                variant="primary"
-                onClick={() => {
-                  const titleText = `${user?.fullName ?? 'Team'}'s Instant Meeting`;
-                  if (!openMeetingPopup({ instant: '1', title: titleText })) {
-                    setPreJoin({
-                      mode: 'instant',
-                      title: titleText,
-                      agenda: 'Live video sync & screen share huddle',
-                    });
-                  }
-                }}
-              >
+              <Button variant="primary" onClick={() => openCreateModal('instant')}>
                 <Video className="h-4 w-4" /> New Meeting
               </Button>
-              <Button variant="secondary" onClick={() => setModalOpen(true)}>
+              <Button variant="secondary" onClick={() => openCreateModal('schedule')}>
                 <Plus className="h-4 w-4" /> Schedule
               </Button>
             </>
@@ -1338,23 +1419,14 @@ export function MeetingsView() {
           <p className="mx-auto mt-1 max-w-md text-sm">
             {user?.role === 'INTERN'
               ? 'Enter a room code above to join an invited meeting.'
-              : 'Start a new instant video meeting with screen sharing or schedule a sprint review room.'}
+              : 'Start a new instant video meeting with full role & security settings, or schedule a recurring sync.'}
           </p>
           {user?.role !== 'INTERN' && policy?.canCreate && (
             <div className="mt-5 flex flex-wrap justify-center gap-3">
-              <Button
-                variant="primary"
-                onClick={() =>
-                  setPreJoin({
-                    mode: 'instant',
-                    title: `${user?.fullName ?? 'Team'}'s Instant Meeting`,
-                    agenda: 'Live video sync & screen share huddle',
-                  })
-                }
-              >
+              <Button variant="primary" onClick={() => openCreateModal('instant')}>
                 <Video className="h-4 w-4" /> Start Instant Meeting
               </Button>
-              <Button variant="secondary" onClick={() => setModalOpen(true)}>
+              <Button variant="secondary" onClick={() => openCreateModal('schedule')}>
                 <Plus className="h-4 w-4" /> Schedule Meeting
               </Button>
             </div>
@@ -1365,11 +1437,20 @@ export function MeetingsView() {
           {meetings.map((mtg) => {
             const inCallCount = mtg.participants?.length ?? 0;
             const isLive = mtg.status === 'LIVE';
+            const canEndThis =
+              user?.role !== 'INTERN' &&
+              (mtg.organizerId === user?.id ||
+                mtg.organizerName === user?.fullName ||
+                (mtg.coHostIds ?? []).includes(user?.id ?? '') ||
+                user?.role === 'SUPER_ADMIN' ||
+                user?.role === 'ADMIN' ||
+                user?.role === 'PROJECT_MANAGER');
+
             return (
               <Card key={mtg.id} className="flex flex-col justify-between p-5">
                 <div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <Badge
                         tone={
                           isLive
@@ -1382,6 +1463,26 @@ export function MeetingsView() {
                         {isLive ? '● LIVE NOW' : mtg.status}
                       </Badge>
                       <Badge tone="neutral">{mtg.roomCode}</Badge>
+                      {mtg.waitingRoomEnabled && (
+                        <Badge tone="neutral" className="gap-1">
+                          <Shield className="h-3 w-3" /> Waiting Room
+                        </Badge>
+                      )}
+                      {mtg.passcode && (
+                        <Badge tone="neutral" className="gap-1">
+                          <Lock className="h-3 w-3" /> Passcode
+                        </Badge>
+                      )}
+                      {mtg.allowExternalGuests && (
+                        <Badge tone="gold" className="gap-1">
+                          <Globe className="h-3 w-3" /> Guest Link
+                        </Badge>
+                      )}
+                      {mtg.recurrence && mtg.recurrence !== 'NONE' && (
+                        <Badge tone="neutral" className="gap-1">
+                          <Repeat className="h-3 w-3" /> {mtg.recurrence}
+                        </Badge>
+                      )}
                     </div>
                     <button
                       type="button"
@@ -1418,6 +1519,11 @@ export function MeetingsView() {
                       <Users className="h-3.5 w-3.5 text-gold-600" />
                       {inCallCount > 0 ? `${inCallCount} in call` : 'Waiting to start'}
                     </span>
+                    {mtg.allowedRoles && !mtg.allowedRoles.includes('ALL') && (
+                      <span className="text-[11px] text-gold-strong dark:text-gold">
+                        Roles: {mtg.allowedRoles.join(', ')}
+                      </span>
+                    )}
                   </div>
 
                   {mtg.notes && (
@@ -1428,19 +1534,47 @@ export function MeetingsView() {
                 </div>
 
                 <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3.5">
-                  <Button
-                    variant={isLive ? 'primary' : 'secondary'}
-                    size="sm"
-                    onClick={() => {
-                      if (!openMeetingPopup({ room: mtg.roomCode })) {
-                        setPreJoin({ mode: 'existing', meeting: mtg });
-                      }
-                    }}
-                  >
-                    <Video className="h-3.5 w-3.5" />{' '}
-                    {mtg.status === 'COMPLETED' ? 'Reopen & Join' : 'Join Meeting'}
-                  </Button>
-                  {user?.role !== 'INTERN' && mtg.status !== 'COMPLETED' && mtg.status !== 'CANCELLED' && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Button
+                      variant={isLive ? 'primary' : 'secondary'}
+                      size="sm"
+                      onClick={() => {
+                        if (!openMeetingPopup({ room: mtg.roomCode })) {
+                          setPreJoin({ mode: 'existing', meeting: mtg });
+                        }
+                      }}
+                    >
+                      <Video className="h-3.5 w-3.5" />{' '}
+                      {mtg.status === 'COMPLETED' ? 'Reopen & Join' : 'Join Meeting'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title="Download .ics Calendar Invite"
+                      onClick={() => downloadMeetingIcs(mtg)}
+                    >
+                      <Calendar className="h-3.5 w-3.5" /> .ics
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title="Add to Google Calendar"
+                      onClick={() => openGoogleCalendarInvite(mtg)}
+                    >
+                      GCal
+                    </Button>
+                    {canEndThis && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Export Attendance & Notes PDF"
+                        onClick={() => void exportAttendance(mtg)}
+                      >
+                        <FileDown className="h-3.5 w-3.5" /> PDF
+                      </Button>
+                    )}
+                  </div>
+                  {canEndThis && mtg.status !== 'COMPLETED' && mtg.status !== 'CANCELLED' && (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1457,11 +1591,43 @@ export function MeetingsView() {
       )}
 
       <Modal
-        open={modalOpen}
-        title="Schedule Yakunex Hub Meet Room"
-        onClose={() => setModalOpen(false)}
+        open={modalMode !== 'closed'}
+        title={
+          modalMode === 'instant'
+            ? 'Start Instant Yakunex Meeting — Configure Access & Security'
+            : 'Schedule Yakunex Meeting Room'
+        }
+        onClose={() => setModalMode('closed')}
       >
-        <form onSubmit={onSchedule} className="space-y-4">
+        <form onSubmit={onSubmitMeetingForm} className="max-h-[75vh] space-y-4 overflow-y-auto pr-1">
+          {/* Quick Mode Switcher */}
+          <div className="grid grid-cols-2 gap-1.5 rounded-xl bg-ink/[0.05] p-1 text-xs dark:bg-white/[0.06]">
+            <button
+              type="button"
+              onClick={() => setModalMode('instant')}
+              className={cn(
+                'rounded-lg py-1.5 font-semibold transition',
+                modalMode === 'instant'
+                  ? 'bg-gold text-slate-950 shadow-sm'
+                  : 'text-muted hover:text-ink',
+              )}
+            >
+              Start Instant Meeting Now
+            </button>
+            <button
+              type="button"
+              onClick={() => setModalMode('schedule')}
+              className={cn(
+                'rounded-lg py-1.5 font-semibold transition',
+                modalMode === 'schedule'
+                  ? 'bg-gold text-slate-950 shadow-sm'
+                  : 'text-muted hover:text-ink',
+              )}
+            >
+              Schedule for Later
+            </button>
+          </div>
+
           <Field label="Meeting title" htmlFor="mt-title">
             <Input
               id="mt-title"
@@ -1471,16 +1637,50 @@ export function MeetingsView() {
               placeholder="e.g. Architecture Review & Sprint Demo"
             />
           </Field>
-          <Field label="Date & time" htmlFor="mt-time">
-            <Input
-              id="mt-time"
-              type="datetime-local"
-              required
-              value={startsAt}
-              onChange={(e) => setStartsAt(e.target.value)}
-            />
-          </Field>
-          <Field label="Agenda" htmlFor="mt-agenda">
+
+          {modalMode === 'schedule' && (
+            <div className="grid gap-3 sm:grid-cols-3">
+              <Field label="Date & time" htmlFor="mt-time">
+                <Input
+                  id="mt-time"
+                  type="datetime-local"
+                  required
+                  value={startsAt}
+                  onChange={(e) => setStartsAt(e.target.value)}
+                />
+              </Field>
+              <Field label="Duration (mins)" htmlFor="mt-dur">
+                <Select
+                  id="mt-dur"
+                  value={String(durationMinutes)}
+                  onChange={(e) => setDurationMinutes(Number(e.target.value))}
+                >
+                  <option value="30">30 mins</option>
+                  <option value="45">45 mins</option>
+                  <option value="60">1 hour</option>
+                  <option value="90">1.5 hours</option>
+                  <option value="120">2 hours</option>
+                </Select>
+              </Field>
+              <Field label="Recurrence" htmlFor="mt-rec">
+                <Select
+                  id="mt-rec"
+                  value={recurrence}
+                  onChange={(e) =>
+                    setRecurrence(e.target.value as 'NONE' | 'DAILY' | 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY')
+                  }
+                >
+                  <option value="NONE">One-time</option>
+                  <option value="DAILY">Daily</option>
+                  <option value="WEEKLY">Weekly</option>
+                  <option value="BIWEEKLY">Bi-Weekly</option>
+                  <option value="MONTHLY">Monthly</option>
+                </Select>
+              </Field>
+            </div>
+          )}
+
+          <Field label="Agenda / Description" htmlFor="mt-agenda">
             <Input
               id="mt-agenda"
               required
@@ -1489,28 +1689,41 @@ export function MeetingsView() {
               placeholder="Topics to cover & screen share walkthrough"
             />
           </Field>
-          <Field label="Initial notes / action items" htmlFor="mt-notes">
-            <Input id="mt-notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
-          </Field>
-          {policy && policy.allowedScopes.length > 0 && (
-            <Field label="Meeting Scope" htmlFor="mt-scope">
-              <Select id="mt-scope" value={meetingScope} onChange={(e) => setMeetingScope(e.target.value)}>
-                {policy.allowedScopes.map((sc) => (
-                  <option key={sc} value={sc}>{sc}</option>
-                ))}
-              </Select>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            {policy && policy.allowedScopes.length > 0 && (
+              <Field label="Meeting Scope" htmlFor="mt-scope">
+                <Select id="mt-scope" value={meetingScope} onChange={(e) => setMeetingScope(e.target.value)}>
+                  {policy.allowedScopes.map((sc) => (
+                    <option key={sc} value={sc}>{sc}</option>
+                  ))}
+                </Select>
+              </Field>
+            )}
+            <Field label="Passcode (Optional)" htmlFor="mt-passcode">
+              <div className="flex gap-1.5">
+                <Input
+                  id="mt-passcode"
+                  value={passcode}
+                  onChange={(e) => setPasscode(e.target.value)}
+                  placeholder="Leave blank or 6 digits"
+                  maxLength={16}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => setPasscode(String(Math.floor(100000 + Math.random() * 900000)))}
+                >
+                  Auto
+                </Button>
+              </div>
             </Field>
-          )}
-          <Field label="Who can see & join this meeting (Target Audience)" htmlFor="mt-audience">
+          </div>
+
+          <Field label="Allowed Roles (Who can join & receive instant alert)" htmlFor="mt-audience">
             <div id="mt-audience" className="flex flex-wrap gap-1.5 pt-1">
-              {[
-                { key: 'ALL', label: 'Everyone (All Roles)' },
-                { key: 'SUPER_ADMIN', label: 'Super Admin / MD / CEO' },
-                { key: 'ADMIN', label: 'Admin / C-Level / Legal' },
-                { key: 'PROJECT_MANAGER', label: 'Management / HR / PM' },
-                { key: 'STAFF', label: 'Core Staff / Engineers' },
-                { key: 'INTERN', label: 'Interns / Trainees' },
-              ].map((opt) => {
+              {ROLE_AUDIENCE_OPTIONS.map((opt) => {
                 const selected = allowedRoles.includes(opt.key);
                 return (
                   <button
@@ -1542,14 +1755,71 @@ export function MeetingsView() {
               })}
             </div>
           </Field>
-          <div className="space-y-2 rounded-xl bg-ink/[0.04] p-3 text-xs dark:bg-white/[0.06]">
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Screen Sharing Rule" htmlFor="mt-share-rule">
+              <Select
+                id="mt-share-rule"
+                value={screenShareMode}
+                onChange={(e) =>
+                  setScreenShareMode(e.target.value as 'ALL' | 'APPROVAL_REQUIRED' | 'HOST_ONLY')
+                }
+              >
+                <option value="ALL">Everyone (Interns request approval)</option>
+                <option value="APPROVAL_REQUIRED">Host Approval Required for All</option>
+                <option value="HOST_ONLY">Host &amp; Co-Host Only</option>
+              </Select>
+            </Field>
+            <Field label="Chat Permission" htmlFor="mt-chat-perm">
+              <Select
+                id="mt-chat-perm"
+                value={chatPermission}
+                onChange={(e) =>
+                  setChatPermission(
+                    e.target.value as 'EVERYONE_DM' | 'EVERYONE_PUBLIC' | 'HOST_ONLY' | 'DISABLED',
+                  )
+                }
+              >
+                <option value="EVERYONE_DM">Everyone + Private DM</option>
+                <option value="EVERYONE_PUBLIC">Everyone Public Only</option>
+                <option value="HOST_ONLY">Host &amp; Co-Host Only</option>
+                <option value="DISABLED">Chat Disabled</option>
+              </Select>
+            </Field>
+          </div>
+
+          <div className="grid gap-2 rounded-xl bg-ink/[0.04] p-3 text-xs sm:grid-cols-2 dark:bg-white/[0.06]">
             <label className="flex cursor-pointer items-center gap-2">
               <input
                 type="checkbox"
                 checked={waitingRoomEnabled}
                 onChange={(e) => setWaitingRoomEnabled(e.target.checked)}
               />
-              <span>Enable Waiting Room (Admit / Remove)</span>
+              <span>Enable Waiting Room (Admit / Deny)</span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={muteUponEntry}
+                onChange={(e) => setMuteUponEntry(e.target.checked)}
+              />
+              <span>Mute Participants Upon Entry</span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={allowUnmuteSelf}
+                onChange={(e) => setAllowUnmuteSelf(e.target.checked)}
+              />
+              <span>Allow Participants to Unmute Self</span>
+            </label>
+            <label className="flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={allowStartVideo}
+                onChange={(e) => setAllowStartVideo(e.target.checked)}
+              />
+              <span>Allow Participants to Start Video</span>
             </label>
             <label className="flex cursor-pointer items-center gap-2">
               <input
@@ -1559,7 +1829,8 @@ export function MeetingsView() {
                 onChange={(e) => setAllowExternalGuests(e.target.checked)}
               />
               <span className={!policy?.canInviteExternal ? 'text-muted' : ''}>
-                Allow External Guests {policy && !policy.canInviteExternal ? '(Disabled for your tier)' : ''}
+                Allow External Guests (No Login)
+                {policy && !policy.canInviteExternal ? ' — Restricted' : ''}
               </span>
             </label>
             <label className="flex cursor-pointer items-center gap-2">
@@ -1570,15 +1841,32 @@ export function MeetingsView() {
                 onChange={(e) => setRecordingAllowed(e.target.checked)}
               />
               <span className={policy?.recordingScope === 'NONE' ? 'text-muted' : ''}>
-                Allow Meeting Recording {policy?.recordingScope === 'NONE' ? '(Disabled for your tier)' : ''}
+                Allow Meeting Recording
+                {policy?.recordingScope === 'NONE' ? ' — Restricted' : ''}
               </span>
             </label>
           </div>
-          <div className="flex justify-end gap-2">
-            <Button variant="secondary" type="button" onClick={() => setModalOpen(false)}>
+
+          <Field label="Initial notes / action items" htmlFor="mt-notes">
+            <Input
+              id="mt-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Optional pre-meeting notes or agenda links"
+            />
+          </Field>
+
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="secondary" type="button" onClick={() => setModalMode('closed')}>
               Cancel
             </Button>
-            <Button type="submit">Create Meeting Room</Button>
+            <Button type="submit" disabled={creatingRoom}>
+              {creatingRoom
+                ? 'Starting...'
+                : modalMode === 'instant'
+                  ? 'Start Instant Meeting & Notify'
+                  : 'Create Scheduled Meeting'}
+            </Button>
           </div>
         </form>
       </Modal>

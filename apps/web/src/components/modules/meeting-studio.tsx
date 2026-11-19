@@ -9,37 +9,56 @@ import {
   type FormEvent,
 } from 'react';
 import {
+  Activity,
+  BarChart3,
   Camera,
   CameraOff,
+  Captions,
   Check,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Columns2,
   Copy,
+  Crown,
+  DoorOpen,
   Download,
-  FileText,
+  Edit3,
+  FileDown,
   Hand,
   LayoutGrid,
+  Lock,
   Maximize2,
+  Megaphone,
   MessagesSquare,
   Mic,
   MicOff,
   Minimize2,
   MonitorUp,
+  MoreHorizontal,
   Paperclip,
+  Pause,
+  PenTool,
   PhoneOff,
   PictureInPicture2,
   Pin,
   PinOff,
+  Play,
   Radio,
+  Search,
   Send,
+  Shield,
   Smile,
   Sparkles,
+  Star,
   Users,
   Video,
   Volume2,
   VolumeX,
+  Wifi,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -55,57 +74,33 @@ import {
   type RemoteTrackPublication,
 } from 'livekit-client';
 import { liveGet, patch, post } from '@/lib/api';
-import { playAlertChime, showDesktopNotification } from '@/lib/alerts';
+import { playAlertChime, playSpeakerTestTone, showDesktopNotification } from '@/lib/alerts';
 import { cn } from '@/lib/cn';
+import {
+  guestApiFetch,
+  type AudioProfileSettings,
+  type BreakoutRoomItem,
+  type MeetingAccessPolicy,
+  type MeetingChatMessage,
+  type MeetingParticipant,
+  type MeetingRow,
+  type NetworkHealthStats,
+  type VideoEffectMode,
+  type WhiteboardStroke,
+} from './meeting/meeting-types';
+import { exportMeetingAttendancePdf } from './meeting/calendar-export';
+import { WhiteboardOverlay } from './meeting/whiteboard-overlay';
+import { PollsQaPanel } from './meeting/polls-qa-panel';
+import { BreakoutRoomsModal } from './meeting/breakout-rooms-modal';
+import { SecurityPopover } from './meeting/security-popover';
+import {
+  KeyboardShortcutsModal,
+  MoreToolsPopover,
+  NetworkStatsModal,
+  VideoEffectsModal,
+} from './meeting/more-and-settings-modals';
 
-export interface MeetingParticipant {
-  userId: string;
-  companyId?: string | null;
-  fullName: string;
-  role: string;
-  micOn: boolean;
-  camOn: boolean;
-  screenSharing: boolean;
-  screenStreamId?: string | null;
-  handRaised: boolean;
-  joinedAt: string;
-}
-
-export interface MeetingChatMessage {
-  id: string;
-  senderId?: string;
-  senderName: string;
-  body: string;
-  createdAt: string;
-  replyToId?: string | null;
-  replyPreview?: string | null;
-  recipientId?: string | null;
-  recipientName?: string | null;
-  attachmentUrl?: string | null;
-  attachmentName?: string | null;
-}
-
-export interface MeetingRow {
-  id: string;
-  roomCode: string;
-  projectId: string | null;
-  projectName: string;
-  organizerName: string;
-  title: string;
-  agenda: string;
-  startsAt: string;
-  endsAt: string;
-  status: 'LIVE' | 'SCHEDULED' | 'COMPLETED' | 'CANCELLED';
-  attendeeCount: number;
-  notes: string;
-  participants: MeetingParticipant[];
-  chatMessages: MeetingChatMessage[];
-  waitingRoom?: Array<{ userId: string; fullName: string; role: string; requestedAt: string }>;
-  screenShareApprovedIds?: string[];
-  coHostIds?: string[];
-  removedUserIds?: string[];
-  allowedRoles?: string[];
-}
+export type { MeetingParticipant, MeetingChatMessage, MeetingRow };
 
 interface MeetingSignalItem {
   id?: string;
@@ -378,16 +373,18 @@ async function tuneSenderQuality(
   }
 }
 
-/** Dedicated hidden audio playback component per peer/screen so voice & screen sound stay glitch-free across renders. */
+/** Dedicated hidden audio playback component per peer/screen with speaker output routing (setSinkId) & individual volume. */
 function RemoteAudioPlayer({
   stream,
   muted = false,
   volume = 1,
+  sinkId = '',
   onAutoplayBlocked,
 }: {
   stream: MediaStream | undefined;
   muted?: boolean;
   volume?: number;
+  sinkId?: string;
   onAutoplayBlocked: () => void;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -397,14 +394,17 @@ function RemoteAudioPlayer({
   const trackSig = stream?.getAudioTracks().map((t) => `${t.id}:${t.readyState}`).join(',') ?? '';
 
   useEffect(() => {
-    const el = audioRef.current;
+    const el = audioRef.current as (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }) | null;
     if (!el) return;
     el.muted = muted;
     el.volume = Math.max(0, Math.min(1, volume));
-  }, [muted, volume]);
+    if (sinkId && typeof el.setSinkId === 'function') {
+      void el.setSinkId(sinkId).catch(() => undefined);
+    }
+  }, [muted, volume, sinkId]);
 
   useEffect(() => {
-    const el = audioRef.current;
+    const el = audioRef.current as (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }) | null;
     if (!el) return;
     if (!stream || !trackSig) {
       boundTrackSigRef.current = '';
@@ -425,10 +425,12 @@ function RemoteAudioPlayer({
     el.srcObject = new MediaStream(audioTracks);
     el.muted = muted;
     el.volume = Math.max(0, Math.min(1, volume));
+    if (sinkId && typeof el.setSinkId === 'function') {
+      void el.setSinkId(sinkId).catch(() => undefined);
+    }
     el.play().catch(() => {
       blockedCbRef.current();
     });
-    // Rebind audio pipeline ONLY when underlying track IDs/state change (never on UI state renders)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trackSig]);
 
@@ -440,10 +442,12 @@ function VideoCanvas({
   stream,
   mirrored = false,
   className,
+  style,
 }: {
   stream: MediaStream | null | undefined;
   mirrored?: boolean;
   className?: string;
+  style?: React.CSSProperties;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const boundTrackSigRef = useRef<string>('');
@@ -471,6 +475,7 @@ function VideoCanvas({
       autoPlay
       playsInline
       muted
+      style={style}
       className={cn(
         'h-full w-full object-cover',
         mirrored && '-scale-x-100',
@@ -490,9 +495,17 @@ function ParticipantTile({
   compact = false,
   fillStage = false,
   isPinned = false,
+  isSpotlight = false,
+  mirrorSelf = true,
+  touchUp = false,
+  videoEffect = 'none',
+  remoteVolume = 1,
+  onVolumeChange,
   onTogglePin,
+  onToggleSpotlight,
   canHostControl,
   onHostMute,
+  onHostStopVideo,
   connectionStatus,
   iceTurnConfigured,
   onRetryConnection,
@@ -505,9 +518,17 @@ function ParticipantTile({
   compact?: boolean;
   fillStage?: boolean;
   isPinned?: boolean;
+  isSpotlight?: boolean;
+  mirrorSelf?: boolean;
+  touchUp?: boolean;
+  videoEffect?: VideoEffectMode;
+  remoteVolume?: number;
+  onVolumeChange?: (userId: string, vol: number) => void;
   onTogglePin?: (userId: string) => void;
+  onToggleSpotlight?: (userId: string) => void;
   canHostControl?: boolean;
   onHostMute?: (userId: string) => void;
+  onHostStopVideo?: (userId: string) => void;
   connectionStatus?: PeerConnHealth;
   iceTurnConfigured?: boolean;
   onRetryConnection?: (userId: string) => void;
@@ -516,18 +537,68 @@ function ParticipantTile({
     participant.camOn &&
     Boolean(stream?.getVideoTracks().some((t) => t.readyState === 'live' && t.enabled));
 
+  const selfFilterStyle: React.CSSProperties | undefined = isSelf
+    ? {
+        filter: [
+          touchUp ? 'brightness(1.1) contrast(1.04) saturate(1.06)' : '',
+          videoEffect === 'blur-light' ? 'contrast(1.03)' : '',
+        ]
+          .filter(Boolean)
+          .join(' ') || undefined,
+      }
+    : undefined;
+
+  const virtualBackdropClass =
+    isSelf && videoEffect === 'bg-yakunex'
+      ? 'ring-2 ring-[#D4A843]/50 bg-gradient-to-br from-[#1C160A] via-[#2B200B] to-[#0B0F17]'
+      : isSelf && videoEffect === 'bg-studio'
+        ? 'bg-gradient-to-br from-indigo-950 via-slate-900 to-cyan-950'
+        : isSelf && videoEffect === 'bg-slate'
+          ? 'bg-gradient-to-br from-zinc-800 to-zinc-950'
+          : 'bg-[#111827]';
+
   return (
     <div
       className={cn(
-        'group relative overflow-hidden rounded-2xl border bg-[#111827] transition-all duration-200',
+        'group relative overflow-hidden rounded-2xl border transition-all duration-200',
+        virtualBackdropClass,
         fillStage ? 'h-full w-full min-h-[360px]' : compact ? 'aspect-video w-full shrink-0' : 'aspect-video w-full',
-        isSpeaking && participant.micOn
-          ? 'border-[#10B981] ring-2 ring-[#10B981]/50 shadow-[0_0_24px_rgba(16,185,129,0.25)]'
-          : 'border-white/10',
+        isSpotlight
+          ? 'border-[#D4A843] ring-2 ring-[#D4A843]/60 shadow-[0_0_28px_rgba(212,168,67,0.3)]'
+          : isSpeaking && participant.micOn
+            ? 'border-[#10B981] ring-2 ring-[#10B981]/50 shadow-[0_0_24px_rgba(16,185,129,0.25)]'
+            : 'border-white/10',
       )}
     >
       {hasLiveVideo ? (
-        <VideoCanvas stream={stream} mirrored={isSelf} />
+        <div className="relative h-full w-full">
+          <VideoCanvas
+            stream={stream}
+            mirrored={isSelf && mirrorSelf}
+            style={selfFilterStyle}
+          />
+          {isSelf && (videoEffect === 'blur-light' || videoEffect === 'blur-strong') && (
+            <div
+              className="pointer-events-none absolute inset-0"
+              style={{
+                backdropFilter: videoEffect === 'blur-strong' ? 'blur(8px)' : 'blur(4px)',
+                WebkitMaskImage:
+                  'radial-gradient(ellipse 46% 58% at 50% 48%, transparent 52%, black 92%)',
+                maskImage:
+                  'radial-gradient(ellipse 46% 58% at 50% 48%, transparent 52%, black 92%)',
+              }}
+            />
+          )}
+          {isSelf && (videoEffect === 'bg-yakunex' || videoEffect === 'bg-studio' || videoEffect === 'bg-slate') && (
+            <div className="pointer-events-none absolute inset-0 border-[6px] border-black/25">
+              {videoEffect === 'bg-yakunex' && (
+                <span className="absolute right-3 bottom-11 rounded-md border border-[#D4A843]/40 bg-black/55 px-2 py-0.5 text-[9px] font-bold tracking-widest text-[#D4A843] uppercase backdrop-blur">
+                  YAKUNEX HQ
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       ) : (
         <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-[#161F30] via-[#111827] to-[#0B0F17] p-4">
           <div
@@ -568,8 +639,13 @@ function ParticipantTile({
         </div>
       )}
 
-      {/* Hand raised / Screen sharing badges */}
+      {/* Hand raised / Screen sharing / Spotlight badges */}
       <div className="absolute left-3 top-3 flex flex-wrap items-center gap-1.5">
+        {isSpotlight && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-[#D4A843] px-2.5 py-1 text-[11px] font-bold text-slate-950 shadow">
+            <Star className="h-3 w-3" /> Spotlight
+          </span>
+        )}
         {participant.handRaised && (
           <span className="inline-flex items-center gap-1 rounded-full bg-amber-400 px-2.5 py-1 text-[11px] font-bold text-slate-950 shadow">
             <Hand className="h-3 w-3" /> Hand Raised
@@ -582,8 +658,38 @@ function ParticipantTile({
         )}
       </div>
 
-      {/* Pin to Main Screen & Host quick mute */}
-      <div className="absolute right-3 top-3 flex items-center gap-1.5">
+      {/* Pin / Spotlight / Host quick controls / Individual Volume */}
+      <div className="absolute right-3 top-3 flex flex-wrap items-center justify-end gap-1.5">
+        {!isSelf && onVolumeChange && !compact && (
+          <button
+            type="button"
+            title={remoteVolume === 0 ? 'Unmute locally' : 'Mute participant locally'}
+            onClick={() => onVolumeChange(participant.userId, remoteVolume === 0 ? 1 : 0)}
+            className={cn(
+              'items-center gap-1 rounded-full px-2 py-1 text-[11px] font-semibold shadow transition',
+              remoteVolume === 0
+                ? 'inline-flex bg-rose-600/90 text-white'
+                : 'hidden bg-black/65 text-white/85 backdrop-blur hover:bg-black/85 group-hover:inline-flex',
+            )}
+          >
+            {remoteVolume === 0 ? <VolumeX className="h-3 w-3" /> : <Volume2 className="h-3 w-3" />}
+          </button>
+        )}
+        {canHostControl && onToggleSpotlight && !compact && (
+          <button
+            type="button"
+            onClick={() => onToggleSpotlight(participant.userId)}
+            title={isSpotlight ? 'Remove Spotlight for Everyone' : 'Spotlight for Everyone'}
+            className={cn(
+              'items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold shadow transition',
+              isSpotlight
+                ? 'inline-flex bg-[#D4A843] text-slate-950'
+                : 'hidden bg-black/65 text-amber-200 backdrop-blur hover:bg-black/85 group-hover:inline-flex',
+            )}
+          >
+            <Star className="h-3 w-3" /> {isSpotlight ? 'Unspot' : 'Spotlight'}
+          </button>
+        )}
         {onTogglePin && !compact && (
           <button
             type="button"
@@ -602,7 +708,7 @@ function ParticipantTile({
               </>
             ) : (
               <>
-                <Pin className="h-3 w-3" /> Main Screen
+                <Pin className="h-3 w-3" /> Pin
               </>
             )}
           </button>
@@ -614,6 +720,15 @@ function ParticipantTile({
             className="hidden items-center gap-1 rounded-full bg-rose-600/90 px-2.5 py-1 text-[11px] font-semibold text-white shadow transition hover:bg-rose-500 group-hover:inline-flex"
           >
             <MicOff className="h-3 w-3" /> Mute
+          </button>
+        )}
+        {canHostControl && !isSelf && participant.camOn && onHostStopVideo && !compact && (
+          <button
+            type="button"
+            onClick={() => onHostStopVideo(participant.userId)}
+            className="hidden items-center gap-1 rounded-full bg-slate-800/90 px-2 py-1 text-[11px] font-semibold text-rose-200 shadow transition hover:bg-rose-600 hover:text-white group-hover:inline-flex"
+          >
+            <CameraOff className="h-3 w-3" />
           </button>
         )}
       </div>
@@ -643,7 +758,7 @@ function ParticipantTile({
         </div>
         {!compact && (
           <span className="ml-2 shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-medium text-white/75">
-            {participant.role}
+            {participant.isGuest ? 'GUEST' : participant.role}
           </span>
         )}
       </div>
@@ -651,13 +766,16 @@ function ParticipantTile({
   );
 }
 
-/** Zoom-Style In-Call Studio with real WebRTC P2P Video, Audio, Screen Share & Room Controls */
+/** Zoom-Style In-Call Studio with Hybrid LiveKit SFU + WebRTC P2P Video, Audio, Screen Share & Full Enterprise Controls */
 export function MeetingStudio({
   initialRoom,
   initialMicOn,
   initialCamOn,
   initialMicId = '',
   initialCamId = '',
+  initialSpeakerId = '',
+  policy = null,
+  guestToken = null,
   currentUser,
   onExited,
   onMovedToWaitingRoom,
@@ -669,6 +787,9 @@ export function MeetingStudio({
   initialCamOn: boolean;
   initialMicId?: string;
   initialCamId?: string;
+  initialSpeakerId?: string;
+  policy?: MeetingAccessPolicy | null;
+  guestToken?: string | null;
   currentUser: CurrentUserInfo;
   onExited: (endedForAll?: boolean) => void;
   onMovedToWaitingRoom?: (room: MeetingRow) => void;
@@ -681,7 +802,8 @@ export function MeetingStudio({
   const [screenOn, setScreenOn] = useState(false);
   const [handRaised, setHandRaised] = useState(false);
   const [layoutMode, setLayoutMode] = useState<'gallery' | 'speaker'>('gallery');
-  const [sideTab, setSideTab] = useState<'closed' | 'participants' | 'chat' | 'notes'>('chat');
+  // Default 'closed' like Zoom so video stage gets 100% width immediately on join
+  const [sideTab, setSideTab] = useState<'closed' | 'participants' | 'chat' | 'polls' | 'notes'>('closed');
   const [unreadChat, setUnreadChat] = useState(0);
   const [chatInput, setChatInput] = useState('');
   const [notesDraft, setNotesDraft] = useState(initialRoom.notes ?? '');
@@ -692,12 +814,57 @@ export function MeetingStudio({
   const [bannerNotice, setBannerNotice] = useState<string | null>(null);
   const [showReactionTray, setShowReactionTray] = useState(false);
   const [showLeaveMenu, setShowLeaveMenu] = useState(false);
+  const [showSecurityMenu, setShowSecurityMenu] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showEffectsModal, setShowEffectsModal] = useState(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+  const [showStatsModal, setShowStatsModal] = useState(false);
+  const [breakoutModalOpen, setBreakoutModalOpen] = useState(false);
+  const [activeBreakoutId, setActiveBreakoutId] = useState<string | null>(null);
   const [deviceMenu, setDeviceMenu] = useState<'mic' | 'cam' | null>(null);
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [speakerDevices, setSpeakerDevices] = useState<MediaDeviceInfo[]>([]);
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedMicId, setSelectedMicId] = useState<string>(initialMicId);
+  const [selectedSpeakerId, setSelectedSpeakerId] = useState<string>(initialSpeakerId);
   const [selectedCamId, setSelectedCamId] = useState<string>(initialCamId);
+  const [audioProfile, setAudioProfile] = useState<AudioProfileSettings>({
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    originalSound: false,
+  });
+  const [pushToTalkActive, setPushToTalkActive] = useState(false);
+  const [videoEffect, setVideoEffect] = useState<VideoEffectMode>('none');
+  const [mirrorVideo, setMirrorVideo] = useState(true);
+  const [hideSelfView, setHideSelfView] = useState(false);
+  const [hideNonVideo, setHideNonVideo] = useState(false);
+  const [touchUp, setTouchUp] = useState(false);
+  const [bandwidthSaver, setBandwidthSaver] = useState(false);
+  const [sideBySideShare, setSideBySideShare] = useState(false);
+  const [shareSplitPct, setShareSplitPct] = useState(72);
+  const [shareZoom, setShareZoom] = useState(1);
+  const [optimizeVideoShare, setOptimizeVideoShare] = useState(false);
+  const [whiteboardMode, setWhiteboardMode] = useState<'closed' | 'whiteboard' | 'annotate'>('closed');
+  const [whiteboardStrokes, setWhiteboardStrokes] = useState<WhiteboardStroke[]>([]);
+  const [captionsOn, setCaptionsOn] = useState(false);
+  const [liveCaptions, setLiveCaptions] = useState<Array<{ id: string; speaker: string; text: string }>>([]);
+  const [askUnmutePrompt, setAskUnmutePrompt] = useState<{ by: string } | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [participantSearch, setParticipantSearch] = useState('');
+  const [waitingBroadcastDraft, setWaitingBroadcastDraft] = useState('');
+  const [remoteVolumes, setRemoteVolumes] = useState<Record<string, number>>({});
+  const [networkStats, setNetworkStats] = useState<NetworkHealthStats>({
+    rttMs: 28,
+    bitrateKbps: 1450,
+    packetLossPct: 0,
+    resolution: '1280×720',
+    transport: 'WebRTC P2P',
+    qualityLabel: 'Excellent',
+    bars: 4,
+  });
   const [recording, setRecording] = useState(false);
+  const [recordingPaused, setRecordingPaused] = useState(false);
   const [recordingSec, setRecordingSec] = useState(0);
   const [screenAudioMuted, setScreenAudioMuted] = useState(false);
   const [shareRequests, setShareRequests] = useState<Array<{ userId: string; fullName: string }>>([]);
@@ -763,35 +930,101 @@ export function MeetingStudio({
   const stageRef = useRef<HTMLDivElement | null>(null);
   const pipVideoRef = useRef<HTMLVideoElement | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const recRafRef = useRef<number | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const lastChatCountRef = useRef<number>(initialRoom.chatMessages?.length ?? 0);
   const micOnRef = useRef(micOn);
   const camOnRef = useRef(camOn);
   const sideTabRef = useRef(sideTab);
+  const handleDataSignalRef = useRef<(sig: MeetingSignalItem) => void>(() => undefined);
 
   micOnRef.current = micOn;
   camOnRef.current = camOn;
   sideTabRef.current = sideTab;
   participantsRef.current = room.participants;
 
-  const isPrimaryHost = useMemo(() => {
-    const r = currentUser.role.toUpperCase();
-    return room.organizerName === currentUser.fullName || r === 'SUPER_ADMIN';
-  }, [currentUser.fullName, currentUser.role, room.organizerName]);
+  const isGuest = Boolean(guestToken || currentUser.role.toUpperCase() === 'GUEST');
 
-  const canHostControl = useMemo(() => {
+  const isPrimaryHost = useMemo(() => {
+    if (isGuest) return false;
     const r = currentUser.role.toUpperCase();
     return (
+      room.organizerId === currentUser.id ||
+      room.organizerName === currentUser.fullName ||
+      r === 'SUPER_ADMIN'
+    );
+  }, [currentUser.fullName, currentUser.id, currentUser.role, isGuest, room.organizerId, room.organizerName]);
+
+  // Clean policy + server-aligned host control (no hardcoded legacy strings)
+  const canHostControl = useMemo(() => {
+    if (isGuest) return false;
+    const r = currentUser.role.toUpperCase();
+    if (r === 'INTERN' || policy?.waitingRoomControl === 'NONE') return false;
+    return (
+      room.organizerId === currentUser.id ||
       room.organizerName === currentUser.fullName ||
       (room.coHostIds ?? []).includes(currentUser.id) ||
       r === 'SUPER_ADMIN' ||
       r === 'ADMIN' ||
-      r === 'PROJECT_MANAGER' ||
-      r === 'MANAGER' ||
-      r === 'DIRECTOR' ||
-      r === 'PM'
+      r === 'PROJECT_MANAGER'
     );
-  }, [currentUser.fullName, currentUser.id, currentUser.role, room.coHostIds, room.organizerName]);
+  }, [
+    currentUser.fullName,
+    currentUser.id,
+    currentUser.role,
+    isGuest,
+    policy?.waitingRoomControl,
+    room.coHostIds,
+    room.organizerId,
+    room.organizerName,
+  ]);
+
+  // Strict tier-enforced recording permission (hidden for Interns & Tier 4 Core Staff / NONE scope)
+  const canRecord = useMemo(() => {
+    if (isGuest) return false;
+    const r = currentUser.role.toUpperCase();
+    if (r === 'INTERN') return false;
+    if (policy && policy.recordingScope === 'NONE') return false;
+    if (!policy && r === 'STAFF' && !canHostControl) return false;
+    return room.recordingAllowed !== false || canHostControl;
+  }, [canHostControl, currentUser.role, isGuest, policy, room.recordingAllowed]);
+
+  // Unified API wrappers that seamlessly support both Authenticated Employees and External Guests
+  const mGet = useCallback(
+    <T,>(suffix: string): Promise<T> => {
+      if (guestToken) {
+        return guestApiFetch<T>(`/meetings/public/${room.id}${suffix}`, guestToken);
+      }
+      return liveGet<T>(`/meetings/${room.id}${suffix}`);
+    },
+    [guestToken, room.id],
+  );
+
+  const mPost = useCallback(
+    <T,>(suffix: string, body: unknown): Promise<T> => {
+      if (guestToken) {
+        return guestApiFetch<T>(`/meetings/public/${room.id}${suffix}`, guestToken, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+      }
+      return post<T>(`/meetings/${room.id}${suffix}`, body);
+    },
+    [guestToken, room.id],
+  );
+
+  const mPatch = useCallback(
+    <T,>(suffix: string, body: unknown): Promise<T> => {
+      if (guestToken) {
+        return guestApiFetch<T>(`/meetings/public/${room.id}${suffix}`, guestToken, {
+          method: 'PATCH',
+          body: JSON.stringify(body),
+        });
+      }
+      return patch<T>(`/meetings/${room.id}${suffix}`, body);
+    },
+    [guestToken, room.id],
+  );
 
   const showToast = useCallback((msg: string) => {
     setBannerNotice(msg);
@@ -860,11 +1093,38 @@ export function MeetingStudio({
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       setAudioDevices(devices.filter((d) => d.kind === 'audioinput'));
+      setSpeakerDevices(devices.filter((d) => d.kind === 'audiooutput'));
       setVideoDevices(devices.filter((d) => d.kind === 'videoinput'));
     } catch {
       // Ignore permission restrictions before capture
     }
   }, []);
+
+  /** Sub-50ms LiveKit DataChannel broadcast when SFU is active; returns true if pushed directly over SFU. */
+  const publishRealtimeData = useCallback(
+    (type: string, payload: unknown, toUserId = '*'): boolean => {
+      const lkRoom = sfuRoomRef.current;
+      if (!lkRoom || lkRoom.state !== 'connected') return false;
+      try {
+        const packet = JSON.stringify({
+          id: `dc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          seq: Date.now(),
+          fromUserId: currentUser.id,
+          fromUserName: currentUser.fullName,
+          toUserId,
+          type,
+          payload,
+          createdAt: Date.now(),
+        });
+        const bytes = new TextEncoder().encode(packet);
+        void lkRoom.localParticipant.publishData(bytes, { reliable: true }).catch(() => undefined);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [currentUser.fullName, currentUser.id],
+  );
 
   const signalOutboxRef = useRef<{
     timer: ReturnType<typeof setTimeout> | null;
@@ -884,13 +1144,13 @@ export function MeetingStudio({
     try {
       if (items.length === 1) {
         const only = items[0]!;
-        await post(`/meetings/${room.id}/signal`, {
+        await mPost('/signal', {
           toUserId: only.toUserId,
           type: only.type,
           payload: only.payload,
         });
       } else {
-        await post(`/meetings/${room.id}/signal`, {
+        await mPost('/signal', {
           batch: items.map((item) => ({
             toUserId: item.toUserId,
             type: item.type,
@@ -902,10 +1162,21 @@ export function MeetingStudio({
     } catch {
       items.forEach((item) => item.resolve(false));
     }
-  }, [room.id]);
+  }, [mPost]);
 
   const sendSignal = useCallback(
     (toUserId: string, type: string, payload: unknown): Promise<boolean> => {
+      // Push instant lightweight collaboration events via LiveKit DataChannel (<50ms) too
+      if (
+        type === 'reaction' ||
+        type === 'whiteboard-stroke' ||
+        type === 'whiteboard-undo' ||
+        type === 'whiteboard-clear' ||
+        type === 'live-caption' ||
+        type === 'spotlight-updated'
+      ) {
+        publishRealtimeData(type, payload, toUserId);
+      }
       return new Promise<boolean>((resolve) => {
         const box = signalOutboxRef.current;
         box.queue.push({ toUserId, type, payload, resolve });
@@ -922,16 +1193,19 @@ export function MeetingStudio({
         }
       });
     },
-    [flushSignalOutbox],
+    [flushSignalOutbox, publishRealtimeData],
   );
 
   // Resolve server-supplied STUN + optional TURN ICE configuration on mount
   useEffect(() => {
     let active = true;
-    liveGet<{ iceServers?: RTCIceServer[]; hasTurn?: boolean; iceCandidatePoolSize?: number }>(
-      '/meetings/ice-config',
-    )
-      .then((cfg) => {
+    const iceReq = guestToken
+      ? fetch('/api/meetings/public/ice-config', { cache: 'no-store' }).then((r) => r.json())
+      : liveGet<{ iceServers?: RTCIceServer[]; hasTurn?: boolean; iceCandidatePoolSize?: number }>(
+          '/meetings/ice-config',
+        );
+    iceReq
+      .then((cfg: { iceServers?: RTCIceServer[]; hasTurn?: boolean; iceCandidatePoolSize?: number }) => {
         if (!active || !Array.isArray(cfg?.iceServers) || cfg.iceServers.length === 0) return;
         const base = buildInitialIceConfig();
         const combined: RTCIceServer[] = [...cfg.iceServers];
@@ -1025,11 +1299,15 @@ export function MeetingStudio({
 
     async function initSfu() {
       try {
-        const res = await liveGet<{
+        const activeBr = (room.breakoutRooms ?? []).find((b) => b.id === activeBreakoutId && b.active);
+        const tokenSuffix = activeBr && !guestToken
+          ? `/sfu-token?roomOverride=${encodeURIComponent(activeBr.roomCode)}`
+          : '/sfu-token';
+        const res = await mGet<{
           enabled?: boolean;
           url?: string | null;
           token?: string | null;
-        }>(`/meetings/${room.id}/sfu-token`);
+        }>(tokenSuffix);
         if (!active || !res?.enabled || !res.url || !res.token) return;
 
         const lkRoom = new Room({
@@ -1125,14 +1403,39 @@ export function MeetingStudio({
             speakingRef.current = nextMap;
             setSpeakingUsers(nextMap);
           })
+          .on(RoomEvent.DataReceived, (payloadBytes) => {
+            try {
+              const decoded = JSON.parse(new TextDecoder().decode(payloadBytes)) as MeetingSignalItem;
+              if (
+                decoded &&
+                decoded.type &&
+                decoded.fromUserId !== currentUser.id &&
+                (decoded.toUserId === '*' || decoded.toUserId === currentUser.id)
+              ) {
+                handleDataSignalRef.current(decoded);
+              }
+            } catch {
+              // Ignore non-JSON data packets
+            }
+          })
           .on(RoomEvent.ParticipantConnected, (p) => {
             if (p.identity && p.identity !== currentUser.id) {
               peerConnStatesRef.current.set(p.identity, 'connected');
               setPeerConnStates((prev) => ({ ...prev, [p.identity]: 'connected' }));
             }
           })
+          .on(RoomEvent.Reconnecting, () => {
+            if (active) setReconnecting(true);
+          })
+          .on(RoomEvent.Reconnected, () => {
+            if (active) {
+              setReconnecting(false);
+              showToast('Connection restored.');
+            }
+          })
           .on(RoomEvent.Connected, () => {
             if (!active) return;
+            setReconnecting(false);
             sfuModeRef.current = true;
             setSfuActive(true);
             void syncSfuLocalTracks();
@@ -1186,7 +1489,7 @@ export function MeetingStudio({
       }
       sfuRoomRef.current = null;
     };
-  }, [currentUser.id, room.id, syncSfuLocalTracks]);
+  }, [activeBreakoutId, currentUser.id, guestToken, mGet, room.breakoutRooms, room.id, syncSfuLocalTracks]);
 
   // Sync localStreamRef state cleanly
   const commitLocalStream = useCallback((stream: MediaStream | null) => {
@@ -1864,7 +2167,7 @@ export function MeetingStudio({
           continue;
         }
         try {
-          const fresh = await liveGet<MeetingRow>(`/meetings/${room.id}/room`);
+          const fresh = await mGet<MeetingRow>('/room');
           if (cancelled) break;
           const sig = JSON.stringify([
             fresh.status,
@@ -1935,8 +2238,234 @@ export function MeetingStudio({
         const track = localStreamRef.current?.getAudioTracks()[0];
         if (track) track.enabled = false;
         setMicOn(false);
-        void patch(`/meetings/${room.id}/participant`, { micOn: false });
+        void mPatch('/participant', { micOn: false }).catch(() => undefined);
         showToast(`${String(payload.by ?? 'Host')} muted your microphone.`);
+        return;
+      }
+
+      if (sig.type === 'host-ask-unmute') {
+        playAlertChime();
+        setAskUnmutePrompt({ by: String(payload.by ?? 'Host') });
+        return;
+      }
+
+      if (sig.type === 'host-stop-video') {
+        const vTrack = localStreamRef.current?.getVideoTracks()[0];
+        if (vTrack) vTrack.enabled = false;
+        setCamOn(false);
+        camOnRef.current = false;
+        void mPatch('/participant', { camOn: false }).catch(() => undefined);
+        showToast(`${String(payload.by ?? 'Host')} turned off your camera.`);
+        return;
+      }
+
+      if (sig.type === 'spotlight-updated') {
+        const spotId = payload.spotlightUserId ? String(payload.spotlightUserId) : null;
+        setRoom((prev) => ({ ...prev, spotlightUserId: spotId }));
+        if (spotId) {
+          setLayoutMode('speaker');
+          showToast('Host spotlighted a speaker for everyone.');
+        } else {
+          showToast('Host removed Spotlight.');
+        }
+        return;
+      }
+
+      if (sig.type === 'hands-lowered') {
+        setHandRaised(false);
+        setRoom((prev) => ({
+          ...prev,
+          participants: prev.participants.map((p) => ({ ...p, handRaised: false })),
+        }));
+        showToast(`${String(payload.by ?? 'Host')} lowered all raised hands.`);
+        return;
+      }
+
+      if (sig.type === 'participant-renamed') {
+        const uid = String(payload.userId ?? '');
+        const newName = String(payload.newName ?? '');
+        if (uid && newName) {
+          setRoom((prev) => ({
+            ...prev,
+            participants: prev.participants.map((p) =>
+              p.userId === uid ? { ...p, fullName: newName } : p,
+            ),
+          }));
+        }
+        return;
+      }
+
+      if (sig.type === 'host-transferred') {
+        const newHostId = String(payload.newHostId ?? '');
+        const newHostName = String(payload.newHostName ?? '');
+        setRoom((prev) => ({
+          ...prev,
+          organizerId: newHostId || prev.organizerId,
+          organizerName: newHostName || prev.organizerName,
+        }));
+        showToast(
+          newHostId === currentUser.id
+            ? 'You are now the Meeting Host!'
+            : `${newHostName} is now the Meeting Host.`,
+        );
+        return;
+      }
+
+      if (sig.type === 'security-updated') {
+        setRoom((prev) => ({
+          ...prev,
+          isLocked: payload.isLocked !== undefined ? Boolean(payload.isLocked) : prev.isLocked,
+          waitingRoomEnabled:
+            payload.waitingRoomEnabled !== undefined
+              ? Boolean(payload.waitingRoomEnabled)
+              : prev.waitingRoomEnabled,
+          muteUponEntry:
+            payload.muteUponEntry !== undefined ? Boolean(payload.muteUponEntry) : prev.muteUponEntry,
+          allowUnmuteSelf:
+            payload.allowUnmuteSelf !== undefined ? Boolean(payload.allowUnmuteSelf) : prev.allowUnmuteSelf,
+          allowStartVideo:
+            payload.allowStartVideo !== undefined ? Boolean(payload.allowStartVideo) : prev.allowStartVideo,
+          allowRenameSelf:
+            payload.allowRenameSelf !== undefined ? Boolean(payload.allowRenameSelf) : prev.allowRenameSelf,
+          chatPermission:
+            (payload.chatPermission as MeetingRow['chatPermission']) ?? prev.chatPermission,
+          screenShareMode:
+            (payload.screenShareMode as MeetingRow['screenShareMode']) ?? prev.screenShareMode,
+          suspendedActivities:
+            payload.suspendedActivities !== undefined
+              ? Boolean(payload.suspendedActivities)
+              : prev.suspendedActivities,
+        }));
+        showToast('Host updated meeting security settings.');
+        return;
+      }
+
+      if (sig.type === 'panic-suspended') {
+        if (!canHostControl) {
+          localStreamRef.current?.getAudioTracks().forEach((t) => {
+            t.enabled = false;
+          });
+          localStreamRef.current?.getVideoTracks().forEach((t) => {
+            t.enabled = false;
+          });
+          setMicOn(false);
+          setCamOn(false);
+          micOnRef.current = false;
+          camOnRef.current = false;
+        }
+        setRoom((prev) => ({
+          ...prev,
+          isLocked: true,
+          suspendedActivities: true,
+          allowUnmuteSelf: false,
+          allowStartVideo: false,
+          chatPermission: 'DISABLED',
+          screenShareMode: 'HOST_ONLY',
+        }));
+        showToast('Host suspended all participant activities.');
+        return;
+      }
+
+      if (sig.type === 'recording-updated') {
+        const activeRec = Boolean(payload.active);
+        const byName = String(payload.by ?? 'Host');
+        setRoom((prev) => ({
+          ...prev,
+          recordingActive: activeRec,
+          recordingByName: activeRec ? byName : null,
+        }));
+        showToast(
+          activeRec
+            ? `${byName} started recording this meeting.`
+            : `${byName} stopped recording.`,
+        );
+        return;
+      }
+
+      if (sig.type === 'polls-updated') {
+        if (Array.isArray(payload.polls)) {
+          setRoom((prev) => ({ ...prev, polls: payload.polls as MeetingRow['polls'] }));
+          if (sideTabRef.current !== 'polls') {
+            playAlertChime();
+            showToast('A Live Poll was updated — open Polls & Q&A to vote.');
+          }
+        }
+        return;
+      }
+
+      if (sig.type === 'qa-updated') {
+        if (Array.isArray(payload.qaItems)) {
+          setRoom((prev) => ({ ...prev, qaItems: payload.qaItems as MeetingRow['qaItems'] }));
+        }
+        return;
+      }
+
+      if (sig.type === 'breakout-updated') {
+        if (Array.isArray(payload.breakoutRooms)) {
+          const brs = payload.breakoutRooms as BreakoutRoomItem[];
+          setRoom((prev) => ({ ...prev, breakoutRooms: brs }));
+          if (payload.opened) {
+            playAlertChime();
+            const mine = brs.find((b) => b.participantIds.includes(currentUser.id));
+            showToast(
+              mine
+                ? `Breakout Rooms opened! You are assigned to "${mine.name}".`
+                : 'Host opened Breakout Rooms.',
+            );
+          }
+        }
+        return;
+      }
+
+      if (sig.type === 'breakout-broadcast') {
+        const msg = String(payload.message ?? '');
+        if (msg) {
+          playAlertChime();
+          showToast(`Host Broadcast: ${msg}`);
+        }
+        return;
+      }
+
+      if (sig.type === 'breakout-closed') {
+        setActiveBreakoutId(null);
+        setRoom((prev) => ({
+          ...prev,
+          breakoutRooms: (prev.breakoutRooms ?? []).map((b) => ({ ...b, active: false })),
+        }));
+        showToast('Breakout rooms closed — returned to main session.');
+        return;
+      }
+
+      if (sig.type === 'whiteboard-stroke') {
+        const stroke = payload.stroke as WhiteboardStroke | undefined;
+        if (stroke && stroke.id) {
+          setWhiteboardStrokes((prev) =>
+            prev.some((s) => s.id === stroke.id) ? prev : [...prev.slice(-400), stroke],
+          );
+        }
+        return;
+      }
+
+      if (sig.type === 'whiteboard-undo') {
+        setWhiteboardStrokes((prev) => prev.slice(0, -1));
+        return;
+      }
+
+      if (sig.type === 'whiteboard-clear') {
+        setWhiteboardStrokes([]);
+        return;
+      }
+
+      if (sig.type === 'live-caption') {
+        const text = String(payload.text ?? '').trim();
+        const speaker = String(payload.speaker ?? sig.fromUserName ?? 'Speaker');
+        if (text) {
+          const capId = `cap_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+          setLiveCaptions((prev) => [...prev.slice(-2), { id: capId, speaker, text }]);
+          setTimeout(() => {
+            setLiveCaptions((prev) => prev.filter((c) => c.id !== capId));
+          }, 6000);
+        }
         return;
       }
 
@@ -1973,7 +2502,7 @@ export function MeetingStudio({
           playAlertChime();
           showDesktopNotification('Waiting Room', `${wName} is waiting to join the meeting.`);
           showToast(`${wName} is in the Waiting Room.`);
-          void liveGet<MeetingRow>(`/meetings/${room.id}/room`)
+          void mGet<MeetingRow>('/room')
             .then((fresh) => setRoom((prev) => ({ ...prev, waitingRoom: fresh.waitingRoom })))
             .catch(() => undefined);
         }
@@ -2189,17 +2718,23 @@ export function MeetingStudio({
       }
     };
 
+    handleDataSignalRef.current = (sig) => {
+      void handleSignal(sig);
+    };
+
     const runLoop = async () => {
       let hadError = false;
       while (!cancelled) {
         if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          setReconnecting(true);
           await new Promise((r) => setTimeout(r, 1200));
           continue;
         }
         try {
-          const res = await liveGet<{ seq: number; signals: MeetingSignalItem[] }>(
-            `/meetings/${room.id}/signals?after=${lastSignalSeqRef.current}`,
+          const res = await mGet<{ seq: number; signals: MeetingSignalItem[] }>(
+            `/signals?after=${lastSignalSeqRef.current}`,
           );
+          if (hadError) setReconnecting(false);
           hadError = false;
           if (cancelled) break;
           if (typeof res.seq === 'number' && res.seq > lastSignalSeqRef.current) {
@@ -2794,14 +3329,27 @@ export function MeetingStudio({
     }
     micOnRef.current = next;
     setMicOn(next);
-    const updated = await patch<MeetingRow>(`/meetings/${room.id}/participant`, {
-      micOn: next,
-    });
-    setRoom(updated);
+    try {
+      const updated = await mPatch<MeetingRow>('/participant', { micOn: next });
+      setRoom(updated);
+    } catch (err) {
+      if (next) {
+        localStreamRef.current?.getAudioTracks().forEach((t) => {
+          t.enabled = false;
+        });
+        micOnRef.current = false;
+        setMicOn(false);
+        showToast(err instanceof Error ? err.message : 'Host has disabled unmuting yourself.');
+      }
+    }
   };
 
   const toggleCam = async () => {
     const next = !camOn;
+    if (next && !canHostControl && (room.suspendedActivities || room.allowStartVideo === false)) {
+      showToast('Host has disabled starting video.');
+      return;
+    }
     if (next) {
       let track = localStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live');
       if (!track) {
@@ -2866,29 +3414,43 @@ export function MeetingStudio({
     }
     camOnRef.current = next;
     setCamOn(next);
-    const updated = await patch<MeetingRow>(`/meetings/${room.id}/participant`, {
-      camOn: next,
-    });
-    setRoom(updated);
+    try {
+      const updated = await mPatch<MeetingRow>('/participant', { camOn: next });
+      setRoom(updated);
+    } catch (err) {
+      if (next) {
+        localStreamRef.current?.getVideoTracks().forEach((t) => {
+          t.enabled = false;
+        });
+        camOnRef.current = false;
+        setCamOn(false);
+        showToast(err instanceof Error ? err.message : 'Host has disabled starting video.');
+      }
+    }
   };
 
-  const switchDevice = async (kind: 'audio' | 'video', deviceId: string) => {
+  const switchDevice = async (
+    kind: 'audio' | 'video',
+    deviceId: string,
+    profileOverride?: AudioProfileSettings,
+  ) => {
     setDeviceMenu(null);
+    const prof = profileOverride ?? audioProfile;
     try {
       const captured = await navigator.mediaDevices.getUserMedia(
         kind === 'audio'
           ? {
               audio: {
-                deviceId: { exact: deviceId },
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
+                ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+                echoCancellation: prof.originalSound ? false : prof.echoCancellation,
+                noiseSuppression: prof.originalSound ? false : prof.noiseSuppression,
+                autoGainControl: prof.originalSound ? false : prof.autoGainControl,
                 sampleRate: 48000,
               },
             }
           : {
               video: {
-                deviceId: { exact: deviceId },
+                ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
                 width: { ideal: 1920 },
                 height: { ideal: 1080 },
                 frameRate: { ideal: 30 },
@@ -2898,17 +3460,30 @@ export function MeetingStudio({
       const track = kind === 'audio' ? captured.getAudioTracks()[0] : captured.getVideoTracks()[0];
       if (!track) return;
       if (kind === 'audio') {
-        setSelectedMicId(deviceId);
+        if (deviceId) setSelectedMicId(deviceId);
         track.enabled = micOnRef.current;
       } else {
         track.contentHint = 'motion';
-        setSelectedCamId(deviceId);
+        if (deviceId) setSelectedCamId(deviceId);
         track.enabled = camOnRef.current;
       }
       await replaceOrAddLocalTrack(kind, track);
     } catch {
       showToast(`Failed to switch ${kind === 'audio' ? 'microphone' : 'camera'}.`);
     }
+  };
+
+  const updateAudioProfile = async (patchProfile: Partial<AudioProfileSettings>) => {
+    const next = { ...audioProfile, ...patchProfile };
+    setAudioProfile(next);
+    if (localStreamRef.current?.getAudioTracks().length) {
+      await switchDevice('audio', selectedMicId, next);
+    }
+    showToast(
+      next.originalSound
+        ? 'Original Sound ON (raw high-fidelity audio).'
+        : 'Audio profile updated.',
+    );
   };
 
   const stopScreenShare = useCallback(async () => {
@@ -2959,12 +3534,21 @@ export function MeetingStudio({
   }, [renegotiatePeer, room.id, sendSignal]);
 
   const isScreenShareLockedForSelf =
-    currentUser.role.toUpperCase() === 'INTERN' &&
-    !(room.screenShareApprovedIds ?? []).includes(currentUser.id);
+    !canHostControl &&
+    (room.suspendedActivities ||
+      room.screenShareMode === 'HOST_ONLY' ||
+      ((currentUser.role.toUpperCase() === 'INTERN' ||
+        isGuest ||
+        room.screenShareMode === 'APPROVAL_REQUIRED') &&
+        !(room.screenShareApprovedIds ?? []).includes(currentUser.id)));
 
   const toggleScreenShare = async () => {
     if (screenOn) {
       await stopScreenShare();
+      return;
+    }
+    if (!canHostControl && (room.suspendedActivities || room.screenShareMode === 'HOST_ONLY')) {
+      showToast('Only the host or co-host can share their screen right now.');
       return;
     }
     if (isScreenShareLockedForSelf) {
@@ -3149,15 +3733,24 @@ export function MeetingStudio({
   };
 
   const toggleRecording = () => {
-    if (recording) {
-      recorderRef.current?.stop();
-      setRecording(false);
+    if (!canRecord) {
+      showToast('Recording is restricted for your tier.');
       return;
     }
-
-    const remoteScreenFirst = Object.values(remoteScreenStreamsRef.current)[0] ?? null;
-    const primaryVideoStream = screenStreamRef.current ?? remoteScreenFirst ?? localStreamRef.current;
-    const videoTracks = primaryVideoStream?.getVideoTracks().filter((t) => t.readyState === 'live') ?? [];
+    if (recording) {
+      if (recRafRef.current) {
+        cancelAnimationFrame(recRafRef.current);
+        recRafRef.current = null;
+      }
+      recorderRef.current?.stop();
+      setRecording(false);
+      setRecordingPaused(false);
+      void patch(`/meetings/${room.id}/host-action`, {
+        action: 'recording-status',
+        payload: { active: false },
+      }).catch(() => undefined);
+      return;
+    }
 
     // Collect all live audio sources across local mic, screen audio, and remote participants
     const allAudioStreams = [
@@ -3165,16 +3758,82 @@ export function MeetingStudio({
       screenStreamRef.current,
       ...Object.values(remoteCamStreamsRef.current),
       ...Object.values(remoteScreenStreamsRef.current),
-    ].filter((s): s is MediaStream => Boolean(s && s.getAudioTracks().some((t) => t.readyState === 'live')));
+    ].filter((s): s is MediaStream =>
+      Boolean(s && s.getAudioTracks().some((t) => t.readyState === 'live')),
+    );
 
-    if (videoTracks.length === 0 && allAudioStreams.length === 0) {
+    const hasAnyVideo =
+      Boolean(screenStreamRef.current?.getVideoTracks().some((t) => t.readyState === 'live')) ||
+      Object.values(remoteScreenStreamsRef.current).some((s) =>
+        s.getVideoTracks().some((t) => t.readyState === 'live'),
+      ) ||
+      Boolean(localStreamRef.current?.getVideoTracks().some((t) => t.readyState === 'live')) ||
+      Object.values(remoteCamStreamsRef.current).some((s) =>
+        s.getVideoTracks().some((t) => t.readyState === 'live'),
+      );
+
+    if (!hasAnyVideo && allAudioStreams.length === 0) {
       showToast('Turn on mic/cam or screen share before starting recording.');
       return;
     }
 
     try {
+      // Composite 1280x720 Canvas capturing ALL visible video elements (Screen Share + Remote + Local)
+      const canvas = document.createElement('canvas');
+      canvas.width = 1280;
+      canvas.height = 720;
+      const ctx = canvas.getContext('2d');
+
+      const drawCompositeFrame = () => {
+        if (!ctx) return;
+        ctx.fillStyle = '#0B0F17';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const stageVideos = Array.from(stageRef.current?.querySelectorAll('video') ?? []).filter(
+          (v) => v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0,
+        );
+
+        if (stageVideos.length === 1) {
+          const v = stageVideos[0]!;
+          const scale = Math.min(canvas.width / v.videoWidth, canvas.height / v.videoHeight);
+          const dw = v.videoWidth * scale;
+          const dh = v.videoHeight * scale;
+          ctx.drawImage(v, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+        } else if (stageVideos.length > 1) {
+          const cols = Math.ceil(Math.sqrt(stageVideos.length));
+          const rows = Math.ceil(stageVideos.length / cols);
+          const cellW = canvas.width / cols;
+          const cellH = canvas.height / rows;
+          stageVideos.forEach((v, idx) => {
+            const c = idx % cols;
+            const r = Math.floor(idx / cols);
+            const scale = Math.min(cellW / v.videoWidth, cellH / v.videoHeight);
+            const dw = v.videoWidth * scale;
+            const dh = v.videoHeight * scale;
+            ctx.drawImage(v, c * cellW + (cellW - dw) / 2, r * cellH + (cellH - dh) / 2, dw, dh);
+          });
+        } else {
+          ctx.fillStyle = '#D4A843';
+          ctx.font = 'bold 28px Inter, system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(`Yakunex Hub Meet · ${room.title}`, canvas.width / 2, canvas.height / 2);
+        }
+
+        // Timestamp + REC watermark
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(16, 16, 260, 30);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = '600 13px Inter, system-ui, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(`● REC  ${room.roomCode} · ${new Date().toLocaleTimeString()}`, 26, 36);
+
+        recRafRef.current = requestAnimationFrame(drawCompositeFrame);
+      };
+      drawCompositeFrame();
+
       const combined = new MediaStream();
-      videoTracks.forEach((t) => combined.addTrack(t));
+      const canvasStream = canvas.captureStream(24);
+      canvasStream.getVideoTracks().forEach((t) => combined.addTrack(t));
 
       let mixCtx: AudioContext | null = null;
       if (allAudioStreams.length > 0 && typeof window !== 'undefined' && 'AudioContext' in window) {
@@ -3196,12 +3855,12 @@ export function MeetingStudio({
 
       const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
         ? 'video/webm;codecs=vp9,opus'
-        : MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-          ? 'video/webm;codecs=vp9'
+        : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+          ? 'video/webm;codecs=vp8,opus'
           : 'video/webm';
       const rec = new MediaRecorder(combined, {
         mimeType: mime,
-        videoBitsPerSecond: 4_000_000,
+        videoBitsPerSecond: 3_500_000,
         audioBitsPerSecond: 192_000,
       });
       recordedChunksRef.current = [];
@@ -3209,20 +3868,45 @@ export function MeetingStudio({
         if (e.data.size > 0) recordedChunksRef.current.push(e.data);
       };
       rec.onstop = () => {
+        if (recRafRef.current) {
+          cancelAnimationFrame(recRafRef.current);
+          recRafRef.current = null;
+        }
+        canvasStream.getTracks().forEach((t) => t.stop());
         void mixCtx?.close().catch(() => undefined);
         const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${room.roomCode}-${new Date().toISOString().slice(0, 10)}.webm`;
+        a.download = `${room.roomCode}-recording-${new Date().toISOString().slice(0, 10)}.webm`;
         a.click();
         URL.revokeObjectURL(url);
       };
       rec.start(1000);
       recorderRef.current = rec;
       setRecording(true);
+      setRecordingPaused(false);
+      void patch(`/meetings/${room.id}/host-action`, {
+        action: 'recording-status',
+        payload: { active: true },
+      }).catch(() => undefined);
+      showToast('Full composite meeting recording started (all participants & audio).');
     } catch {
       showToast('Recording is not supported in this browser.');
+    }
+  };
+
+  const togglePauseRecording = () => {
+    const rec = recorderRef.current;
+    if (!rec || !recording) return;
+    if (rec.state === 'recording') {
+      rec.pause();
+      setRecordingPaused(true);
+      showToast('Recording paused.');
+    } else if (rec.state === 'paused') {
+      rec.resume();
+      setRecordingPaused(false);
+      showToast('Recording resumed.');
     }
   };
 
@@ -3232,13 +3916,12 @@ export function MeetingStudio({
         (p) =>
           p.userId !== currentUser.id &&
           (canHostControl ||
+            p.userId === room.organizerId ||
             p.fullName === room.organizerName ||
             (room.coHostIds ?? []).includes(p.userId) ||
-            ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'MANAGER', 'DIRECTOR', 'PM'].includes(
-              p.role.toUpperCase(),
-            )),
+            ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER'].includes(p.role.toUpperCase())),
       ),
-    [canHostControl, currentUser.id, room.coHostIds, room.organizerName, room.participants],
+    [canHostControl, currentUser.id, room.coHostIds, room.organizerId, room.organizerName, room.participants],
   );
 
   const onPickChatFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -3269,16 +3952,20 @@ export function MeetingStudio({
     setChatInput('');
     const att = chatAttachment;
     setChatAttachment(null);
-    const updated = await post<MeetingRow>(`/meetings/${room.id}/chat`, {
-      body: body || (att ? `Attachment: ${att.name}` : ''),
-      replyToId: chatReplyTo?.id ?? null,
-      recipientId: targetRecipient?.userId ?? null,
-      recipientName: targetRecipient?.fullName ?? null,
-      attachmentUrl: att?.dataUrl ?? null,
-      attachmentName: att?.name ?? null,
-    });
-    setChatReplyTo(null);
-    setRoom(updated);
+    try {
+      const updated = await mPost<MeetingRow>('/chat', {
+        body: body || (att ? `Attachment: ${att.name}` : ''),
+        replyToId: chatReplyTo?.id ?? null,
+        recipientId: targetRecipient?.userId ?? null,
+        recipientName: targetRecipient?.fullName ?? null,
+        attachmentUrl: att?.dataUrl ?? null,
+        attachmentName: att?.name ?? null,
+      });
+      setChatReplyTo(null);
+      setRoom(updated);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Unable to send chat message.');
+    }
   };
 
   const saveNotes = async () => {
@@ -3304,36 +3991,455 @@ export function MeetingStudio({
   };
 
   const hostAction = async (
-    action: 'admit' | 'remove' | 'approve-screenshare' | 'toggle-cohost',
-    targetUserId: string,
+    action:
+      | 'admit'
+      | 'admit-all'
+      | 'waiting-room-message'
+      | 'remove'
+      | 'approve-screenshare'
+      | 'toggle-cohost'
+      | 'ask-unmute'
+      | 'stop-video'
+      | 'spotlight'
+      | 'lower-all-hands'
+      | 'rename'
+      | 'transfer-host'
+      | 'update-security'
+      | 'panic-suspend',
+    targetUserId?: string,
+    payload?: Record<string, unknown>,
   ) => {
     try {
       const updated = await patch<MeetingRow>(`/meetings/${room.id}/host-action`, {
         action,
         targetUserId,
+        payload,
       });
       setRoom(updated);
-      if (action === 'approve-screenshare') {
+      if (action === 'approve-screenshare' && targetUserId) {
         setShareRequests((prev) => prev.filter((r) => r.userId !== targetUserId));
         void sendSignal('*', 'screenshare-approved', { targetUserId });
       }
-      const label =
-        action === 'admit'
-          ? 'Participant admitted from waiting room.'
-          : action === 'remove'
-            ? 'Participant removed (rejoin will require waiting room approval).'
-            : action === 'toggle-cohost'
-              ? 'Co-Host permissions updated.'
-              : 'Screen-share permission granted to intern.';
-      showToast(label);
-    } catch {
-      showToast('Host action failed or requires higher tier.');
+      if (action === 'spotlight') {
+        publishRealtimeData('spotlight-updated', { spotlightUserId: updated.spotlightUserId });
+        if (updated.spotlightUserId) setLayoutMode('speaker');
+      }
+      const labels: Record<string, string> = {
+        admit: 'Participant admitted from waiting room.',
+        'admit-all': 'All waiting room participants admitted.',
+        'waiting-room-message': 'Broadcast message sent to Waiting Room.',
+        remove: 'Participant moved to Waiting Room.',
+        'toggle-cohost': 'Co-Host permissions updated.',
+        'approve-screenshare': 'Screen-share permission granted.',
+        'ask-unmute': 'Unmute request sent to participant.',
+        'stop-video': 'Participant camera turned off.',
+        spotlight: updated.spotlightUserId ? 'Spotlight enabled for everyone.' : 'Spotlight removed.',
+        'lower-all-hands': 'All raised hands lowered.',
+        rename: 'Participant renamed.',
+        'transfer-host': 'Host role transferred.',
+        'update-security': 'Meeting security updated.',
+        'panic-suspend': 'All participant activities suspended & room locked.',
+      };
+      showToast(labels[action] ?? 'Host action completed.');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Host action failed or requires higher tier.');
     }
   };
 
+  const renameSelf = async () => {
+    if (!canHostControl && (room.allowRenameSelf === false || room.suspendedActivities)) {
+      showToast('Host has disabled renaming yourself.');
+      return;
+    }
+    const currentMe = room.participants.find((p) => p.userId === currentUser.id);
+    const next = window.prompt('Enter your display name:', currentMe?.fullName ?? currentUser.fullName);
+    if (!next || next.trim().length < 2) return;
+    try {
+      const updated = await post<MeetingRow>(`/meetings/${room.id}/rename-self`, {
+        newName: next.trim(),
+      });
+      setRoom(updated);
+      showToast('Display name updated.');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Unable to rename.');
+    }
+  };
+
+  // Polls & Q&A handlers
+  const handleCreatePoll = async (question: string, options: string[], multipleChoice: boolean) => {
+    const updated = await post<MeetingRow>(`/meetings/${room.id}/polls`, {
+      action: 'create',
+      question,
+      options,
+      multipleChoice,
+    });
+    setRoom(updated);
+  };
+  const handleVotePoll = async (pollId: string, optionIds: string[]) => {
+    const updated = await post<MeetingRow>(`/meetings/${room.id}/polls`, {
+      action: 'vote',
+      pollId,
+      optionIds,
+    });
+    setRoom(updated);
+  };
+  const handleClosePoll = async (pollId: string) => {
+    const updated = await post<MeetingRow>(`/meetings/${room.id}/polls`, {
+      action: 'close',
+      pollId,
+    });
+    setRoom(updated);
+  };
+  const handleAskQuestion = async (question: string) => {
+    const updated = await post<MeetingRow>(`/meetings/${room.id}/qa`, {
+      action: 'ask',
+      question,
+    });
+    setRoom(updated);
+  };
+  const handleUpvoteQuestion = async (qaId: string) => {
+    const updated = await post<MeetingRow>(`/meetings/${room.id}/qa`, {
+      action: 'upvote',
+      qaId,
+    });
+    setRoom(updated);
+  };
+  const handleAnswerQuestion = async (qaId: string, answerText: string) => {
+    const updated = await post<MeetingRow>(`/meetings/${room.id}/qa`, {
+      action: 'answer',
+      qaId,
+      answerText,
+    });
+    setRoom(updated);
+  };
+
+  // Breakout rooms handlers
+  const handleConfigureOrOpenBreakouts = async (
+    action: 'configure' | 'open',
+    roomsList: Array<{ id?: string; name: string; participantIds: string[] }>,
+    durationMinutes?: number,
+  ) => {
+    const updated = await post<MeetingRow>(`/meetings/${room.id}/breakouts`, {
+      action,
+      rooms: roomsList,
+      durationMinutes,
+    });
+    setRoom(updated);
+    showToast(action === 'open' ? 'Breakout rooms opened!' : 'Breakout rooms saved.');
+  };
+  const handleBroadcastBreakouts = async (message: string) => {
+    const updated = await post<MeetingRow>(`/meetings/${room.id}/breakouts`, {
+      action: 'broadcast',
+      message,
+    });
+    setRoom(updated);
+    showToast('Broadcast sent to all breakout rooms.');
+  };
+  const handleCloseAllBreakouts = async () => {
+    const updated = await post<MeetingRow>(`/meetings/${room.id}/breakouts`, {
+      action: 'close-all',
+    });
+    setRoom(updated);
+    setActiveBreakoutId(null);
+    showToast('All breakout rooms closed.');
+  };
+  const handleJoinBreakoutRoom = async (br: BreakoutRoomItem) => {
+    setActiveBreakoutId(br.id);
+    if (!isGuest) {
+      await post(`/meetings/${room.id}/breakouts`, { action: 'join-room', roomId: br.id }).catch(
+        () => undefined,
+      );
+    }
+    showToast(`Switched to Breakout Room: ${br.name}`);
+  };
+  const handleLeaveBreakoutRoom = async () => {
+    setActiveBreakoutId(null);
+    if (!isGuest) {
+      await post(`/meetings/${room.id}/breakouts`, { action: 'leave-room' }).catch(() => undefined);
+    }
+    showToast('Returned to Main Session.');
+  };
+
+  // Whiteboard & Screen Annotation handlers
+  const handleAddWhiteboardStroke = (stroke: WhiteboardStroke) => {
+    setWhiteboardStrokes((prev) => [...prev.slice(-400), stroke]);
+    void sendSignal('*', 'whiteboard-stroke', { stroke });
+  };
+  const handleUndoWhiteboard = () => {
+    setWhiteboardStrokes((prev) => prev.slice(0, -1));
+    void sendSignal('*', 'whiteboard-undo', {});
+  };
+  const handleClearWhiteboard = () => {
+    setWhiteboardStrokes([]);
+    void sendSignal('*', 'whiteboard-clear', {});
+  };
+
+  const handleExportAttendancePdf = async () => {
+    try {
+      const report = await liveGet<{ entries?: MeetingRow['attendanceLog'] }>(
+        `/meetings/${room.id}/attendance`,
+      );
+      exportMeetingAttendancePdf({
+        meeting: { ...room, notes: notesDraft || room.notes },
+        entries: report?.entries,
+        generatedByName: currentUser.fullName,
+      });
+    } catch {
+      exportMeetingAttendancePdf({
+        meeting: { ...room, notes: notesDraft || room.notes },
+        generatedByName: currentUser.fullName,
+      });
+    }
+  };
+
+  // Live Closed Captions (Web Speech API) + auto-append to Meeting Notes
+  useEffect(() => {
+    if (!captionsOn || typeof window === 'undefined') return;
+    const SpeechRec =
+      (window as unknown as { SpeechRecognition?: new () => unknown; webkitSpeechRecognition?: new () => unknown })
+        .SpeechRecognition ||
+      (window as unknown as { webkitSpeechRecognition?: new () => unknown }).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      showToast('Live Captions (SpeechRecognition) is best supported in Chrome / Edge.');
+      setCaptionsOn(false);
+      return;
+    }
+    let stopped = false;
+    const rec = new SpeechRec() as {
+      continuous: boolean;
+      interimResults: boolean;
+      lang: string;
+      onresult: ((e: { results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => void) | null;
+      onerror: (() => void) | null;
+      onend: (() => void) | null;
+      start: () => void;
+      stop: () => void;
+    };
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = 'en-US';
+    rec.onresult = (event) => {
+      const idx = event.results.length - 1;
+      if (idx < 0) return;
+      const latest = event.results[idx];
+      const text = latest?.[0]?.transcript?.trim();
+      if (!text || !micOnRef.current) return;
+      const capId = latest.isFinal ? `cap_fin_${Date.now()}` : 'cap_live_self';
+      setLiveCaptions((prev) => {
+        const filtered = prev.filter((c) => c.id !== 'cap_live_self');
+        return [...filtered.slice(-2), { id: capId, speaker: currentUser.fullName, text }];
+      });
+      if (latest.isFinal) {
+        void sendSignal('*', 'live-caption', { speaker: currentUser.fullName, text });
+        const stamp = new Date().toLocaleTimeString('en-LK', { hour: '2-digit', minute: '2-digit' });
+        setNotesDraft((prev) => `${prev ? `${prev}\n` : ''}[${stamp}] ${currentUser.fullName}: ${text}`);
+        setTimeout(() => {
+          setLiveCaptions((prev) => prev.filter((c) => c.id !== capId));
+        }, 5500);
+      }
+    };
+    rec.onerror = () => undefined;
+    rec.onend = () => {
+      if (!stopped) {
+        try {
+          rec.start();
+        } catch {
+          // ignore
+        }
+      }
+    };
+    try {
+      rec.start();
+    } catch {
+      // ignore
+    }
+    return () => {
+      stopped = true;
+      try {
+        rec.stop();
+      } catch {
+        // ignore
+      }
+    };
+  }, [captionsOn, currentUser.fullName, sendSignal, showToast]);
+
+  // Network Health Stats & Online/Offline Auto-Reconnect Listener
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onOffline = () => setReconnecting(true);
+    const onOnline = () => {
+      setReconnecting(false);
+      showToast('Back online — reconnecting media...');
+    };
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('online', onOnline);
+
+    const statsTimer = setInterval(async () => {
+      let rttMs = 35;
+      let bitrateKbps = 1200;
+      let packetLossPct = 0;
+      const vSettings = localStreamRef.current?.getVideoTracks()[0]?.getSettings();
+      const resolution =
+        vSettings?.width && vSettings?.height ? `${vSettings.width}×${vSettings.height}` : 'Audio Only';
+
+      const firstPc = Array.from(pcsRef.current.values())[0];
+      if (firstPc && firstPc.connectionState === 'connected') {
+        try {
+          const report = await firstPc.getStats();
+          report.forEach((stat) => {
+            if (stat.type === 'candidate-pair' && stat.state === 'succeeded' && typeof stat.currentRoundTripTime === 'number') {
+              rttMs = Math.round(stat.currentRoundTripTime * 1000);
+            }
+            if (stat.type === 'inbound-rtp' && typeof stat.packetsLost === 'number' && typeof stat.packetsReceived === 'number') {
+              const total = stat.packetsLost + stat.packetsReceived;
+              if (total > 0) packetLossPct = (stat.packetsLost / total) * 100;
+            }
+          });
+        } catch {
+          // fallback below
+        }
+      } else {
+        const navConn = (navigator as Navigator & { connection?: { rtt?: number; downlink?: number } })
+          .connection;
+        if (typeof navConn?.rtt === 'number' && navConn.rtt > 0) rttMs = navConn.rtt;
+        if (typeof navConn?.downlink === 'number' && navConn.downlink > 0) {
+          bitrateKbps = Math.round(navConn.downlink * 400);
+        }
+      }
+
+      const bars: 1 | 2 | 3 | 4 =
+        rttMs < 90 && packetLossPct < 1.5
+          ? 4
+          : rttMs < 180 && packetLossPct < 4
+            ? 3
+            : rttMs < 350
+              ? 2
+              : 1;
+      const qualityLabel =
+        bars === 4 ? 'Excellent' : bars === 3 ? 'Good' : bars === 2 ? 'Fair' : 'Weak';
+      setNetworkStats({
+        rttMs,
+        bitrateKbps,
+        packetLossPct,
+        resolution,
+        transport: sfuModeRef.current ? 'LiveKit SFU' : 'WebRTC P2P',
+        qualityLabel,
+        bars,
+      });
+    }, 3000);
+
+    return () => {
+      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('online', onOnline);
+      clearInterval(statsTimer);
+    };
+  }, [showToast]);
+
+  // Bandwidth Saver (Audio-Only Mode) effect
+  useEffect(() => {
+    const lkRoom = sfuRoomRef.current;
+    if (bandwidthSaver) {
+      if (camOnRef.current) {
+        localStreamRef.current?.getVideoTracks().forEach((t) => {
+          t.enabled = false;
+        });
+        camOnRef.current = false;
+        setCamOn(false);
+        void mPatch('/participant', { camOn: false }).catch(() => undefined);
+      }
+      if (lkRoom && lkRoom.state === 'connected') {
+        for (const remote of lkRoom.remoteParticipants.values()) {
+          const camPub = remote.getTrackPublication(Track.Source.Camera) as
+            | RemoteTrackPublication
+            | undefined;
+          camPub?.setSubscribed(false);
+        }
+      }
+    }
+  }, [bandwidthSaver, mPatch]);
+
+  // Zoom Keyboard Shortcuts & Push-to-Talk (Spacebar hold while muted)
+  useEffect(() => {
+    const isTypingTarget = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const tag = el.tagName.toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      if (e.key === '?') {
+        e.preventDefault();
+        setShowShortcutsModal((v) => !v);
+        return;
+      }
+      if (e.code === 'Space' && !e.repeat && !micOnRef.current) {
+        if (!canHostControl && (room.allowUnmuteSelf === false || room.suspendedActivities)) return;
+        e.preventDefault();
+        setPushToTalkActive(true);
+        localStreamRef.current?.getAudioTracks().forEach((t) => {
+          t.enabled = true;
+        });
+        const micPub = sfuRoomRef.current?.localParticipant.getTrackPublication(Track.Source.Microphone);
+        if (micPub?.isMuted) void micPub.unmute().catch(() => undefined);
+        return;
+      }
+      if (!e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === 'a') {
+        e.preventDefault();
+        void toggleMic();
+      } else if (k === 'v') {
+        e.preventDefault();
+        void toggleCam();
+      } else if (k === 's') {
+        e.preventDefault();
+        void toggleScreenShare();
+      } else if (k === 'h') {
+        e.preventDefault();
+        setSideTab((s) => (s === 'chat' ? 'closed' : 'chat'));
+      } else if (k === 'u') {
+        e.preventDefault();
+        setSideTab((s) => (s === 'participants' ? 'closed' : 'participants'));
+      } else if (k === 'y') {
+        e.preventDefault();
+        void toggleHandRaise();
+      } else if (k === 'c') {
+        e.preventDefault();
+        setCaptionsOn((v) => !v);
+      } else if (k === 'f') {
+        e.preventDefault();
+        void toggleFullscreen();
+      }
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && pushToTalkActive) {
+        e.preventDefault();
+        setPushToTalkActive(false);
+        if (!micOnRef.current) {
+          localStreamRef.current?.getAudioTracks().forEach((t) => {
+            t.enabled = false;
+          });
+          const micPub = sfuRoomRef.current?.localParticipant.getTrackPublication(Track.Source.Microphone);
+          if (micPub && !micPub.isMuted) void micPub.mute().catch(() => undefined);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canHostControl, pushToTalkActive, room.allowUnmuteSelf, room.suspendedActivities]);
+
   const copyInviteLink = async () => {
     const url = `${window.location.origin}/meet?room=${room.roomCode}`;
-    await navigator.clipboard.writeText(url).catch(() => undefined);
+    const text = room.passcode ? `${url}\nPasscode: ${room.passcode}` : url;
+    await navigator.clipboard.writeText(text).catch(() => undefined);
     setCopiedCode(true);
     setTimeout(() => setCopiedCode(false), 2000);
   };
@@ -3359,10 +4465,10 @@ export function MeetingStudio({
     }
 
     try {
-      if (endForAll) {
+      if (endForAll && !isGuest) {
         await patch(`/meetings/${room.id}`, { status: 'COMPLETED' });
       } else {
-        await post(`/meetings/${room.id}/leave`, {});
+        await mPost('/leave', {});
       }
     } catch {
       // Proceed cleanly out of studio
@@ -3543,9 +4649,26 @@ export function MeetingStudio({
   const safeGalleryPage = Math.min(galleryPage, totalGalleryPages - 1);
 
   const visibleGalleryParticipants = useMemo(() => {
+    const filtered = sortedGalleryParticipants.filter((p) => {
+      if (hideSelfView && p.userId === currentUser.id && sortedGalleryParticipants.length > 1) {
+        return false;
+      }
+      if (hideNonVideo && !p.camOn && p.userId !== room.spotlightUserId && sortedGalleryParticipants.length > 1) {
+        return false;
+      }
+      return true;
+    });
+    const list = filtered.length > 0 ? filtered : sortedGalleryParticipants;
     const start = safeGalleryPage * GALLERY_PAGE_SIZE;
-    return sortedGalleryParticipants.slice(start, start + GALLERY_PAGE_SIZE);
-  }, [safeGalleryPage, sortedGalleryParticipants]);
+    return list.slice(start, start + GALLERY_PAGE_SIZE);
+  }, [
+    currentUser.id,
+    hideNonVideo,
+    hideSelfView,
+    room.spotlightUserId,
+    safeGalleryPage,
+    sortedGalleryParticipants,
+  ]);
 
   // Compute grid columns in Gallery View based on visible tile count (up to 16 per page for 100+ rooms)
   const gridColsClass = useMemo(() => {
@@ -3567,6 +4690,10 @@ export function MeetingStudio({
   }, []);
 
   const activeSpeakerParticipant = useMemo(() => {
+    if (room.spotlightUserId) {
+      const spot = room.participants.find((p) => p.userId === room.spotlightUserId);
+      if (spot) return spot;
+    }
     if (pinnedUserId) {
       const pinned = room.participants.find((p) => p.userId === pinnedUserId);
       if (pinned) return pinned;
@@ -3575,7 +4702,7 @@ export function MeetingStudio({
       (p) => speakingUsers[p.userId] && p.micOn && p.userId !== currentUser.id,
     );
     const hostParticipant = room.participants.find(
-      (p) => p.fullName === room.organizerName,
+      (p) => p.userId === room.organizerId || p.fullName === room.organizerName,
     );
     return (
       speaking ??
@@ -3584,7 +4711,15 @@ export function MeetingStudio({
       room.participants[0] ??
       null
     );
-  }, [currentUser.id, pinnedUserId, room.organizerName, room.participants, speakingUsers]);
+  }, [
+    currentUser.id,
+    pinnedUserId,
+    room.organizerId,
+    room.organizerName,
+    room.participants,
+    room.spotlightUserId,
+    speakingUsers,
+  ]);
 
   // In SFU mode, subscribe/upgrade video only for visible page tiles (+ active speakers) so 100+ cameras run with zero lag
   useEffect(() => {
@@ -3652,11 +4787,15 @@ export function MeetingStudio({
             <RemoteAudioPlayer
               key={`audio-cam-${p.userId}`}
               stream={remoteCamStreams[p.userId]}
+              sinkId={selectedSpeakerId}
+              muted={(remoteVolumes[p.userId] ?? 1) === 0}
+              volume={remoteVolumes[p.userId] ?? 1}
               onAutoplayBlocked={handleAudioBlocked}
             />
             <RemoteAudioPlayer
               key={`audio-scr-${p.userId}`}
               stream={remoteScreenStreams[p.userId]}
+              sinkId={selectedSpeakerId}
               muted={screenAudioMuted}
               volume={screenAudioMuted ? 0 : 1}
               onAutoplayBlocked={handleAudioBlocked}
@@ -3697,24 +4836,54 @@ export function MeetingStudio({
               <span className="rounded-full bg-white/10 px-2.5 py-0.5 font-mono text-[11px] text-white/80">
                 {formatDuration(elapsedSec)}
               </span>
+              {room.isLocked && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-rose-400/35 bg-rose-500/20 px-2.5 py-0.5 text-[10px] font-bold text-rose-200">
+                  <Lock className="h-3 w-3" /> Locked
+                </span>
+              )}
               {sfuActive && (
                 <span className="rounded-full border border-emerald-400/30 bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-300">
                   SFU · 100+ Ready
                 </span>
               )}
-              {recording && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-600/90 px-2.5 py-0.5 text-[11px] font-semibold text-white">
-                  <Radio className="h-3 w-3 animate-pulse" /> REC {formatDuration(recordingSec)}
+              {(recording || room.recordingActive) && (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-rose-600/95 px-2.5 py-0.5 text-[11px] font-semibold text-white shadow">
+                  <Radio className="h-3 w-3 animate-pulse" />
+                  {recording
+                    ? `${recordingPaused ? 'PAUSED' : 'REC'} ${formatDuration(recordingSec)}`
+                    : `REC · ${room.recordingByName || 'Host'}`}
+                </span>
+              )}
+              {bandwidthSaver && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                  <Wifi className="h-3 w-3" /> Audio-Only
                 </span>
               )}
             </div>
             <p className="truncate text-[11px] text-white/55">
               {room.projectName} · Host: {room.organizerName}
+              {room.passcode && canHostControl ? ` · Passcode: ${room.passcode}` : ''}
             </p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {/* Live Network Health Signal Bars Pill */}
+          <button
+            type="button"
+            onClick={() => setShowStatsModal(true)}
+            title="View Network Health Statistics"
+            className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/[0.06] px-2.5 py-1.5 text-[11px] font-semibold text-white/85 transition hover:bg-white/15"
+          >
+            <Activity
+              className={cn(
+                'h-3.5 w-3.5',
+                networkStats.bars >= 3 ? 'text-emerald-400' : networkStats.bars === 2 ? 'text-amber-400' : 'text-rose-400',
+              )}
+            />
+            <span className="hidden sm:inline">{networkStats.rttMs}ms</span>
+          </button>
+
           {audioBlocked && (
             <button
               type="button"
@@ -3791,6 +4960,87 @@ export function MeetingStudio({
         </div>
       </header>
 
+      {/* Auto-Reconnect Banner */}
+      {reconnecting && (
+        <div className="z-40 flex items-center justify-center gap-2 bg-amber-500 px-4 py-1.5 text-xs font-bold text-slate-950">
+          <span className="h-2 w-2 animate-ping rounded-full bg-slate-950" />
+          Connection unstable — Reconnecting automatically...
+        </div>
+      )}
+
+      {/* Active Breakout Room Banner */}
+      {(room.breakoutRooms ?? []).some((b) => b.active) && (
+        <div className="z-30 flex flex-wrap items-center justify-between gap-2 border-b border-[#D4A843]/30 bg-[#D4A843]/15 px-5 py-1.5 text-xs text-amber-100">
+          <span className="flex items-center gap-2 font-medium">
+            <DoorOpen className="h-3.5 w-3.5 text-[#D4A843]" />
+            {activeBreakoutId
+              ? `In Breakout Room: ${(room.breakoutRooms ?? []).find((b) => b.id === activeBreakoutId)?.name ?? 'Sub-room'}`
+              : 'Breakout Rooms are open!'}
+          </span>
+          <div className="flex items-center gap-2">
+            {activeBreakoutId ? (
+              <button
+                type="button"
+                onClick={() => void handleLeaveBreakoutRoom()}
+                className="rounded-lg bg-white/15 px-2.5 py-0.5 text-[11px] font-semibold text-white hover:bg-white/25"
+              >
+                Return to Main Room
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setBreakoutModalOpen(true)}
+                className="rounded-lg bg-[#D4A843] px-2.5 py-0.5 text-[11px] font-bold text-slate-950 hover:bg-[#e5ba52]"
+              >
+                Open Breakout Rooms
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Push-to-Talk Indicator Pill */}
+      {pushToTalkActive && (
+        <div className="pointer-events-none absolute left-1/2 top-16 z-40 -translate-x-1/2 rounded-full bg-emerald-500 px-4 py-1.5 text-xs font-bold text-white shadow-xl">
+          🎙️ Push-to-Talk Active (Release Space to Mute)
+        </div>
+      )}
+
+      {/* Host Ask-to-Unmute Modal Prompt */}
+      {askUnmutePrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm space-y-4 rounded-3xl border border-white/15 bg-[#111827] p-6 text-center text-white shadow-2xl">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[#D4A843]/20 text-[#D4A843]">
+              <Mic className="h-6 w-6" />
+            </div>
+            <h3 className="font-display text-base font-semibold">The host would like you to unmute</h3>
+            <p className="text-xs text-white/65">
+              <strong>{askUnmutePrompt.by}</strong> asked you to unmute your microphone.
+            </p>
+            <div className="flex justify-center gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                className="border-white/15 bg-white/10 text-white"
+                onClick={() => setAskUnmutePrompt(null)}
+              >
+                Stay Muted
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={() => {
+                  setAskUnmutePrompt(null);
+                  if (!micOn) void toggleMic();
+                }}
+              >
+                Unmute Now
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toast notification */}
       {bannerNotice && (
         <div className="pointer-events-none absolute left-1/2 top-16 z-30 -translate-x-1/2 rounded-full border border-white/15 bg-slate-900/95 px-4 py-1.5 text-xs font-medium text-white shadow-xl backdrop-blur">
@@ -3853,20 +5103,60 @@ export function MeetingStudio({
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* Stage */}
         <div ref={stageRef} className="relative flex-1 overflow-y-auto p-4 md:p-5">
+          {whiteboardMode === 'whiteboard' && (
+            <WhiteboardOverlay
+              mode="whiteboard"
+              strokes={whiteboardStrokes}
+              authorName={currentUser.fullName}
+              onAddStroke={handleAddWhiteboardStroke}
+              onUndo={handleUndoWhiteboard}
+              onClear={handleClearWhiteboard}
+              onClose={() => setWhiteboardMode('closed')}
+            />
+          )}
+
           {activeScreenShare ? (
             <div className="flex h-full flex-col gap-4 lg:flex-row">
-              {/* Spotlight Presented Screen */}
+              {/* Spotlight Presented Screen (with Side-by-Side Resizer, Zoom, Optimize Video & Live Annotation) */}
               <div
                 onDoubleClick={() => void toggleFullscreen()}
+                style={sideBySideShare ? { width: `${shareSplitPct}%`, flex: 'none' } : undefined}
                 className="relative flex h-full min-h-[380px] flex-1 items-center justify-center overflow-hidden rounded-2xl border border-emerald-500/40 bg-black shadow-2xl"
               >
-                <VideoCanvas
-                  stream={activeScreenShare.stream}
-                  className="h-full w-full object-contain"
-                />
-                <div className="absolute left-3 top-3 flex flex-wrap items-center gap-2">
+                <div
+                  className="h-full w-full overflow-auto"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <VideoCanvas
+                    stream={activeScreenShare.stream}
+                    style={{
+                      transform: `scale(${shareZoom})`,
+                      transformOrigin: 'center center',
+                      transition: 'transform 150ms ease',
+                    }}
+                    className="h-full w-full object-contain"
+                  />
+                </div>
+
+                {whiteboardMode === 'annotate' && (
+                  <WhiteboardOverlay
+                    mode="annotate"
+                    strokes={whiteboardStrokes}
+                    authorName={currentUser.fullName}
+                    onAddStroke={handleAddWhiteboardStroke}
+                    onUndo={handleUndoWhiteboard}
+                    onClear={handleClearWhiteboard}
+                    onClose={() => setWhiteboardMode('closed')}
+                  />
+                )}
+
+                <div className="absolute left-3 top-3 z-20 flex flex-wrap items-center gap-1.5">
                   <div className="inline-flex items-center gap-2 rounded-full bg-emerald-600/95 px-3 py-1 text-xs font-semibold text-white shadow">
-                    <MonitorUp className="h-3.5 w-3.5" /> {activeScreenShare.presenterName} is sharing screen
+                    <MonitorUp className="h-3.5 w-3.5" /> {activeScreenShare.presenterName} is sharing
                   </div>
                   {activeScreenShare.stream.getAudioTracks().some((t) => t.readyState === 'live') ? (
                     activeScreenShare.userId === currentUser.id ? (
@@ -3886,11 +5176,11 @@ export function MeetingStudio({
                       >
                         {screenAudioMuted ? (
                           <>
-                            <VolumeX className="h-3.5 w-3.5" /> Screen Sound Off
+                            <VolumeX className="h-3.5 w-3.5" /> Sound Off
                           </>
                         ) : (
                           <>
-                            <Volume2 className="h-3.5 w-3.5" /> Screen Sound On
+                            <Volume2 className="h-3.5 w-3.5" /> Sound On
                           </>
                         )}
                       </button>
@@ -3902,28 +5192,126 @@ export function MeetingStudio({
                       </span>
                     )
                   )}
-                  {activeScreenShare.userId === currentUser.id && (
+
+                  {/* Zoom Pro Screen Share Tools: Side-by-Side, Zoom, Annotate, Optimize */}
+                  <button
+                    type="button"
+                    onClick={() => setSideBySideShare((v) => !v)}
+                    title="Toggle Side-by-Side Mode"
+                    className={cn(
+                      'inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold shadow backdrop-blur transition',
+                      sideBySideShare
+                        ? 'bg-[#D4A843] text-slate-950'
+                        : 'bg-black/65 text-white/90 hover:bg-black/85',
+                    )}
+                  >
+                    <Columns2 className="h-3 w-3" /> Side-by-Side
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setWhiteboardMode((m) => (m === 'annotate' ? 'closed' : 'annotate'))
+                    }
+                    title="Annotate on Shared Screen"
+                    className={cn(
+                      'inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold shadow backdrop-blur transition',
+                      whiteboardMode === 'annotate'
+                        ? 'bg-[#D4A843] text-slate-950'
+                        : 'bg-black/65 text-white/90 hover:bg-black/85',
+                    )}
+                  >
+                    <PenTool className="h-3 w-3" /> Annotate
+                  </button>
+                  <div className="inline-flex items-center gap-1 rounded-full bg-black/65 px-2 py-0.5 text-[11px] text-white backdrop-blur">
                     <button
                       type="button"
-                      onClick={() => void stopScreenShare()}
-                      className="rounded-full bg-rose-600 px-3 py-1 text-xs font-bold text-white shadow transition hover:bg-rose-500"
+                      onClick={() => setShareZoom((z) => Math.max(0.5, Number((z - 0.25).toFixed(2))))}
+                      title="Zoom Out"
+                      className="p-0.5 hover:text-[#D4A843]"
                     >
-                      Stop Share
+                      <ZoomOut className="h-3 w-3" />
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setShareZoom(1)}
+                      className="font-mono text-[10px]"
+                      title="Reset Zoom"
+                    >
+                      {Math.round(shareZoom * 100)}%
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShareZoom((z) => Math.min(3, Number((z + 0.25).toFixed(2))))}
+                      title="Zoom In"
+                      className="p-0.5 hover:text-[#D4A843]"
+                    >
+                      <ZoomIn className="h-3 w-3" />
+                    </button>
+                  </div>
+                  {activeScreenShare.userId === currentUser.id && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !optimizeVideoShare;
+                          setOptimizeVideoShare(next);
+                          const vt = screenStreamRef.current?.getVideoTracks()[0];
+                          if (vt) vt.contentHint = next ? 'motion' : 'detail';
+                          showToast(
+                            next ? 'Optimized screen share for smooth video clips.' : 'Optimized for crisp text/slides.',
+                          );
+                        }}
+                        className={cn(
+                          'rounded-full px-2.5 py-1 text-[11px] font-semibold shadow backdrop-blur transition',
+                          optimizeVideoShare
+                            ? 'bg-sky-500 text-white'
+                            : 'bg-black/65 text-white/80 hover:bg-black/85',
+                        )}
+                      >
+                        {optimizeVideoShare ? 'Video Mode' : 'Crisp Text'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void stopScreenShare()}
+                        className="rounded-full bg-rose-600 px-3 py-1 text-xs font-bold text-white shadow transition hover:bg-rose-500"
+                      >
+                        Stop Share
+                      </button>
+                    </>
                   )}
                 </div>
+
+                {sideBySideShare && (
+                  <div className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full bg-black/75 px-3 py-1 text-[11px] text-white backdrop-blur">
+                    <span>Split: {shareSplitPct}%</span>
+                    <input
+                      type="range"
+                      min={40}
+                      max={82}
+                      value={shareSplitPct}
+                      onChange={(e) => setShareSplitPct(Number(e.target.value))}
+                      className="w-24 accent-[#D4A843]"
+                    />
+                  </div>
+                )}
+
                 <button
                   type="button"
                   onClick={() => void toggleFullscreen()}
                   title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen meeting'}
-                  className="absolute right-3 top-3 rounded-lg bg-black/60 p-2 text-white/80 backdrop-blur transition hover:bg-black/85 hover:text-white"
+                  className="absolute right-3 top-3 z-20 rounded-lg bg-black/60 p-2 text-white/80 backdrop-blur transition hover:bg-black/85 hover:text-white"
                 >
                   {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
                 </button>
               </div>
 
               {/* Participant Filmstrip */}
-              <div className="flex gap-3 overflow-x-auto lg:w-64 lg:flex-col lg:overflow-y-auto">
+              <div
+                className={cn(
+                  'flex gap-3 overflow-x-auto lg:flex-col lg:overflow-y-auto',
+                  sideBySideShare ? 'lg:flex-1' : 'lg:w-64',
+                )}
+              >
                 {room.participants.map((p) => {
                   const isSelf = p.userId === currentUser.id;
                   const react = [...reactions].reverse().find((r) => r.userId === p.userId)?.emoji;
@@ -3934,10 +5322,22 @@ export function MeetingStudio({
                         stream={isSelf ? localStream : remoteCamStreams[p.userId]}
                         isSelf={isSelf}
                         isSpeaking={Boolean(speakingUsers[p.userId])}
+                        isSpotlight={room.spotlightUserId === p.userId}
+                        mirrorSelf={mirrorVideo}
+                        touchUp={touchUp}
+                        videoEffect={videoEffect}
+                        remoteVolume={remoteVolumes[p.userId] ?? 1}
+                        onVolumeChange={(uid, vol) =>
+                          setRemoteVolumes((prev) => ({ ...prev, [uid]: vol }))
+                        }
                         reaction={react}
-                        compact
+                        compact={!sideBySideShare}
                         canHostControl={canHostControl}
                         onHostMute={hostMute}
+                        onHostStopVideo={(uid) => void hostAction('stop-video', uid)}
+                        onToggleSpotlight={(uid) =>
+                          void hostAction('spotlight', room.spotlightUserId === uid ? undefined : uid)
+                        }
                         connectionStatus={peerConnStates[p.userId]}
                         iceTurnConfigured={iceTurnConfigured}
                         onRetryConnection={handleRetryPeerConnection}
@@ -3959,6 +5359,14 @@ export function MeetingStudio({
                   }
                   isSelf={activeSpeakerParticipant.userId === currentUser.id}
                   isSpeaking={Boolean(speakingUsers[activeSpeakerParticipant.userId])}
+                  isSpotlight={room.spotlightUserId === activeSpeakerParticipant.userId}
+                  mirrorSelf={mirrorVideo}
+                  touchUp={touchUp}
+                  videoEffect={videoEffect}
+                  remoteVolume={remoteVolumes[activeSpeakerParticipant.userId] ?? 1}
+                  onVolumeChange={(uid, vol) =>
+                    setRemoteVolumes((prev) => ({ ...prev, [uid]: vol }))
+                  }
                   reaction={
                     [...reactions].reverse().find((r) => r.userId === activeSpeakerParticipant.userId)
                       ?.emoji
@@ -3966,8 +5374,12 @@ export function MeetingStudio({
                   fillStage
                   isPinned={pinnedUserId === activeSpeakerParticipant.userId}
                   onTogglePin={togglePinMainScreen}
+                  onToggleSpotlight={(uid) =>
+                    void hostAction('spotlight', room.spotlightUserId === uid ? undefined : uid)
+                  }
                   canHostControl={canHostControl}
                   onHostMute={hostMute}
+                  onHostStopVideo={(uid) => void hostAction('stop-video', uid)}
                   connectionStatus={peerConnStates[activeSpeakerParticipant.userId]}
                   iceTurnConfigured={iceTurnConfigured}
                   onRetryConnection={handleRetryPeerConnection}
@@ -3987,6 +5399,10 @@ export function MeetingStudio({
                             stream={isSelf ? localStream : remoteCamStreams[p.userId]}
                             isSelf={isSelf}
                             isSpeaking={Boolean(speakingUsers[p.userId])}
+                            isSpotlight={room.spotlightUserId === p.userId}
+                            mirrorSelf={mirrorVideo}
+                            touchUp={touchUp}
+                            videoEffect={videoEffect}
                             reaction={react}
                             compact
                             canHostControl={canHostControl}
@@ -4014,11 +5430,23 @@ export function MeetingStudio({
                       stream={isSelf ? localStream : remoteCamStreams[p.userId]}
                       isSelf={isSelf}
                       isSpeaking={Boolean(speakingUsers[p.userId])}
+                      isSpotlight={room.spotlightUserId === p.userId}
+                      mirrorSelf={mirrorVideo}
+                      touchUp={touchUp}
+                      videoEffect={videoEffect}
+                      remoteVolume={remoteVolumes[p.userId] ?? 1}
+                      onVolumeChange={(uid, vol) =>
+                        setRemoteVolumes((prev) => ({ ...prev, [uid]: vol }))
+                      }
                       reaction={react}
                       isPinned={pinnedUserId === p.userId}
                       onTogglePin={togglePinMainScreen}
+                      onToggleSpotlight={(uid) =>
+                        void hostAction('spotlight', room.spotlightUserId === uid ? undefined : uid)
+                      }
                       canHostControl={canHostControl}
                       onHostMute={hostMute}
+                      onHostStopVideo={(uid) => void hostAction('stop-video', uid)}
                       connectionStatus={peerConnStates[p.userId]}
                       iceTurnConfigured={iceTurnConfigured}
                       onRetryConnection={handleRetryPeerConnection}
@@ -4051,17 +5479,33 @@ export function MeetingStudio({
               )}
             </div>
           )}
+
+          {/* Live Closed Captions (CC) Subtitle Overlay */}
+          {captionsOn && liveCaptions.length > 0 && (
+            <div className="pointer-events-none sticky bottom-3 z-30 mx-auto mt-3 flex max-w-2xl flex-col items-center gap-1">
+              {liveCaptions.map((cap) => (
+                <div
+                  key={cap.id}
+                  className="rounded-xl bg-black/80 px-4 py-1.5 text-center text-xs text-white shadow-xl backdrop-blur"
+                >
+                  <span className="mr-1.5 font-bold text-[#D4A843]">{cap.speaker}:</span>
+                  <span>{cap.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Collapsible Right Drawer: Participants | Chat | Notes */}
+        {/* Collapsible Right Drawer: Participants | Chat | Polls & Q&A | Notes */}
         {sideTab !== 'closed' && (
-          <aside className="flex w-full max-w-[340px] shrink-0 flex-col border-l border-white/10 bg-[#0F1522]">
+          <aside className="flex w-full max-w-[350px] shrink-0 flex-col border-l border-white/10 bg-[#0F1522]">
             <div className="flex items-center justify-between border-b border-white/10 px-3 py-2.5">
-              <div className="flex gap-1">
+              <div className="flex flex-wrap gap-1">
                 {(
                   [
                     ['participants', `People (${room.participants.length})`],
                     ['chat', 'Chat'],
+                    ['polls', 'Polls'],
                     ['notes', 'Notes'],
                   ] as const
                 ).map(([tabKey, label]) => (
@@ -4070,7 +5514,7 @@ export function MeetingStudio({
                     type="button"
                     onClick={() => setSideTab(tabKey)}
                     className={cn(
-                      'rounded-lg px-2.5 py-1.5 text-xs font-semibold transition',
+                      'rounded-lg px-2 py-1.5 text-[11px] font-semibold transition',
                       sideTab === tabKey
                         ? 'bg-[#D4A843] text-slate-950'
                         : 'text-white/65 hover:bg-white/10 hover:text-white',
@@ -4092,12 +5536,29 @@ export function MeetingStudio({
 
             {sideTab === 'participants' && (
               <div className="flex flex-1 flex-col overflow-hidden p-3">
+                {/* Search bar */}
+                <div className="relative mb-2.5">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-white/40" />
+                  <input
+                    value={participantSearch}
+                    onChange={(e) => setParticipantSearch(e.target.value)}
+                    placeholder="Search participants..."
+                    className="w-full rounded-xl border border-white/15 bg-white/5 py-1.5 pl-8 pr-3 text-xs text-white placeholder:text-white/40 focus:border-[#D4A843] focus:outline-none"
+                  />
+                </div>
+
                 <div className="flex-1 space-y-2 overflow-y-auto">
                   {canHostControl && (room.waitingRoom?.length ?? 0) > 0 && (
-                    <div className="mb-3 space-y-1.5 rounded-xl border border-amber-400/25 bg-amber-400/10 p-2.5">
+                    <div className="mb-3 space-y-2 rounded-xl border border-amber-400/25 bg-amber-400/10 p-2.5">
                       <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-amber-300">
-                        <span>Waiting Room</span>
-                        <span>{room.waitingRoom?.length}</span>
+                        <span>Waiting Room ({room.waitingRoom?.length})</span>
+                        <button
+                          type="button"
+                          onClick={() => void hostAction('admit-all')}
+                          className="rounded bg-emerald-500 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-emerald-600"
+                        >
+                          Admit All
+                        </button>
                       </div>
                       {(room.waitingRoom ?? []).map((w) => (
                         <div
@@ -4106,7 +5567,7 @@ export function MeetingStudio({
                         >
                           <div className="min-w-0">
                             <p className="truncate text-xs font-semibold text-white">{w.fullName}</p>
-                            <p className="text-[10px] text-white/50">{w.role}</p>
+                            <p className="text-[10px] text-white/50">{w.isGuest ? 'EXTERNAL GUEST' : w.role}</p>
                           </div>
                           <div className="flex items-center gap-1">
                             <button
@@ -4126,118 +5587,239 @@ export function MeetingStudio({
                           </div>
                         </div>
                       ))}
+                      {/* Host -> Waiting Room Broadcast Message */}
+                      <div className="flex gap-1.5 pt-1">
+                        <input
+                          value={waitingBroadcastDraft}
+                          onChange={(e) => setWaitingBroadcastDraft(e.target.value)}
+                          placeholder="Message waiting room..."
+                          className="flex-1 rounded-lg border border-white/15 bg-black/40 px-2 py-1 text-[11px] text-white placeholder:text-white/40 outline-none"
+                        />
+                        <button
+                          type="button"
+                          disabled={!waitingBroadcastDraft.trim()}
+                          onClick={() => {
+                            void hostAction('waiting-room-message', undefined, {
+                              message: waitingBroadcastDraft.trim(),
+                            });
+                            setWaitingBroadcastDraft('');
+                          }}
+                          className="rounded-lg bg-[#D4A843] px-2 py-1 text-[10px] font-bold text-slate-950 disabled:opacity-40"
+                        >
+                          <Megaphone className="h-3 w-3" />
+                        </button>
+                      </div>
                     </div>
                   )}
-                  {room.participants.map((p) => {
-                    const isSelf = p.userId === currentUser.id;
-                    const internApproved = (room.screenShareApprovedIds ?? []).includes(p.userId);
-                    const isCoHost = (room.coHostIds ?? []).includes(p.userId);
-                    return (
-                      <div
-                        key={p.userId}
-                        className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5"
-                      >
-                        <div className="flex min-w-0 items-center gap-2.5">
-                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#D4A843] to-[#9A7222] text-xs font-bold text-slate-950">
-                            {getInitials(p.fullName)}
+
+                  {/* Raised hands sorted automatically to top */}
+                  {[...room.participants]
+                    .filter((p) =>
+                      participantSearch.trim()
+                        ? p.fullName.toLowerCase().includes(participantSearch.trim().toLowerCase()) ||
+                          (p.companyId ?? '').toLowerCase().includes(participantSearch.trim().toLowerCase())
+                        : true,
+                    )
+                    .sort((a, b) => Number(b.handRaised) - Number(a.handRaised))
+                    .map((p) => {
+                      const isSelf = p.userId === currentUser.id;
+                      const internApproved = (room.screenShareApprovedIds ?? []).includes(p.userId);
+                      const isCoHost = (room.coHostIds ?? []).includes(p.userId);
+                      const isHostPerson = p.userId === room.organizerId || p.fullName === room.organizerName;
+                      const isSpot = room.spotlightUserId === p.userId;
+                      return (
+                        <div
+                          key={p.userId}
+                          className="space-y-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex min-w-0 items-center gap-2.5">
+                              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#D4A843] to-[#9A7222] text-xs font-bold text-slate-950">
+                                {getInitials(p.fullName)}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="truncate text-xs font-semibold text-white">
+                                  {formatParticipantDisplay(p)} {isSelf && '(You)'}
+                                </p>
+                                <p className="text-[10px] text-white/50">
+                                  {p.isGuest ? 'GUEST' : p.role}
+                                  {isHostPerson ? ' · Host' : isCoHost ? ' · Co-Host' : ''}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              {p.handRaised && (
+                                <span title="Hand raised" className="text-amber-400">
+                                  <Hand className="h-3.5 w-3.5" />
+                                </span>
+                              )}
+                              <span className={p.micOn ? 'text-emerald-400' : 'text-rose-400'}>
+                                {p.micOn ? <Mic className="h-3.5 w-3.5" /> : <MicOff className="h-3.5 w-3.5" />}
+                              </span>
+                              <span className={p.camOn ? 'text-emerald-400' : 'text-white/35'}>
+                                {p.camOn ? <Video className="h-3.5 w-3.5" /> : <CameraOff className="h-3.5 w-3.5" />}
+                              </span>
+                            </div>
                           </div>
-                          <div className="min-w-0">
-                            <p className="truncate text-xs font-semibold text-white">
-                              {formatParticipantDisplay(p)} {isSelf && '(You)'}
-                            </p>
-                            <p className="text-[10px] text-white/50">
-                              {p.role}{isCoHost ? ' · Co-Host' : ''}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          {p.handRaised && (
-                            <span title="Hand raised" className="text-amber-400">
-                              <Hand className="h-3.5 w-3.5" />
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => togglePinMainScreen(p.userId)}
-                            title={pinnedUserId === p.userId ? 'Unpin from Main Screen' : 'Pin to Main Screen'}
-                            className={cn(
-                              'rounded px-1.5 py-0.5 text-[10px] font-semibold transition',
-                              pinnedUserId === p.userId
-                                ? 'bg-[#D4A843] text-slate-950'
-                                : 'bg-white/10 text-white/75 hover:bg-white/20 hover:text-white',
-                            )}
-                          >
-                            {pinnedUserId === p.userId ? 'Main' : 'Pin'}
-                          </button>
-                          {isPrimaryHost && !isSelf && p.role !== 'INTERN' && (
+
+                          {/* Action pills row */}
+                          <div className="flex flex-wrap items-center gap-1 pt-0.5">
                             <button
                               type="button"
-                              onClick={() => void hostAction('toggle-cohost', p.userId)}
+                              onClick={() => togglePinMainScreen(p.userId)}
                               className={cn(
                                 'rounded px-1.5 py-0.5 text-[10px] font-semibold transition',
-                                isCoHost
-                                  ? 'bg-[#D4A843]/25 text-[#D4A843]'
-                                  : 'bg-white/10 text-white/70 hover:bg-white/20',
+                                pinnedUserId === p.userId
+                                  ? 'bg-[#D4A843] text-slate-950'
+                                  : 'bg-white/10 text-white/75 hover:bg-white/20',
                               )}
                             >
-                              {isCoHost ? 'Co-Host ✓' : '+ Co-Host'}
+                              {pinnedUserId === p.userId ? 'Pinned' : 'Pin'}
                             </button>
-                          )}
-                          {canHostControl && !isSelf && p.role === 'INTERN' && (
-                            internApproved ? (
-                              <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
-                                Share OK
-                              </span>
-                            ) : (
+                            {isSelf && !isGuest && room.allowRenameSelf !== false && (
                               <button
                                 type="button"
-                                onClick={() => void hostAction('approve-screenshare', p.userId)}
-                                className="rounded bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-sky-300 hover:bg-sky-500/35"
+                                onClick={() => void renameSelf()}
+                                className="inline-flex items-center gap-0.5 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-white/75 hover:bg-white/20"
                               >
-                                Allow Share
+                                <Edit3 className="h-2.5 w-2.5" /> Rename
                               </button>
-                            )
-                          )}
-                          {canHostControl && !isSelf && p.micOn && (
-                            <button
-                              type="button"
-                              onClick={() => void hostMute(p.userId)}
-                              className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-rose-300 hover:bg-rose-500/35"
-                            >
-                              Mute
-                            </button>
-                          )}
-                          {canHostControl && !isSelf && (
-                            <button
-                              type="button"
-                              onClick={() => void hostAction('remove', p.userId)}
-                              title="Remove from meeting"
-                              className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-white/70 hover:bg-rose-500/35 hover:text-rose-200"
-                            >
-                              Remove
-                            </button>
-                          )}
-                          <span className={p.micOn ? 'text-emerald-400' : 'text-rose-400'}>
-                            {p.micOn ? <Mic className="h-3.5 w-3.5" /> : <MicOff className="h-3.5 w-3.5" />}
-                          </span>
-                          <span className={p.camOn ? 'text-emerald-400' : 'text-white/35'}>
-                            {p.camOn ? <Video className="h-3.5 w-3.5" /> : <CameraOff className="h-3.5 w-3.5" />}
-                          </span>
+                            )}
+                            {canHostControl && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void hostAction('spotlight', isSpot ? undefined : p.userId)
+                                }
+                                className={cn(
+                                  'rounded px-1.5 py-0.5 text-[10px] font-semibold transition',
+                                  isSpot
+                                    ? 'bg-[#D4A843] text-slate-950'
+                                    : 'bg-white/10 text-amber-200 hover:bg-white/20',
+                                )}
+                              >
+                                {isSpot ? 'Unspotlight' : 'Spotlight'}
+                              </button>
+                            )}
+                            {canHostControl && !isSelf && (
+                              p.micOn ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void hostMute(p.userId)}
+                                  className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-rose-300 hover:bg-rose-500/35"
+                                >
+                                  Mute
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => void hostAction('ask-unmute', p.userId)}
+                                  className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 hover:bg-emerald-500/35"
+                                >
+                                  Ask Unmute
+                                </button>
+                              )
+                            )}
+                            {canHostControl && !isSelf && p.camOn && (
+                              <button
+                                type="button"
+                                onClick={() => void hostAction('stop-video', p.userId)}
+                                className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-rose-200 hover:bg-rose-500/30"
+                              >
+                                Stop Cam
+                              </button>
+                            )}
+                            {isPrimaryHost && !isSelf && !p.isGuest && p.role !== 'INTERN' && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => void hostAction('toggle-cohost', p.userId)}
+                                  className={cn(
+                                    'rounded px-1.5 py-0.5 text-[10px] font-semibold transition',
+                                    isCoHost
+                                      ? 'bg-[#D4A843]/25 text-[#D4A843]'
+                                      : 'bg-white/10 text-white/70 hover:bg-white/20',
+                                  )}
+                                >
+                                  {isCoHost ? 'Co-Host ✓' : '+ Co-Host'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (window.confirm(`Transfer primary Host role to ${p.fullName}?`)) {
+                                      void hostAction('transfer-host', p.userId);
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-0.5 rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 hover:bg-amber-500/25"
+                                >
+                                  <Crown className="h-2.5 w-2.5" /> Make Host
+                                </button>
+                              </>
+                            )}
+                            {canHostControl && !isSelf && (p.role === 'INTERN' || p.isGuest) && (
+                              internApproved ? (
+                                <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300">
+                                  Share OK
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => void hostAction('approve-screenshare', p.userId)}
+                                  className="rounded bg-sky-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-sky-300 hover:bg-sky-500/35"
+                                >
+                                  Allow Share
+                                </button>
+                              )
+                            )}
+                            {canHostControl && !isSelf && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const next = window.prompt(`Rename ${p.fullName}:`, p.fullName);
+                                    if (next && next.trim().length >= 2) {
+                                      void hostAction('rename', p.userId, { newName: next.trim() });
+                                    }
+                                  }}
+                                  className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-white/70 hover:bg-white/20"
+                                >
+                                  Rename
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void hostAction('remove', p.userId)}
+                                  title="Move to Waiting Room"
+                                  className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-rose-200 hover:bg-rose-500/35"
+                                >
+                                  Remove
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
                 </div>
-                <div className="mt-3 space-y-2 border-t border-white/10 pt-3">
+                <div className="mt-3 space-y-1.5 border-t border-white/10 pt-3">
                   {canHostControl && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="w-full border-white/15 bg-white/10 text-white hover:bg-white/20"
-                      onClick={() => void hostMute()}
-                    >
-                      <MicOff className="h-3.5 w-3.5" /> Mute All Participants
-                    </Button>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="border-white/15 bg-white/10 text-[11px] text-white hover:bg-white/20"
+                        onClick={() => void hostMute()}
+                      >
+                        <MicOff className="h-3.5 w-3.5" /> Mute All
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="border-white/15 bg-white/10 text-[11px] text-white hover:bg-white/20"
+                        onClick={() => void hostAction('lower-all-hands')}
+                      >
+                        <Hand className="h-3.5 w-3.5" /> Lower Hands
+                      </Button>
+                    </div>
                   )}
                   <Button
                     variant="secondary"
@@ -4249,6 +5831,21 @@ export function MeetingStudio({
                   </Button>
                 </div>
               </div>
+            )}
+
+            {sideTab === 'polls' && (
+              <PollsQaPanel
+                polls={room.polls ?? []}
+                qaItems={room.qaItems ?? []}
+                currentUserId={currentUser.id}
+                canHostControl={canHostControl}
+                onCreatePoll={handleCreatePoll}
+                onVotePoll={handleVotePoll}
+                onClosePoll={handleClosePoll}
+                onAskQuestion={handleAskQuestion}
+                onUpvoteQuestion={handleUpvoteQuestion}
+                onAnswerQuestion={handleAnswerQuestion}
+              />
             )}
 
             {sideTab === 'chat' && (
@@ -4409,6 +6006,11 @@ export function MeetingStudio({
                     </div>
                   )}
                 </div>
+                {!canHostControl && (room.chatPermission === 'DISABLED' || room.suspendedActivities) ? (
+                  <div className="border-t border-white/10 px-3 py-3 text-center text-xs text-rose-300">
+                    Chat is currently disabled by the meeting host.
+                  </div>
+                ) : (
                 <form
                   onSubmit={sendChat}
                   className="flex items-center gap-1.5 px-3 pb-3 pt-1"
@@ -4440,6 +6042,7 @@ export function MeetingStudio({
                     <Send className="h-3.5 w-3.5" />
                   </Button>
                 </form>
+                )}
               </div>
             )}
 
@@ -4455,18 +6058,21 @@ export function MeetingStudio({
                   className="flex-1 resize-none rounded-xl border border-white/15 bg-white/5 p-3 text-xs leading-relaxed text-white placeholder:text-white/35 focus:border-[#D4A843] focus:outline-none"
                 />
                 <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    className="flex-1"
-                    disabled={savingNotes}
-                    onClick={() => void saveNotes()}
-                  >
-                    {savingNotes ? 'Saving...' : 'Save Notes'}
-                  </Button>
+                  {!isGuest && (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      className="flex-1"
+                      disabled={savingNotes}
+                      onClick={() => void saveNotes()}
+                    >
+                      {savingNotes ? 'Saving...' : 'Save Notes'}
+                    </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="secondary"
+                    title="Download Notes (.txt)"
                     className="border-white/15 bg-white/10 text-white hover:bg-white/20"
                     onClick={() => {
                       const blob = new Blob([`${room.title}\n${room.roomCode}\n\n${notesDraft}`], {
@@ -4482,6 +6088,17 @@ export function MeetingStudio({
                   >
                     <Download className="h-3.5 w-3.5" />
                   </Button>
+                  {canHostControl && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      title="Export Attendance & Notes PDF"
+                      className="border-white/15 bg-white/10 text-emerald-300 hover:bg-white/20"
+                      onClick={() => void handleExportAttendancePdf()}
+                    >
+                      <FileDown className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
                 </div>
               </div>
             )}
@@ -4496,12 +6113,13 @@ export function MeetingStudio({
           isFullscreen && controlsHidden && 'pointer-events-none h-0 overflow-hidden border-0 py-0 opacity-0',
         )}
       >
-        {/* Left: Audio & Video + device selectors */}
+        {/* Left: Audio & Video + Speaker Output + Audio Profile + Video Effects */}
         <div className="flex items-center gap-2">
           <div className="relative flex items-center rounded-xl bg-white/5 p-0.5">
             <button
               type="button"
               onClick={() => void toggleMic()}
+              title="Mute / Unmute (Alt+A · Hold Space for Push-to-Talk)"
               className={cn(
                 'flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition',
                 micOn ? 'text-white hover:bg-white/10' : 'bg-rose-500 text-white hover:bg-rose-600',
@@ -4513,31 +6131,98 @@ export function MeetingStudio({
             <button
               type="button"
               onClick={() => setDeviceMenu((m) => (m === 'mic' ? null : 'mic'))}
-              title="Select Microphone"
+              title="Audio, Speaker & Mic Settings"
               className="rounded-lg px-1.5 py-2 text-white/60 hover:bg-white/10 hover:text-white"
             >
               <ChevronUp className="h-3.5 w-3.5" />
             </button>
             {deviceMenu === 'mic' && (
-              <div className="absolute bottom-14 left-0 z-40 w-64 rounded-2xl border border-white/15 bg-[#161F30] p-2 shadow-2xl">
-                <p className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-white/45">
+              <div className="absolute bottom-14 left-0 z-50 max-h-[70vh] w-72 overflow-y-auto rounded-2xl border border-white/15 bg-[#161F30] p-2.5 shadow-2xl">
+                <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white/45">
                   Microphone
                 </p>
                 {audioDevices.length === 0 ? (
-                  <p className="px-2.5 py-2 text-xs text-white/50">Default microphone</p>
+                  <p className="px-2 py-1.5 text-xs text-white/50">Default microphone</p>
                 ) : (
                   audioDevices.map((d) => (
                     <button
                       key={d.deviceId}
                       type="button"
                       onClick={() => void switchDevice('audio', d.deviceId)}
-                      className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs text-white hover:bg-white/10"
+                      className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs text-white hover:bg-white/10"
                     >
                       <span className="truncate">{d.label || 'Microphone'}</span>
                       {selectedMicId === d.deviceId && <Check className="h-3.5 w-3.5 text-emerald-400" />}
                     </button>
                   ))
                 )}
+
+                <div className="my-2 border-t border-white/10" />
+                <div className="flex items-center justify-between px-2 py-1">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-white/45">
+                    Speaker Output
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void playSpeakerTestTone(selectedSpeakerId || undefined)}
+                    className="rounded bg-[#D4A843]/20 px-2 py-0.5 text-[10px] font-bold text-[#D4A843] hover:bg-[#D4A843]/30"
+                  >
+                    Test Speaker
+                  </button>
+                </div>
+                {speakerDevices.length === 0 ? (
+                  <p className="px-2 py-1.5 text-xs text-white/50">System default speaker</p>
+                ) : (
+                  speakerDevices.map((d) => (
+                    <button
+                      key={d.deviceId}
+                      type="button"
+                      onClick={() => {
+                        setSelectedSpeakerId(d.deviceId);
+                        showToast(`Speaker switched to ${d.label || 'selected output'}.`);
+                      }}
+                      className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs text-white hover:bg-white/10"
+                    >
+                      <span className="truncate">{d.label || 'Speaker'}</span>
+                      {selectedSpeakerId === d.deviceId && <Check className="h-3.5 w-3.5 text-emerald-400" />}
+                    </button>
+                  ))
+                )}
+
+                <div className="my-2 border-t border-white/10" />
+                <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white/45">
+                  Audio Processing
+                </p>
+                <div className="space-y-1 px-1 text-xs">
+                  <label className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 hover:bg-white/5">
+                    <span>Noise Suppression</span>
+                    <input
+                      type="checkbox"
+                      checked={!audioProfile.originalSound && audioProfile.noiseSuppression}
+                      onChange={(e) =>
+                        void updateAudioProfile({ noiseSuppression: e.target.checked, originalSound: false })
+                      }
+                    />
+                  </label>
+                  <label className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 hover:bg-white/5">
+                    <span>Echo Cancellation</span>
+                    <input
+                      type="checkbox"
+                      checked={!audioProfile.originalSound && audioProfile.echoCancellation}
+                      onChange={(e) =>
+                        void updateAudioProfile({ echoCancellation: e.target.checked, originalSound: false })
+                      }
+                    />
+                  </label>
+                  <label className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 hover:bg-white/5">
+                    <span>Original Sound (Studio)</span>
+                    <input
+                      type="checkbox"
+                      checked={audioProfile.originalSound}
+                      onChange={(e) => void updateAudioProfile({ originalSound: e.target.checked })}
+                    />
+                  </label>
+                </div>
               </div>
             )}
           </div>
@@ -4546,6 +6231,7 @@ export function MeetingStudio({
             <button
               type="button"
               onClick={() => void toggleCam()}
+              title="Start / Stop Video (Alt+V)"
               className={cn(
                 'flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition',
                 camOn ? 'text-white hover:bg-white/10' : 'bg-rose-500 text-white hover:bg-rose-600',
@@ -4557,43 +6243,91 @@ export function MeetingStudio({
             <button
               type="button"
               onClick={() => setDeviceMenu((m) => (m === 'cam' ? null : 'cam'))}
-              title="Select Camera"
+              title="Camera & Virtual Background Settings"
               className="rounded-lg px-1.5 py-2 text-white/60 hover:bg-white/10 hover:text-white"
             >
               <ChevronUp className="h-3.5 w-3.5" />
             </button>
             {deviceMenu === 'cam' && (
-              <div className="absolute bottom-14 left-0 z-40 w-64 rounded-2xl border border-white/15 bg-[#161F30] p-2 shadow-2xl">
-                <p className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-white/45">
+              <div className="absolute bottom-14 left-0 z-50 w-64 rounded-2xl border border-white/15 bg-[#161F30] p-2.5 shadow-2xl">
+                <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white/45">
                   Camera
                 </p>
                 {videoDevices.length === 0 ? (
-                  <p className="px-2.5 py-2 text-xs text-white/50">Default camera</p>
+                  <p className="px-2 py-1.5 text-xs text-white/50">Default camera</p>
                 ) : (
                   videoDevices.map((d) => (
                     <button
                       key={d.deviceId}
                       type="button"
                       onClick={() => void switchDevice('video', d.deviceId)}
-                      className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs text-white hover:bg-white/10"
+                      className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs text-white hover:bg-white/10"
                     >
                       <span className="truncate">{d.label || 'Camera'}</span>
                       {selectedCamId === d.deviceId && <Check className="h-3.5 w-3.5 text-emerald-400" />}
                     </button>
                   ))
                 )}
+                <div className="my-2 border-t border-white/10" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeviceMenu(null);
+                    setShowEffectsModal(true);
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs font-semibold text-[#D4A843] hover:bg-white/10"
+                >
+                  <Sparkles className="h-3.5 w-3.5" /> Virtual Background &amp; Blur...
+                </button>
+                <label className="mt-1 flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 text-xs hover:bg-white/5">
+                  <span>Mirror My Video</span>
+                  <input
+                    type="checkbox"
+                    checked={mirrorVideo}
+                    onChange={() => setMirrorVideo((v) => !v)}
+                  />
+                </label>
               </div>
             )}
           </div>
         </div>
 
-        {/* Center: Zoom core collaboration controls */}
+        {/* Center: Complete Zoom Pro Collaboration Controls */}
         <div className="flex flex-wrap items-center gap-1.5">
+          {canHostControl && (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowSecurityMenu((v) => !v)}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
+                  room.isLocked || room.suspendedActivities
+                    ? 'bg-rose-500/25 text-rose-200 ring-1 ring-rose-400/50'
+                    : showSecurityMenu
+                      ? 'bg-[#D4A843]/25 text-[#D4A843]'
+                      : 'bg-white/5 text-white/80 hover:bg-white/10',
+                )}
+              >
+                <Shield className="h-4 w-4" />
+                <span className="hidden lg:inline">Security</span>
+              </button>
+              {showSecurityMenu && (
+                <SecurityPopover
+                  room={room}
+                  onUpdateSecurity={(p) => hostAction('update-security', undefined, p)}
+                  onPanicSuspend={() => hostAction('panic-suspend')}
+                  onClose={() => setShowSecurityMenu(false)}
+                />
+              )}
+            </div>
+          )}
+
           <button
             type="button"
             onClick={() => setSideTab((s) => (s === 'participants' ? 'closed' : 'participants'))}
+            title="Participants (Alt+U)"
             className={cn(
-              'flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
+              'relative flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
               sideTab === 'participants'
                 ? 'bg-white/20 text-white'
                 : 'bg-white/5 text-white/80 hover:bg-white/10',
@@ -4604,11 +6338,15 @@ export function MeetingStudio({
             <Badge tone="neutral" className="bg-white/15 text-[10px] text-white">
               {room.participants.length}
             </Badge>
+            {canHostControl && (room.waitingRoom?.length ?? 0) > 0 && (
+              <span className="h-2 w-2 rounded-full bg-amber-400" />
+            )}
           </button>
 
           <button
             type="button"
             onClick={() => setSideTab((s) => (s === 'chat' ? 'closed' : 'chat'))}
+            title="Chat (Alt+H)"
             className={cn(
               'relative flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
               sideTab === 'chat'
@@ -4628,6 +6366,7 @@ export function MeetingStudio({
           <button
             type="button"
             onClick={() => void toggleScreenShare()}
+            title="Share Screen (Alt+S)"
             className={cn(
               'flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition',
               screenOn
@@ -4645,6 +6384,7 @@ export function MeetingStudio({
             <button
               type="button"
               onClick={() => setShowReactionTray((v) => !v)}
+              title="Reactions & Raise Hand (Alt+Y)"
               className={cn(
                 'flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
                 handRaised
@@ -4653,10 +6393,10 @@ export function MeetingStudio({
               )}
             >
               <Smile className="h-4 w-4" />
-              <span className="hidden md:inline">React</span>
+              <span className="hidden lg:inline">React</span>
             </button>
             {showReactionTray && (
-              <div className="absolute bottom-14 left-1/2 z-40 flex -translate-x-1/2 flex-col gap-2 rounded-2xl border border-white/15 bg-[#161F30] p-2.5 shadow-2xl">
+              <div className="absolute bottom-14 left-1/2 z-50 flex -translate-x-1/2 flex-col gap-2 rounded-2xl border border-white/15 bg-[#161F30] p-2.5 shadow-2xl">
                 <div className="flex items-center gap-1.5">
                   {QUICK_REACTIONS.map((emoji) => (
                     <button
@@ -4687,31 +6427,125 @@ export function MeetingStudio({
 
           <button
             type="button"
-            onClick={toggleRecording}
+            onClick={() => setSideTab((s) => (s === 'polls' ? 'closed' : 'polls'))}
             className={cn(
-              'hidden items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition sm:flex',
-              recording
-                ? 'bg-rose-600 text-white'
+              'hidden items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition lg:flex',
+              sideTab === 'polls'
+                ? 'bg-[#D4A843]/25 text-[#D4A843]'
                 : 'bg-white/5 text-white/80 hover:bg-white/10',
             )}
           >
-            <Radio className={cn('h-4 w-4', recording && 'animate-pulse')} />
-            <span className="hidden lg:inline">{recording ? 'Stop Rec' : 'Record'}</span>
+            <BarChart3 className="h-4 w-4" />
+            <span>Polls</span>
           </button>
 
           <button
             type="button"
-            onClick={() => setSideTab((s) => (s === 'notes' ? 'closed' : 'notes'))}
+            onClick={() =>
+              setWhiteboardMode((m) => (m === 'whiteboard' ? 'closed' : 'whiteboard'))
+            }
             className={cn(
-              'hidden items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition sm:flex',
-              sideTab === 'notes'
-                ? 'bg-white/20 text-white'
+              'hidden items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition xl:flex',
+              whiteboardMode === 'whiteboard'
+                ? 'bg-[#D4A843]/25 text-[#D4A843]'
                 : 'bg-white/5 text-white/80 hover:bg-white/10',
             )}
           >
-            <FileText className="h-4 w-4" />
-            <span className="hidden lg:inline">Notes</span>
+            <PenTool className="h-4 w-4" />
+            <span>Whiteboard</span>
           </button>
+
+          <button
+            type="button"
+            onClick={() => setCaptionsOn((v) => !v)}
+            title="Live Captions (Alt+C)"
+            className={cn(
+              'hidden items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition xl:flex',
+              captionsOn
+                ? 'bg-emerald-500/25 text-emerald-300'
+                : 'bg-white/5 text-white/80 hover:bg-white/10',
+            )}
+          >
+            <Captions className="h-4 w-4" />
+            <span>CC</span>
+          </button>
+
+          {/* Policy-gated Recording Button (strictly hidden for Interns & Tier 4 NONE tiers) */}
+          {canRecord && (
+            <div className="hidden items-center gap-1 md:flex">
+              <button
+                type="button"
+                onClick={toggleRecording}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
+                  recording
+                    ? 'bg-rose-600 text-white'
+                    : 'bg-white/5 text-white/80 hover:bg-white/10',
+                )}
+              >
+                <Radio className={cn('h-4 w-4', recording && !recordingPaused && 'animate-pulse')} />
+                <span className="hidden xl:inline">{recording ? 'Stop Rec' : 'Record'}</span>
+              </button>
+              {recording && (
+                <button
+                  type="button"
+                  onClick={togglePauseRecording}
+                  title={recordingPaused ? 'Resume Recording' : 'Pause Recording'}
+                  className="rounded-xl bg-amber-500/20 p-2 text-amber-300 hover:bg-amber-500/35"
+                >
+                  {recordingPaused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Zoom Responsive "More (•••)" Menu — makes ALL tools accessible on Mobile & Desktop */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowMoreMenu((v) => !v)}
+              title="More Zoom Pro Tools"
+              className={cn(
+                'flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition',
+                showMoreMenu
+                  ? 'bg-white/20 text-white'
+                  : 'bg-white/5 text-white/80 hover:bg-white/10',
+              )}
+            >
+              <MoreHorizontal className="h-4 w-4" />
+              <span className="hidden sm:inline">More</span>
+            </button>
+            {showMoreMenu && (
+              <MoreToolsPopover
+                canRecord={canRecord}
+                recording={recording}
+                recordingPaused={recordingPaused}
+                notesOpen={sideTab === 'notes'}
+                pollsOpen={sideTab === 'polls'}
+                whiteboardOpen={whiteboardMode === 'whiteboard'}
+                captionsOn={captionsOn}
+                bandwidthSaver={bandwidthSaver}
+                isFullscreen={isFullscreen}
+                canHostControl={canHostControl}
+                onToggleRecording={toggleRecording}
+                onTogglePauseRecording={togglePauseRecording}
+                onToggleNotes={() => setSideTab((s) => (s === 'notes' ? 'closed' : 'notes'))}
+                onTogglePolls={() => setSideTab((s) => (s === 'polls' ? 'closed' : 'polls'))}
+                onToggleWhiteboard={() =>
+                  setWhiteboardMode((m) => (m === 'whiteboard' ? 'closed' : 'whiteboard'))
+                }
+                onToggleCaptions={() => setCaptionsOn((v) => !v)}
+                onOpenBreakouts={() => setBreakoutModalOpen(true)}
+                onOpenEffects={() => setShowEffectsModal(true)}
+                onToggleBandwidthSaver={() => setBandwidthSaver((v) => !v)}
+                onExportAttendancePdf={() => void handleExportAttendancePdf()}
+                onOpenShortcuts={() => setShowShortcutsModal(true)}
+                onOpenStats={() => setShowStatsModal(true)}
+                onToggleFullscreen={() => void toggleFullscreen()}
+                onClose={() => setShowMoreMenu(false)}
+              />
+            )}
+          </div>
         </div>
 
         {/* Right: Leave / End Meeting */}
@@ -4726,7 +6560,7 @@ export function MeetingStudio({
             <PhoneOff className="h-4 w-4" /> Leave
           </button>
           {showLeaveMenu && (
-            <div className="absolute bottom-14 right-0 z-40 w-52 space-y-1.5 rounded-2xl border border-white/15 bg-[#161F30] p-2 shadow-2xl">
+            <div className="absolute bottom-14 right-0 z-50 w-56 space-y-1.5 rounded-2xl border border-white/15 bg-[#161F30] p-2 shadow-2xl">
               <button
                 type="button"
                 onClick={() => void leaveCall(true)}
@@ -4745,6 +6579,44 @@ export function MeetingStudio({
           )}
         </div>
       </footer>
+
+      {/* ─── ZOOM PRO MODALS ─────────────────────────────────────────────── */}
+      <BreakoutRoomsModal
+        open={breakoutModalOpen}
+        rooms={room.breakoutRooms ?? []}
+        participants={room.participants}
+        canHostControl={canHostControl}
+        activeBreakoutId={activeBreakoutId}
+        onConfigureOrOpen={handleConfigureOrOpenBreakouts}
+        onBroadcast={handleBroadcastBreakouts}
+        onCloseAll={handleCloseAllBreakouts}
+        onJoinRoom={handleJoinBreakoutRoom}
+        onLeaveRoom={handleLeaveBreakoutRoom}
+        onClose={() => setBreakoutModalOpen(false)}
+      />
+      <VideoEffectsModal
+        open={showEffectsModal}
+        effect={videoEffect}
+        mirrorVideo={mirrorVideo}
+        hideSelfView={hideSelfView}
+        hideNonVideo={hideNonVideo}
+        touchUp={touchUp}
+        onChangeEffect={setVideoEffect}
+        onToggleMirror={() => setMirrorVideo((v) => !v)}
+        onToggleHideSelf={() => setHideSelfView((v) => !v)}
+        onToggleHideNonVideo={() => setHideNonVideo((v) => !v)}
+        onToggleTouchUp={() => setTouchUp((v) => !v)}
+        onClose={() => setShowEffectsModal(false)}
+      />
+      <KeyboardShortcutsModal
+        open={showShortcutsModal}
+        onClose={() => setShowShortcutsModal(false)}
+      />
+      <NetworkStatsModal
+        open={showStatsModal}
+        stats={networkStats}
+        onClose={() => setShowStatsModal(false)}
+      />
     </div>
   );
 }
@@ -4765,13 +6637,21 @@ export function PreJoinGreenRoom({
   userName: string;
   joining: boolean;
   onCancel: () => void;
-  onJoin: (opts: { micOn: boolean; camOn: boolean; micDeviceId?: string; camDeviceId?: string }) => void;
+  onJoin: (opts: {
+    micOn: boolean;
+    camOn: boolean;
+    micDeviceId?: string;
+    camDeviceId?: string;
+    speakerDeviceId?: string;
+  }) => void;
 }) {
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
+  const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
   const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
   const [selectedMicId, setSelectedMicId] = useState('');
+  const [selectedSpeakerId, setSelectedSpeakerId] = useState('');
   const [selectedCamId, setSelectedCamId] = useState('');
   const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
   const [micLevel, setMicLevel] = useState(0);
@@ -4838,10 +6718,13 @@ export function PreJoinGreenRoom({
           const all = await navigator.mediaDevices.enumerateDevices();
           if (!active) return;
           const mics = all.filter((d) => d.kind === 'audioinput');
+          const speakers = all.filter((d) => d.kind === 'audiooutput');
           const cams = all.filter((d) => d.kind === 'videoinput');
           setAudioInputs(mics);
+          setAudioOutputs(speakers);
           setVideoInputs(cams);
           if (!selectedMicId && mics[0]?.deviceId) setSelectedMicId(mics[0].deviceId);
+          if (!selectedSpeakerId && speakers[0]?.deviceId) setSelectedSpeakerId(speakers[0].deviceId);
           if (!selectedCamId && cams[0]?.deviceId) setSelectedCamId(cams[0].deviceId);
         } catch {
           // Ignore device enumeration errors
@@ -5019,6 +6902,35 @@ export function PreJoinGreenRoom({
 
             <div>
               <div className="mb-1.5 flex items-center justify-between">
+                <span className="font-semibold text-white/90">Speaker Output</span>
+                <button
+                  type="button"
+                  onClick={() => void playSpeakerTestTone(selectedSpeakerId || undefined)}
+                  className="rounded-lg bg-[#D4A843]/20 px-2 py-0.5 text-[10px] font-bold text-[#D4A843] hover:bg-[#D4A843]/30"
+                >
+                  Test Speaker
+                </button>
+              </div>
+              <select
+                aria-label="Select Speaker"
+                value={selectedSpeakerId}
+                onChange={(e) => setSelectedSpeakerId(e.target.value)}
+                className="h-9 w-full rounded-xl border border-white/10 bg-black/40 px-3 text-xs text-white focus:border-gold focus:outline-none"
+              >
+                {audioOutputs.length === 0 ? (
+                  <option value="">System Default Speaker</option>
+                ) : (
+                  audioOutputs.map((d, idx) => (
+                    <option key={d.deviceId || idx} value={d.deviceId}>
+                      {d.label || `Speaker ${idx + 1}`}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+
+            <div>
+              <div className="mb-1.5 flex items-center justify-between">
                 <span className="font-semibold text-white/90">Camera</span>
                 <span className={camOn ? 'font-semibold text-emerald-400' : 'font-semibold text-rose-400'}>
                   {camOn ? 'On' : 'Off'}
@@ -5056,6 +6968,7 @@ export function PreJoinGreenRoom({
                   camOn,
                   micDeviceId: selectedMicId || undefined,
                   camDeviceId: selectedCamId || undefined,
+                  speakerDeviceId: selectedSpeakerId || undefined,
                 });
               }}
             >

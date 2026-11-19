@@ -23,7 +23,7 @@ import { Card, CardHeader, StatCard } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/components/providers';
-import { api, patch, post } from '@/lib/api';
+import { api, liveGet, patch, post } from '@/lib/api';
 import { exportBrandedPdf } from '@/lib/pdf-export';
 import { PERMISSIONS } from '@/lib/permissions';
 
@@ -786,6 +786,9 @@ interface NotificationRow {
   authorName: string;
   read: boolean;
   createdAt: string;
+  roomCode?: string | null;
+  actionUrl?: string | null;
+  isLiveMeeting?: boolean;
 }
 
 export function NotificationsView() {
@@ -795,7 +798,7 @@ export function NotificationsView() {
   const [body, setBody] = useState('');
 
   const load = useCallback(async () => {
-    const res = await api<NotificationRow[]>('/notifications');
+    const res = await liveGet<NotificationRow[]>('/notifications');
     setRows(res);
   }, []);
 
@@ -805,8 +808,19 @@ export function NotificationsView() {
       if (typeof document !== 'undefined' && !document.hidden) {
         void load();
       }
-    }, 5_000);
-    return () => clearInterval(id);
+    }, 2_500);
+    const onInstant = () => void load();
+    if (typeof window !== 'undefined') {
+      window.addEventListener('yakunex:notifications-updated', onInstant);
+      window.addEventListener('yakunex:meeting-started', onInstant);
+    }
+    return () => {
+      clearInterval(id);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('yakunex:notifications-updated', onInstant);
+        window.removeEventListener('yakunex:meeting-started', onInstant);
+      }
+    };
   }, [load]);
 
   async function onPublish(e: FormEvent) {
@@ -861,11 +875,25 @@ export function NotificationsView() {
                   </div>
                   <p className="mt-1 text-xs text-muted">{n.body} · By {n.authorName}</p>
                 </div>
-                {!n.read && (
-                  <Button size="sm" variant="secondary" onClick={() => void onMarkRead(n.id)}>
-                    <Check className="h-3.5 w-3.5" /> Mark Read
-                  </Button>
-                )}
+                <div className="flex items-center gap-2">
+                  {n.type === 'MEETING' && n.actionUrl && (
+                    <Button
+                      size="sm"
+                      variant={n.isLiveMeeting ? 'primary' : 'secondary'}
+                      onClick={() => {
+                        void onMarkRead(n.id);
+                        window.open(n.actionUrl!, '_blank');
+                      }}
+                    >
+                      {n.isLiveMeeting ? 'Join Live Now' : 'Open Room'}
+                    </Button>
+                  )}
+                  {!n.read && (
+                    <Button size="sm" variant="secondary" onClick={() => void onMarkRead(n.id)}>
+                      <Check className="h-3.5 w-3.5" /> Mark Read
+                    </Button>
+                  )}
+                </div>
               </div>
             ))
           )}

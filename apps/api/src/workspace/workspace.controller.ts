@@ -1,7 +1,21 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Query,
+  Sse,
+  type MessageEvent,
+} from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { Role } from '@prisma/client';
-import { CurrentUser, RequirePermissions } from '../common/decorators';
+import { Observable } from 'rxjs';
+import { CurrentUser, Public, RequirePermissions } from '../common/decorators';
 import type { AuthUser } from '../common/types';
 import { PERMISSIONS } from '../rbac/permissions';
 import { WorkspaceService } from './workspace.service';
@@ -370,11 +384,119 @@ export class WorkspaceController {
     return this.workspace.getMeetingByCode(actor, code);
   }
 
+  @Get('meetings/public/ice-config')
+  @Public()
+  @SkipThrottle()
+  getPublicIceConfig() {
+    return this.workspace.getMeetingIceConfig();
+  }
+
+  @Get('meetings/public/:code')
+  @Public()
+  @SkipThrottle()
+  getPublicMeetingInfo(@Param('code') code: string) {
+    return this.workspace.getPublicMeetingInfo(code);
+  }
+
+  @Post('meetings/public/:code/join')
+  @Public()
+  @SkipThrottle()
+  joinPublicMeetingAsGuest(
+    @Param('code') code: string,
+    @Body() body: { fullName: string; passcode?: string; micOn?: boolean; camOn?: boolean },
+  ) {
+    return this.workspace.joinPublicMeetingAsGuest(code, body);
+  }
+
+  @Get('meetings/public/:id/room')
+  @Public()
+  @SkipThrottle()
+  getGuestMeetingRoom(
+    @Headers('x-meeting-guest-token') guestToken: string,
+    @Param('id') id: string,
+  ) {
+    return this.workspace.getGuestMeetingRoom(guestToken, id);
+  }
+
+  @Get('meetings/public/:id/sfu-token')
+  @Public()
+  @SkipThrottle()
+  getGuestSfuToken(
+    @Headers('x-meeting-guest-token') guestToken: string,
+    @Param('id') id: string,
+  ) {
+    return this.workspace.getGuestSfuToken(guestToken, id);
+  }
+
+  @Patch('meetings/public/:id/participant')
+  @Public()
+  @SkipThrottle()
+  guestUpdateParticipant(
+    @Headers('x-meeting-guest-token') guestToken: string,
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.workspace.guestUpdateParticipant(guestToken, id, body);
+  }
+
+  @Post('meetings/public/:id/chat')
+  @Public()
+  @SkipThrottle()
+  guestPostChat(
+    @Headers('x-meeting-guest-token') guestToken: string,
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.workspace.guestPostChat(guestToken, id, body);
+  }
+
+  @Post('meetings/public/:id/signal')
+  @Public()
+  @SkipThrottle()
+  guestSendSignal(
+    @Headers('x-meeting-guest-token') guestToken: string,
+    @Param('id') id: string,
+    @Body()
+    body: {
+      toUserId?: string;
+      type?: string;
+      payload?: unknown;
+      batch?: Array<{ toUserId?: string; type: string; payload?: unknown }>;
+    },
+  ) {
+    return this.workspace.guestSendSignal(guestToken, id, body);
+  }
+
+  @Get('meetings/public/:id/signals')
+  @Public()
+  @SkipThrottle()
+  guestPollSignals(
+    @Headers('x-meeting-guest-token') guestToken: string,
+    @Param('id') id: string,
+    @Query('after') after?: string,
+  ) {
+    return this.workspace.guestPollSignals(guestToken, id, Number(after) || 0);
+  }
+
+  @Post('meetings/public/:id/leave')
+  @Public()
+  @SkipThrottle()
+  guestLeaveMeeting(
+    @Headers('x-meeting-guest-token') guestToken: string,
+    @Param('id') id: string,
+  ) {
+    return this.workspace.guestLeaveMeeting(guestToken, id);
+  }
+
   @Get('meetings/:id/sfu-token')
   @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)
-  getMeetingSfuToken(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
-    return this.workspace.getMeetingSfuToken(actor, id);
+  getMeetingSfuToken(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Query('roomOverride') roomOverride?: string,
+  ) {
+    return this.workspace.getMeetingSfuToken(actor, id, roomOverride);
   }
 
   @Get('meetings/:id/room')
@@ -406,7 +528,7 @@ export class WorkspaceController {
   joinMeetingRoom(
     @CurrentUser() actor: AuthUser,
     @Param('id') id: string,
-    @Body() body?: { micOn?: boolean; camOn?: boolean },
+    @Body() body?: { micOn?: boolean; camOn?: boolean; passcode?: string },
   ) {
     return this.workspace.joinMeetingRoom(actor, id, body);
   }
@@ -445,7 +567,7 @@ export class WorkspaceController {
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   joinMeetingByCode(
     @CurrentUser() actor: AuthUser,
-    @Body() body: { roomCode: string; micOn?: boolean; camOn?: boolean },
+    @Body() body: { roomCode: string; micOn?: boolean; camOn?: boolean; passcode?: string },
   ) {
     return this.workspace.joinMeetingByCode(actor, body.roomCode, body);
   }
@@ -479,17 +601,108 @@ export class WorkspaceController {
   }
 
   @Patch('meetings/:id/host-action')
+  @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   hostMeetingAction(
     @CurrentUser() actor: AuthUser,
     @Param('id') id: string,
     @Body()
     body: {
-      action: 'mute' | 'mute-all' | 'admit' | 'remove' | 'approve-screenshare' | 'toggle-cohost';
+      action:
+        | 'mute'
+        | 'mute-all'
+        | 'admit'
+        | 'admit-all'
+        | 'waiting-room-message'
+        | 'remove'
+        | 'approve-screenshare'
+        | 'toggle-cohost'
+        | 'ask-unmute'
+        | 'stop-video'
+        | 'spotlight'
+        | 'lower-all-hands'
+        | 'rename'
+        | 'transfer-host'
+        | 'update-security'
+        | 'panic-suspend'
+        | 'recording-status';
       targetUserId?: string;
+      payload?: Record<string, unknown>;
     },
   ) {
     return this.workspace.hostMeetingAction(actor, id, body);
+  }
+
+  @Post('meetings/:id/rename-self')
+  @SkipThrottle()
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  renameSelfInMeeting(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: { newName: string },
+  ) {
+    return this.workspace.renameSelfInMeeting(actor, id, body.newName);
+  }
+
+  @Post('meetings/:id/polls')
+  @SkipThrottle()
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  manageMeetingPoll(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body()
+    body: {
+      action: 'create' | 'vote' | 'close';
+      question?: string;
+      options?: string[];
+      multipleChoice?: boolean;
+      pollId?: string;
+      optionIds?: string[];
+    },
+  ) {
+    return this.workspace.manageMeetingPoll(actor, id, body);
+  }
+
+  @Post('meetings/:id/qa')
+  @SkipThrottle()
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  manageMeetingQa(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body()
+    body: {
+      action: 'ask' | 'upvote' | 'answer';
+      question?: string;
+      qaId?: string;
+      answerText?: string;
+    },
+  ) {
+    return this.workspace.manageMeetingQa(actor, id, body);
+  }
+
+  @Post('meetings/:id/breakouts')
+  @SkipThrottle()
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  manageBreakoutRooms(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body()
+    body: {
+      action: 'configure' | 'open' | 'broadcast' | 'close-all' | 'join-room' | 'leave-room';
+      rooms?: Array<{ id?: string; name: string; participantIds?: string[] }>;
+      durationMinutes?: number;
+      message?: string;
+      roomId?: string;
+    },
+  ) {
+    return this.workspace.manageBreakoutRooms(actor, id, body);
+  }
+
+  @Get('meetings/:id/attendance')
+  @SkipThrottle()
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  getMeetingAttendance(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.getMeetingAttendance(actor, id);
   }
 
   // ─── Reports ──────────────────────────────────────────────────────────────
@@ -616,8 +829,72 @@ export class WorkspaceController {
 
   // ─── Notifications & Announcements ────────────────────────────────────────
   @Get('notifications')
+  @SkipThrottle()
   listNotifications(@CurrentUser() actor: AuthUser) {
-    return this.workspace.listNotifications(actor);
+    return this.workspace.listNotifications(actor, true);
+  }
+
+  @Sse('notifications/stream')
+  @SkipThrottle()
+  streamNotifications(@CurrentUser() actor: AuthUser): Observable<MessageEvent> {
+    return new Observable<MessageEvent>((subscriber) => {
+      const seenIds = new Set<string>();
+      let closed = false;
+
+      const emitNew = (items: Awaited<ReturnType<WorkspaceService['listNotifications']>>, initial: boolean) => {
+        if (closed) return;
+        if (initial) {
+          for (const item of items) seenIds.add(item.id);
+          subscriber.next({ data: { kind: 'snapshot', notifications: items.slice(0, 30) } });
+          return;
+        }
+        const fresh = items.filter((item) => !seenIds.has(item.id));
+        if (fresh.length > 0) {
+          for (const item of fresh) seenIds.add(item.id);
+          subscriber.next({ data: { kind: 'new', notifications: fresh } });
+        }
+      };
+
+      void this.workspace
+        .listNotifications(actor, true)
+        .then((list) => emitNew(list, true))
+        .catch(() => undefined);
+
+      // Zero-millisecond in-process push
+      const unsubscribe = this.workspace.onNotificationEvent(({ organizationId, notification }) => {
+        if (closed) return;
+        if (organizationId && actor.organizationId && organizationId !== actor.organizationId) return;
+        if (!this.workspace.isNotificationVisibleToActor(notification, actor)) return;
+        if (seenIds.has(notification.id)) return;
+        seenIds.add(notification.id);
+        subscriber.next({
+          data: {
+            kind: 'new',
+            notifications: [{ ...notification, read: notification.readByIds.includes(actor.id) }],
+          },
+        });
+      });
+
+      // Cross-instance serverless fast sync every 1.2s + heartbeat
+      const pollTimer = setInterval(() => {
+        if (closed) return;
+        void this.workspace
+          .listNotifications(actor, true)
+          .then((list) => emitNew(list, false))
+          .catch(() => undefined);
+      }, 1200);
+
+      const pingTimer = setInterval(() => {
+        if (!closed) subscriber.next({ data: { kind: 'ping', ts: Date.now() } });
+      }, 15_000);
+
+      return () => {
+        closed = true;
+        unsubscribe();
+        clearInterval(pollTimer);
+        clearInterval(pingTimer);
+      };
+    });
   }
 
   @Post('notifications/announcements')
