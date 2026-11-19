@@ -921,10 +921,6 @@ export function ProfileView() {
   const [role, setRole] = useState('STAFF');
   const [title, setTitle] = useState('');
 
-  // User approval-request inputs for NIC & Contact Number
-  const [reqNic, setReqNic] = useState('');
-  const [reqPhone, setReqPhone] = useState('');
-
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const q = new URLSearchParams(window.location.search).get('userId');
@@ -943,8 +939,6 @@ export function ProfileView() {
     setPhone(data.phone ?? '');
     setRole(data.role ?? 'STAFF');
     setTitle(data.title ?? '');
-    setReqNic(data.nicNumber ?? '');
-    setReqPhone(data.phone ?? '');
   }, []);
 
   const load = useCallback(async () => {
@@ -1037,20 +1031,6 @@ export function ProfileView() {
       void reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update DP.');
-    }
-  }
-
-  async function requestFieldApproval(field: 'nicNumber' | 'phone', newValue: string) {
-    setError(null);
-    setNotice(null);
-    try {
-      await post('/profile/request-change', { field, newValue });
-      setNotice(
-        `${field === 'nicNumber' ? 'NIC ID Number' : 'Contact Number'} change request sent for Super Admin / HR approval.`,
-      );
-      await load();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to submit request.');
     }
   }
 
@@ -1169,63 +1149,6 @@ export function ProfileView() {
           <Badge tone={profile.status === 'ACTIVE' ? 'success' : 'neutral'}>{profile.status}</Badge>
         </div>
       </Card>
-
-      {/* Self-service Approval Requests for NIC & Contact Number */}
-      {isViewingSelf && (
-        <Card>
-          <CardHeader
-            title="Self-Service Update Requests (Requires Super Admin / HR Approval)"
-            description="Submit a change request for your NIC ID Number or Contact Number."
-          />
-          <div className="grid gap-4 p-5 md:grid-cols-2">
-            <div className="space-y-2 rounded-xl border border-line bg-canvas/50 p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-ink">NIC ID Number</span>
-                {profile.pendingRequests.some((p) => p.field === 'nicNumber') && (
-                  <Badge tone="gold">Pending Approval</Badge>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Input
-                  value={reqNic}
-                  onChange={(e) => setReqNic(e.target.value)}
-                  placeholder="Enter NIC ID Number"
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => void requestFieldApproval('nicNumber', reqNic)}
-                >
-                  Request
-                </Button>
-              </div>
-            </div>
-
-            <div className="space-y-2 rounded-xl border border-line bg-canvas/50 p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-ink">Contact Number</span>
-                {profile.pendingRequests.some((p) => p.field === 'phone') && (
-                  <Badge tone="gold">Pending Approval</Badge>
-                )}
-              </div>
-              <div className="flex gap-2">
-                <Input
-                  value={reqPhone}
-                  onChange={(e) => setReqPhone(e.target.value)}
-                  placeholder="Enter Contact Number"
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={() => void requestFieldApproval('phone', reqPhone)}
-                >
-                  Request
-                </Button>
-              </div>
-            </div>
-          </div>
-        </Card>
-      )}
 
       {/* Full Profile Details */}
       <Card>
