@@ -793,6 +793,33 @@ export class WorkspaceService implements OnModuleInit {
       this.lastSnapshotSyncAt = Date.now();
       if (!stateRow?.value || typeof stateRow.value !== 'object') return;
       const snap = stateRow.value as Record<string, unknown>;
+      if (Array.isArray(snap.clients)) this.clients = snap.clients as ClientItem[];
+      if (Array.isArray(snap.projects)) this.projects = snap.projects as ProjectItem[];
+      if (Array.isArray(snap.sprints)) this.sprints = snap.sprints as SprintItem[];
+      if (Array.isArray(snap.tasks)) this.tasks = snap.tasks as TaskItem[];
+      if (Array.isArray(snap.bugs)) this.bugs = snap.bugs as BugItem[];
+      if (Array.isArray(snap.documents)) this.documents = snap.documents as DocumentItem[];
+      if (Array.isArray(snap.timeEntries)) this.timeEntries = snap.timeEntries as TimeEntryItem[];
+      if (Array.isArray(snap.attendance)) this.attendance = snap.attendance as AttendanceItem[];
+      if (Array.isArray(snap.leaveRequests)) this.leaveRequests = snap.leaveRequests as LeaveRequestItem[];
+      if (Array.isArray(snap.interns)) this.interns = snap.interns as InternItem[];
+      if (Array.isArray(snap.messages)) this.messages = snap.messages as ChatMessageItem[];
+      if (Array.isArray(snap.meetings)) this.meetings = snap.meetings as MeetingItem[];
+      if (Array.isArray(snap.departments) && snap.departments.length > 0) {
+        this.departments = snap.departments as WorkspaceService['departments'];
+      }
+      if (snap.reportingManagers && typeof snap.reportingManagers === 'object') {
+        this.reportingManagers = snap.reportingManagers as Record<string, string | null>;
+      }
+      if (Array.isArray(snap.financeEntries)) {
+        this.financeEntries = snap.financeEntries as WorkspaceService['financeEntries'];
+      }
+      if (Array.isArray(snap.assets)) {
+        this.assets = snap.assets as WorkspaceService['assets'];
+      }
+      if (Array.isArray(snap.performanceReviews)) {
+        this.performanceReviews = snap.performanceReviews as WorkspaceService['performanceReviews'];
+      }
       if (Array.isArray(snap.notifications)) {
         this.notifications = snap.notifications as WorkspaceService['notifications'];
       }
@@ -812,14 +839,7 @@ export class WorkspaceService implements OnModuleInit {
 
   private persistState(organizationId?: string): void {
     if (!this.prisma.systemSetting?.upsert) return;
-    if (this.persistTimer) {
-      clearTimeout(this.persistTimer);
-    }
-    this.persistTimer = setTimeout(() => {
-      this.persistTimer = null;
-      void this.persistStateNow(organizationId);
-    }, 80);
-    this.persistTimer.unref?.();
+    void this.persistStateNow(organizationId);
   }
 
   private async persistStateNow(organizationId?: string): Promise<void> {
