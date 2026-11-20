@@ -5745,8 +5745,10 @@ export class WorkspaceService implements OnModuleInit {
       avatarUrl?: string;
     },
   ) {
-    if (!this.isHrOrSuperAdmin(actor)) {
-      throw new ForbiddenException('Only Super Admin or HR can directly update employee profile fields.');
+    const isSelf = actor.id === targetUserId;
+    const isAdminOrHr = this.isHrOrSuperAdmin(actor);
+    if (!isSelf && !isAdminOrHr) {
+      throw new ForbiddenException('Only Super Admin or HR can update another employee profile.');
     }
     if ((body.role !== undefined || body.title !== undefined) && actor.role !== Role.SUPER_ADMIN) {
       throw new ForbiddenException('Only a Super Admin can change an employee job role or title.');
@@ -5768,13 +5770,13 @@ export class WorkspaceService implements OnModuleInit {
       ...(body.avatarUrl !== undefined && String(body.avatarUrl).trim().length > 0
         ? { avatarDataUrl: String(body.avatarUrl).trim() }
         : {}),
-      ...(body.monthlyBasicSalaryLkr !== undefined && Number.isFinite(Number(body.monthlyBasicSalaryLkr))
+      ...(isAdminOrHr && body.monthlyBasicSalaryLkr !== undefined && Number.isFinite(Number(body.monthlyBasicSalaryLkr))
         ? { monthlyBasicSalaryLkr: Math.max(0, Math.round(Number(body.monthlyBasicSalaryLkr))) }
         : {}),
-      ...(body.fixedAllowancesLkr !== undefined && Number.isFinite(Number(body.fixedAllowancesLkr))
+      ...(isAdminOrHr && body.fixedAllowancesLkr !== undefined && Number.isFinite(Number(body.fixedAllowancesLkr))
         ? { fixedAllowancesLkr: Math.max(0, Math.round(Number(body.fixedAllowancesLkr))) }
         : {}),
-      ...(body.epfNumber !== undefined ? { epfNumber: String(body.epfNumber).trim() } : {}),
+      ...(isAdminOrHr && body.epfNumber !== undefined ? { epfNumber: String(body.epfNumber).trim() } : {}),
       ...(body.bankName !== undefined ? { bankName: String(body.bankName).trim() } : {}),
       ...(body.bankBranch !== undefined ? { bankBranch: String(body.bankBranch).trim() } : {}),
       ...(body.bankAccountNo !== undefined ? { bankAccountNo: String(body.bankAccountNo).trim() } : {}),

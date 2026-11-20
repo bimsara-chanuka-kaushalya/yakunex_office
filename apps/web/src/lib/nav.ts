@@ -61,10 +61,10 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
         key: 'profile',
         href: '/profile',
         icon: UserCircle,
-        allowedRoles: ['INTERN'],
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF', 'INTERN'],
         phase: 1,
         ready: true,
-        description: 'View your personal profile and update DP.',
+        description: 'View and update your personal profile, DP, and bank details.',
       },
       {
         key: 'organization',
@@ -341,6 +341,9 @@ export function isModuleLockedForRole(
   role?: string | null,
   can?: (perm: string) => boolean,
 ): boolean {
+  if (key === 'profile') {
+    return false;
+  }
   if (role === 'INTERN') {
     return !INTERN_ALLOWED_MODULES.has(key);
   }

@@ -1285,6 +1285,7 @@ export function ProfileView() {
 
   if (!profile) return <Skeleton className="h-96 rounded-2xl" />;
   const isViewingSelf = !selectedUserId || selectedUserId === user?.id;
+  const canEditPersonal = isViewingSelf || isHrOrSuperAdmin;
 
   return (
     <div className="space-y-6">
@@ -1380,26 +1381,26 @@ export function ProfileView() {
         />
         <form onSubmit={saveAdminFields} className="grid gap-4 p-5 md:grid-cols-2">
           <Field label="Full Name" htmlFor="pf-full">
-            <Input id="pf-full" disabled={!isHrOrSuperAdmin} value={fullName} onChange={(e) => setFullName(e.target.value)} />
+            <Input id="pf-full" disabled={!canEditPersonal} value={fullName} onChange={(e) => setFullName(e.target.value)} />
           </Field>
           <Field label="Name with Initials" htmlFor="pf-first">
-            <Input id="pf-first" disabled={!isHrOrSuperAdmin} value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+            <Input id="pf-first" disabled={!canEditPersonal} value={firstName} onChange={(e) => setFirstName(e.target.value)} />
           </Field>
           <Field label="Last Name" htmlFor="pf-last">
-            <Input id="pf-last" disabled={!isHrOrSuperAdmin} value={lastName} onChange={(e) => setLastName(e.target.value)} />
+            <Input id="pf-last" disabled={!canEditPersonal} value={lastName} onChange={(e) => setLastName(e.target.value)} />
           </Field>
           <Field label="NIC ID Number" htmlFor="pf-nic">
-            <Input id="pf-nic" disabled={!isHrOrSuperAdmin} value={nicNumber} onChange={(e) => setNicNumber(e.target.value)} placeholder="e.g. 200012345678" />
+            <Input id="pf-nic" disabled={!canEditPersonal} value={nicNumber} onChange={(e) => setNicNumber(e.target.value)} placeholder="e.g. 200012345678" />
           </Field>
           <Field label="Contact Number" htmlFor="pf-phone">
-            <Input id="pf-phone" disabled={!isHrOrSuperAdmin} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+94 7X XXX XXXX" />
+            <Input id="pf-phone" disabled={!canEditPersonal} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+94 7X XXX XXXX" />
           </Field>
           <Field label="Birthday" htmlFor="pf-dob">
-            <Input id="pf-dob" type="date" disabled={!isHrOrSuperAdmin} value={birthday} onChange={(e) => setBirthday(e.target.value)} />
+            <Input id="pf-dob" type="date" disabled={!canEditPersonal} value={birthday} onChange={(e) => setBirthday(e.target.value)} />
           </Field>
           <div className="md:col-span-2">
             <Field label="Address" htmlFor="pf-addr">
-              <Input id="pf-addr" disabled={!isHrOrSuperAdmin} value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Residential address" />
+              <Input id="pf-addr" disabled={!canEditPersonal} value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Residential address" />
             </Field>
           </div>
           <Field label="Job Role / Designation" htmlFor="pf-title">
@@ -1432,18 +1433,18 @@ export function ProfileView() {
                 <Input id="pf-epf" disabled={!isHrOrSuperAdmin} value={epfNumber} onChange={(e) => setEpfNumber(e.target.value)} placeholder="e.g. EPF-0042" />
               </Field>
               <Field label="Bank Name" htmlFor="pf-bank">
-                <Input id="pf-bank" disabled={!isHrOrSuperAdmin} value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="e.g. Commercial Bank / Sampath Bank" />
+                <Input id="pf-bank" disabled={!canEditPersonal} value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="e.g. Commercial Bank / Sampath Bank" />
               </Field>
               <Field label="Bank Branch" htmlFor="pf-branch">
-                <Input id="pf-branch" disabled={!isHrOrSuperAdmin} value={bankBranch} onChange={(e) => setBankBranch(e.target.value)} placeholder="e.g. Colombo 03" />
+                <Input id="pf-branch" disabled={!canEditPersonal} value={bankBranch} onChange={(e) => setBankBranch(e.target.value)} placeholder="e.g. Colombo 03" />
               </Field>
               <Field label="Bank Account Number" htmlFor="pf-acc">
-                <Input id="pf-acc" disabled={!isHrOrSuperAdmin} value={bankAccountNo} onChange={(e) => setBankAccountNo(e.target.value)} placeholder="e.g. 8001234567" />
+                <Input id="pf-acc" disabled={!canEditPersonal} value={bankAccountNo} onChange={(e) => setBankAccountNo(e.target.value)} placeholder="e.g. 8001234567" />
               </Field>
             </>
           )}
 
-          {isHrOrSuperAdmin && (
+          {canEditPersonal && (
             <div className="flex justify-end md:col-span-2">
               <Button type="submit" disabled={saving}>
                 <UserCheck className="h-4 w-4" /> {saving ? 'Saving…' : 'Save Profile Changes'}
