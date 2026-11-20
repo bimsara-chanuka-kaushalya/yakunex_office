@@ -1479,7 +1479,10 @@ export class WorkspaceService implements OnModuleInit {
     return task;
   }
 
-  deleteTask(id: string) {
+  deleteTask(id: string, actor?: AuthUser) {
+    if (actor?.role === Role.INTERN) {
+      throw new ForbiddenException('Interns cannot delete tasks.');
+    }
     this.tasks = this.tasks.filter((t) => t.id !== id);
     this.persistState();
     void this.prisma.task?.deleteMany?.({ where: { id } }).catch(() => undefined);
@@ -2116,6 +2119,18 @@ export class WorkspaceService implements OnModuleInit {
     const startDate = String(body.startDate || '');
     const endDate = String(body.endDate || '');
     if (!startDate || !endDate) throw new BadRequestException('Start and end dates are required.');
+    const requestedDays = Math.max(0.5, Number(body.days) || 1);
+    if (actor.role === Role.INTERN) {
+      const committedDays = this.leaveRequests
+        .filter((l) => l.userId === actor.id && (l.status === 'APPROVED' || l.status === 'PENDING'))
+        .reduce((sum, l) => sum + (Number(l.days) || 1), 0);
+      if (committedDays + requestedDays > 10) {
+        const remaining = Math.max(0, 10 - committedDays);
+        throw new BadRequestException(
+          `Interns have a maximum 10-day leave allowance. You have ${remaining} day(s) remaining.`,
+        );
+      }
+    }
     const created: LeaveRequestItem = {
       id: `lv_${randomUUID().slice(0, 8)}`,
       userId: actor.id,
@@ -2123,7 +2138,7 @@ export class WorkspaceService implements OnModuleInit {
       type: (body.type as LeaveRequestItem['type']) || 'ANNUAL',
       startDate,
       endDate,
-      days: Math.max(0.5, Number(body.days) || 1),
+      days: requestedDays,
       reason: String(body.reason ?? '').trim() || 'Personal leave',
       status: 'PENDING',
       approverName: null,
@@ -5653,6 +5668,50 @@ export class WorkspaceService implements OnModuleInit {
       .reduce((acc, i) => acc + (i.amount || 0), 0);
     const outstandingUsd = totalInvoiceUsd - paidInvoiceUsd;
 
+    if (actor.role === Role.INTERN) {
+      const myTasks = this.tasks.filter(
+        (t) => t.assigneeName.toLowerCase().includes(actor.fullName.toLowerCase()),
+      );
+      const myOpen = myTasks.filter((t) => t.status !== 'COMPLETED').length;
+      const myTodayAtt = this.attendance.find((a) => a.userId === actor.id && a.workDate === today);
+      const internUsedLeave = this.leaveRequests
+        .filter((l) => l.userId === actor.id && l.status === 'APPROVED')
+        .reduce((sum, l) => sum + (Number(l.days) || 1), 0);
+      const internProfile = this.interns.find(
+        (i) => i.userId === actor.id || i.email === actor.email || i.fullName === actor.fullName,
+      );
+      return {
+        persona: 'Intern & Trainee Workspace',
+        badge: actorTitle || 'Intern · 10d Leave Cap',
+        cards: [
+          {
+            label: 'My Assigned Tasks',
+            value: String(myOpen),
+            detail: `${myTasks.length - myOpen} completed`,
+            tone: 'blue',
+          },
+          {
+            label: 'Attendance Today',
+            value: myTodayAtt?.clockInAt ? (myTodayAtt.clockOutAt ? 'Clocked Out' : 'Clocked In') : 'Not Clocked In',
+            detail: myTodayAtt?.workMode ? `${myTodayAtt.workMode} mode` : 'Clock in via Attendance',
+            tone: myTodayAtt?.clockInAt ? 'emerald' : 'amber',
+          },
+          {
+            label: 'Intern Leave Balance',
+            value: `${Math.max(0, 10 - internUsedLeave)} / 10d`,
+            detail: `${internUsedLeave} day(s) used of 10d cap`,
+            tone: 10 - internUsedLeave <= 2 ? 'rose' : 'indigo',
+          },
+          {
+            label: 'Training Progress',
+            value: `${internProfile?.progressPercent ?? 0}%`,
+            detail: internProfile ? `Mentor: ${internProfile.mentorName}` : 'Weekly internship plan',
+            tone: 'emerald',
+          },
+        ],
+      };
+    }
+
     if (
       title.includes('accountant') ||
       title.includes('cfo') ||
@@ -5990,12 +6049,33 @@ export class WorkspaceService implements OnModuleInit {
     const annualUsed = usedByType('ANNUAL');
     const casualUsed = usedByType('CASUAL');
     const medicalUsed = usedByType('SICK') + usedByType('MEDICAL');
+    const totalUsed = myApproved.reduce((sum, l) => sum + (Number(l.days) || 1), 0);
 
     const teamUpcoming = this.leaveRequests
       .filter((lr) => lr.status === 'APPROVED' || lr.status === 'PENDING')
       .slice(0, 30);
 
+    if (actor.role === Role.INTERN) {
+      return {
+        isIntern: true,
+        maxTotalDays: 10,
+        totalUsed,
+        totalRemaining: Math.max(0, 10 - totalUsed),
+        entitlements: {
+          annual: { total: 5, used: annualUsed, remaining: Math.max(0, 5 - annualUsed) },
+          casual: { total: 3, used: casualUsed, remaining: Math.max(0, 3 - casualUsed) },
+          medical: { total: 2, used: medicalUsed, remaining: Math.max(0, 2 - medicalUsed) },
+        },
+        holidays2026,
+        teamCalendar: teamUpcoming,
+      };
+    }
+
     return {
+      isIntern: false,
+      maxTotalDays: 28,
+      totalUsed,
+      totalRemaining: Math.max(0, 28 - totalUsed),
       entitlements: {
         annual: { total: 14, used: annualUsed, remaining: Math.max(0, 14 - annualUsed) },
         casual: { total: 7, used: casualUsed, remaining: Math.max(0, 7 - casualUsed) },

@@ -21,7 +21,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { RoleDistributionChart } from '@/components/dashboard/role-chart';
 import { api, ApiError } from '@/lib/api';
-import { ALL_NAV_ITEMS, isModuleLockedForRole } from '@/lib/nav';
+import { useLiveSync } from '@/lib/use-live-sync';
+import { ALL_NAV_ITEMS, isModuleLockedForRole, isNavItemVisibleForRole } from '@/lib/nav';
 import { LockedModuleNotice } from '@/components/ui/locked-module';
 import { PERMISSIONS, ROLE_LABELS, type Role } from '@/lib/permissions';
 
@@ -200,6 +201,8 @@ export default function DashboardPage() {
     void load();
   }, [load]);
 
+  useLiveSync(load);
+
   if (isModuleLockedForRole('dashboard', user?.role)) {
     return <LockedModuleNotice moduleName="Dashboard" />;
   }
@@ -215,7 +218,7 @@ export default function DashboardPage() {
   const firstName = formatNameWithInitials(user?.fullName, profileInitialsName);
   const roleLabel = user ? ROLE_LABELS[user.role as Role]?.[lang] ?? user.role : '';
   const quickModules = ALL_NAV_ITEMS.filter(
-    (item) => item.key !== 'dashboard' && (!item.permission || can(item.permission)),
+    (item) => item.key !== 'dashboard' && isNavItemVisibleForRole(item, user?.role, can),
   ).slice(0, 6);
 
   if (error) {
@@ -575,6 +578,41 @@ export default function DashboardPage() {
           icon={<Clock className="h-4 w-4" />}
         />
       </section>
+
+      {roleInsights && roleInsights.cards.length > 0 && (
+        <section aria-label="Role Intelligence" className="space-y-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-gold" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-muted">
+                {roleInsights.persona}
+              </h3>
+            </div>
+            <Badge tone="gold">{roleInsights.badge}</Badge>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {roleInsights.cards.map((c) => {
+              const toneMap: Record<string, string> = {
+                blue: 'border-sky-500/20 bg-sky-500/5 text-sky-600 dark:text-sky-400',
+                emerald: 'border-emerald-500/20 bg-emerald-500/5 text-emerald-600 dark:text-emerald-400',
+                amber: 'border-amber-500/20 bg-amber-500/5 text-amber-600 dark:text-amber-400',
+                rose: 'border-rose-500/20 bg-rose-500/5 text-rose-600 dark:text-rose-400',
+                indigo: 'border-indigo-500/20 bg-indigo-500/5 text-indigo-600 dark:text-indigo-400',
+              };
+              return (
+                <div
+                  key={c.label}
+                  className={`rounded-2xl border p-4 transition-all ${toneMap[c.tone] ?? toneMap.blue}`}
+                >
+                  <p className="text-[11px] font-semibold uppercase tracking-wider opacity-80">{c.label}</p>
+                  <p className="mt-1 font-display text-2xl font-bold text-ink">{c.value}</p>
+                  <p className="mt-0.5 text-xs text-muted">{c.detail}</p>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {ws && ws.myTasks.length > 0 && (
         <Card>

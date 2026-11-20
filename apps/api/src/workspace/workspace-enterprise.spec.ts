@@ -203,4 +203,50 @@ describe('WorkspaceService Enterprise Waves 1-5 Coverage', () => {
       }),
     ).rejects.toThrow(BadRequestException);
   });
+
+  it('enforces Intern 10-day leave cap, blocks Intern task deletion, and returns Intern dashboard insights', async () => {
+    const svc = makeService();
+    const internActor: AuthUser = {
+      id: 'usr_intern_10d',
+      organizationId: 'org_test',
+      companyId: 'YNX-INT-0010',
+      email: 'intern10@yakunx.com',
+      fullName: 'Dinithi Fernando',
+      role: Role.INTERN,
+      status: UserStatus.ACTIVE,
+      mustChangePassword: false,
+    };
+
+    const project = await svc.createProject(adminActor, { name: 'Intern Onboarding App' });
+    const task = await svc.createTask(adminActor, {
+      projectId: project.id,
+      title: 'Build unit test fixtures',
+      assigneeName: internActor.fullName,
+    });
+
+    // Intern cannot delete tasks
+    expect(() => svc.deleteTask(task.id, internActor)).toThrow(ForbiddenException);
+
+    // Intern leave cap: 10 days max
+    await svc.createLeave(internActor, {
+      type: 'ANNUAL',
+      startDate: '2026-11-02',
+      endDate: '2026-11-06',
+      days: 5,
+      reason: 'University exams',
+    });
+    await expect(
+      svc.createLeave(internActor, {
+        type: 'CASUAL',
+        startDate: '2026-11-10',
+        endDate: '2026-11-17',
+        days: 6,
+        reason: 'Exceeds 10d cap',
+      }),
+    ).rejects.toThrow(BadRequestException);
+
+    const insights = svc.getRoleInsights(internActor);
+    expect(insights.persona).toBe('Intern & Trainee Workspace');
+    expect(insights.cards.some((c) => c.label === 'Intern Leave Balance')).toBe(true);
+  });
 });

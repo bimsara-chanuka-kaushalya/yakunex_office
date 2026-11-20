@@ -112,8 +112,8 @@ export class WorkspaceController {
 
   @Delete('tasks/:id')
   @RequirePermissions(PERMISSIONS.TASKS_WRITE)
-  deleteTask(@Param('id') id: string) {
-    return this.workspace.deleteTask(id);
+  deleteTask(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.deleteTask(id, actor);
   }
 
   // ─── Bugs ─────────────────────────────────────────────────────────────────

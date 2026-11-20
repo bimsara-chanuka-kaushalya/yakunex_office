@@ -39,19 +39,16 @@ describe('PermissionsGuard — Enterprise Role Enforcement Matrix', () => {
     return new PermissionsGuard(reflector, rbac);
   };
 
-  it('strictly blocks INTERN from Projects, Tasks, Assets/Reports (USERS_READ), Finance, Settings & Audit', async () => {
+  it('allows INTERN Dashboard/Projects/Tasks/Time/Chat while blocking Admin, Users, Finance, Settings & Audit', async () => {
     const intern = makeActor(Role.INTERN);
     const forbiddenForIntern = [
-      PERMISSIONS.PROJECTS_READ,
       PERMISSIONS.PROJECTS_WRITE,
-      PERMISSIONS.TASKS_READ,
-      PERMISSIONS.TASKS_WRITE,
-      PERMISSIONS.TIME_OWN,
       PERMISSIONS.USERS_READ,
       PERMISSIONS.USERS_WRITE,
       PERMISSIONS.FINANCIALS_READ,
       PERMISSIONS.AUDIT_READ,
       PERMISSIONS.SETTINGS_MANAGE,
+      PERMISSIONS.CODE_DEPLOY,
     ];
 
     for (const perm of forbiddenForIntern) {
@@ -59,9 +56,16 @@ describe('PermissionsGuard — Enterprise Role Enforcement Matrix', () => {
       await expect(guard.canActivate(makeContext(intern))).rejects.toThrow(ForbiddenException);
     }
 
-    // Allowed: Chat & Meetings (CHAT_USE)
-    const chatGuard = makeGuard([PERMISSIONS.CHAT_USE]);
-    await expect(chatGuard.canActivate(makeContext(intern))).resolves.toBe(true);
+    // Allowed: Projects (read), Tasks (read/write), Time (own), Chat & Meetings (Join-Only)
+    for (const perm of [
+      PERMISSIONS.PROJECTS_READ,
+      PERMISSIONS.TASKS_READ,
+      PERMISSIONS.TASKS_WRITE,
+      PERMISSIONS.TIME_OWN,
+      PERMISSIONS.CHAT_USE,
+    ]) {
+      await expect(makeGuard([perm]).canActivate(makeContext(intern))).resolves.toBe(true);
+    }
   });
 
   it('blocks STAFF from Users, Assets/Reports, Client Portal Write, Finance & Settings while allowing Tasks/Time/Chat', async () => {

@@ -73,7 +73,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       {/* Brand Header */}
       <div className="flex items-center justify-between border-b border-sidebar-line/70 px-4 py-4">
         <Link
-          href={user?.role === 'INTERN' ? '/profile' : '/dashboard'}
+          href="/dashboard"
           onClick={onNavigate}
           className="flex items-center gap-3"
         >

@@ -52,7 +52,7 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
         key: 'dashboard',
         href: '/dashboard',
         icon: LayoutDashboard,
-        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF', 'INTERN'],
         phase: 1,
         ready: true,
         description: 'Role-based overview of your work and company.',
@@ -94,7 +94,7 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
         href: '/projects',
         icon: FolderKanban,
         permission: PERMISSIONS.PROJECTS_READ,
-        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF', 'INTERN'],
         phase: 2,
         ready: true,
         description: 'Projects, milestones, timeline, budgets and client portal links.',
@@ -104,7 +104,7 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
         href: '/tasks',
         icon: ListChecks,
         permission: PERMISSIONS.TASKS_READ,
-        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF', 'INTERN'],
         phase: 2,
         ready: true,
         description: 'Epics, stories, drag-and-drop Kanban board, worklog timer & dependencies.',
@@ -169,7 +169,7 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
         href: '/time-tracker',
         icon: Clock,
         permission: PERMISSIONS.TIME_OWN,
-        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF', 'INTERN'],
         phase: 3,
         ready: true,
         description: 'Jibble-grade clock in, selfie/GPS verification, project timers & timesheets.',
@@ -179,7 +179,7 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
         href: '/attendance',
         icon: CalendarCheck,
         permission: PERMISSIONS.TIME_OWN,
-        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF', 'INTERN'],
         phase: 3,
         ready: true,
         description: 'Daily attendance, live GPS map, OT rules (1.5x/2x) & EPF/ETF payroll export.',
@@ -189,7 +189,7 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
         href: '/leave',
         icon: Plane,
         permission: PERMISSIONS.TIME_OWN,
-        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF', 'INTERN'],
         phase: 3,
         ready: true,
         description: 'Leave balances, Sri Lanka Poya holidays, team calendar & approvals.',
@@ -306,7 +306,18 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
 
 export const ALL_NAV_ITEMS: NavItem[] = NAV_SECTIONS.flatMap((section) => section.items);
 
-export const INTERN_ALLOWED_MODULES = new Set(['profile', 'meetings', 'chat', 'notifications']);
+export const INTERN_ALLOWED_MODULES = new Set([
+  'dashboard',
+  'profile',
+  'projects',
+  'tasks',
+  'time-tracker',
+  'attendance',
+  'leave',
+  'chat',
+  'meetings',
+  'notifications',
+]);
 
 function hasDesignationUnlock(key: string, can?: (perm: string) => boolean): boolean {
   if (!can) return false;

@@ -1564,6 +1564,10 @@ interface LeaveRow {
 }
 
 interface LeaveSummaryPayload {
+  isIntern?: boolean;
+  maxTotalDays?: number;
+  totalUsed?: number;
+  totalRemaining?: number;
   entitlements: {
     annual: { total: number; used: number; remaining: number };
     casual: { total: number; used: number; remaining: number };
@@ -1573,12 +1577,13 @@ interface LeaveSummaryPayload {
 }
 
 export function LeaveView() {
-  const { can } = useAuth();
+  const { user, can } = useAuth();
   const canApprove = can(PERMISSIONS.LEAVE_APPROVE);
   const [requests, setRequests] = useState<LeaveRow[]>([]);
   const [leaveSummary, setLeaveSummary] = useState<LeaveSummaryPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
 
   const [type, setType] = useState<LeaveRow['type']>('ANNUAL');
   const [startDate, setStartDate] = useState('2026-11-26');
@@ -1630,10 +1635,15 @@ export function LeaveView() {
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
-    await post('/leave', { type, startDate, endDate, days: Number(days), reason });
-    setModalOpen(false);
-    setReason('');
-    await load();
+    setLeaveError(null);
+    try {
+      await post('/leave', { type, startDate, endDate, days: Number(days), reason });
+      setModalOpen(false);
+      setReason('');
+      await load();
+    } catch (err) {
+      setLeaveError(err instanceof ApiError ? err.message : 'Unable to submit leave request.');
+    }
   }
 
   async function decide(id: string, status: 'APPROVED' | 'REJECTED') {
@@ -1650,10 +1660,22 @@ export function LeaveView() {
             Annual, medical and study leave requests with manager approval workflow.
           </p>
         </div>
-        <Button onClick={() => setModalOpen(true)}>
+        <Button
+          onClick={() => {
+            setLeaveError(null);
+            setModalOpen(true);
+          }}
+        >
           <Plus className="h-4 w-4" /> Request leave
         </Button>
       </header>
+
+      {(leaveSummary?.isIntern || user?.role === 'INTERN') && (
+        <div className="rounded-2xl border border-gold/40 bg-gold/10 px-4 py-3 text-xs text-ink">
+          <strong className="text-gold-strong dark:text-gold">Intern Leave Policy (10 Days Max):</strong>{' '}
+          Interns are entitled to a maximum of <strong>10 total leave days</strong> ({leaveSummary?.totalRemaining ?? 10} day(s) remaining).
+        </div>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
@@ -1788,6 +1810,11 @@ export function LeaveView() {
 
       <Modal open={modalOpen} title="Request leave" onClose={() => setModalOpen(false)}>
         <form onSubmit={onCreate} className="space-y-4">
+          {leaveError && (
+            <div className="rounded-xl border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
+              {leaveError}
+            </div>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Leave type" htmlFor="lv-type">
               <Select
