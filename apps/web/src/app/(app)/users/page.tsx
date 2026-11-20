@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import Link from 'next/link';
-import { Check, Copy, KeyRound, Link2, Search, Trash2, UserCircle, UserPlus, Users as UsersIcon } from 'lucide-react';
+import { Check, Copy, Download, GraduationCap, KeyRound, Link2, Search, Trash2, Upload, UserCircle, UserMinus, UserPlus, Users as UsersIcon } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -13,6 +13,8 @@ import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/ui/empty-state';
 import { api, ApiError, del, patch, post, put } from '@/lib/api';
+import { exportBrandedPdf } from '@/lib/pdf-export';
+import { useLiveSync } from '@/lib/use-live-sync';
 import { PERMISSIONS, ROLE_LABELS, type Role } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 
@@ -244,6 +246,90 @@ export default function UsersPage() {
     }
   }
 
+  useLiveSync(load);
+
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResults, setBulkResults] = useState<
+    Array<{ fullName: string; ok: boolean; companyId?: string | null; email?: string; activationToken?: string; error?: string }>
+  >([]);
+
+  async function onOffboard(row: UserRow) {
+    const reason = window.prompt(`Offboard ${row.fullName}? This revokes all sessions immediately. Optional reason:`, 'Resignation / Contract Completed');
+    if (reason === null) return;
+    try {
+      await post(`/users/${row.id}/offboard`, { reason });
+      setNotice({ tone: 'success', text: `${row.fullName} offboarded and all sessions revoked.` });
+      await load();
+    } catch (err) {
+      setNotice({ tone: 'error', text: errorText(err) });
+    }
+  }
+
+  async function onPromoteToStaff(row: UserRow) {
+    const nextTitle = window.prompt(`Promote ${row.fullName} from Intern to Full-Time Staff. Enter new title:`, 'Software Engineer');
+    if (!nextTitle) return;
+    try {
+      await post(`/users/${row.id}/promote-staff`, { title: nextTitle });
+      setNotice({ tone: 'success', text: `${row.fullName} promoted to Full-Time Staff (${nextTitle}).` });
+      await load();
+    } catch (err) {
+      setNotice({ tone: 'error', text: errorText(err) });
+    }
+  }
+
+  async function onBulkImport(e: FormEvent) {
+    e.preventDefault();
+    const lines = bulkText
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (lines.length === 0) return;
+    const rows = lines.map((line) => {
+      const [fullName = '', roleRaw = 'STAFF', title = 'Software Engineer'] = line.split(',').map((s) => s.trim());
+      const role = ALL_ROLES.includes(roleRaw.toUpperCase() as Role) ? (roleRaw.toUpperCase() as Role) : 'STAFF';
+      return { fullName, role, title };
+    });
+    setBulkBusy(true);
+    try {
+      const res = await post<{
+        createdCount: number;
+        failedCount: number;
+        results: Array<{ fullName: string; ok: boolean; companyId?: string | null; email?: string; activationToken?: string; error?: string }>;
+      }>('/users/bulk', { rows });
+      setBulkResults(res.results ?? []);
+      setNotice({
+        tone: 'success',
+        text: `Bulk onboarding finished: ${res.createdCount} created, ${res.failedCount} failed.`,
+      });
+      await load();
+    } catch (err) {
+      setNotice({ tone: 'error', text: errorText(err) });
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  function exportDirectoryPdf() {
+    const items = list?.items ?? [];
+    exportBrandedPdf({
+      title: 'Yakunex Employee Directory',
+      subtitle: `${list?.total ?? items.length} registered accounts`,
+      generatedByName: user?.fullName,
+      generatedByEmail: user?.email,
+      columns: ['Company ID', 'Full Name', 'Email', 'Title', 'Role', 'Status'],
+      rows: items.map((u) => [
+        u.companyId || '—',
+        u.fullName,
+        u.email,
+        u.title || '—',
+        u.role,
+        u.status,
+      ]),
+    });
+  }
+
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
@@ -255,12 +341,22 @@ export default function UsersPage() {
               : '\u00A0'}
           </p>
         </div>
-        {can(PERMISSIONS.USERS_WRITE) && (
-          <Button onClick={() => setCreateOpen(true)}>
-            <UserPlus className="h-4 w-4" />
-            {t('addUser')}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" onClick={exportDirectoryPdf}>
+            <Download className="h-4 w-4" /> Directory PDF
           </Button>
-        )}
+          {can(PERMISSIONS.USERS_WRITE) && (
+            <>
+              <Button variant="secondary" onClick={() => { setBulkResults([]); setBulkOpen(true); }}>
+                <Upload className="h-4 w-4" /> Bulk CSV Import
+              </Button>
+              <Button onClick={() => setCreateOpen(true)}>
+                <UserPlus className="h-4 w-4" />
+                {t('addUser')}
+              </Button>
+            </>
+          )}
+        </div>
       </header>
 
       {notice && (
@@ -463,6 +559,28 @@ export default function UsersPage() {
                                 72h Link
                               </Button>
                             )}
+                            {can(PERMISSIONS.USERS_ASSIGN_ROLES) && editable && row.role === 'INTERN' && (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                onClick={() => void onPromoteToStaff(row)}
+                                title="Promote Intern to Full-Time Staff"
+                              >
+                                <GraduationCap className="h-3.5 w-3.5 text-emerald-500" />
+                                Promote
+                              </Button>
+                            )}
+                            {can(PERMISSIONS.USERS_WRITE) && editable && row.status !== 'DEACTIVATED' && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => void onOffboard(row)}
+                                title="1-Click Offboard & Revoke All Sessions"
+                              >
+                                <UserMinus className="h-3.5 w-3.5 text-danger" />
+                                Offboard
+                              </Button>
+                            )}
                             {can(PERMISSIONS.USERS_MANAGE_PERMISSIONS) && editable && (
                               <Button
                                 variant="ghost"
@@ -619,6 +737,77 @@ export default function UsersPage() {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal
+        open={bulkOpen}
+        title="Bulk CSV Employee Onboarding"
+        onClose={() => setBulkOpen(false)}
+      >
+        <form onSubmit={onBulkImport} className="space-y-4">
+          <p className="text-xs text-muted">
+            Paste up to 50 rows — one employee per line: <code className="font-mono text-ink">Full Name, ROLE, Job Title</code>
+          </p>
+          <textarea
+            rows={7}
+            required
+            placeholder={'Kasun Perera, STAFF, Senior Software Engineer\nNimali Silva, INTERN, QA Trainee\nRuwan Bandara, PROJECT_MANAGER, Scrum Master'}
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+            className="w-full rounded-xl border border-line bg-canvas p-3 font-mono text-xs text-ink focus:border-gold focus:outline-none"
+          />
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button type="button" variant="secondary" size="sm" onClick={() => setBulkOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" disabled={bulkBusy}>
+              {bulkBusy ? 'Provisioning…' : 'Create Accounts'}
+            </Button>
+          </div>
+          {bulkResults.length > 0 && (
+            <div className="max-h-56 space-y-2 overflow-y-auto rounded-xl border border-line bg-canvas/70 p-3 text-xs">
+              <div className="flex items-center justify-between">
+                <p className="font-semibold text-ink">Onboarding Results ({bulkResults.length})</p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    const csv = [
+                      'Full Name,Company ID,Email,Activation URL,Status',
+                      ...bulkResults.map((r) =>
+                        [
+                          r.fullName,
+                          r.companyId ?? '',
+                          r.email ?? '',
+                          r.activationToken ? buildActivationUrl(r.activationToken) : '',
+                          r.ok ? 'CREATED' : r.error ?? 'FAILED',
+                        ]
+                          .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+                          .join(','),
+                      ),
+                    ].join('\n');
+                    void navigator.clipboard.writeText(csv).catch(() => undefined);
+                    setNotice({ tone: 'success', text: 'Copied bulk activation links CSV to clipboard.' });
+                  }}
+                >
+                  <Copy className="h-3.5 w-3.5" /> Copy Activation Links CSV
+                </Button>
+              </div>
+              {bulkResults.map((r, i) => (
+                <div key={`${r.fullName}-${i}`} className="flex items-center justify-between gap-2 border-t border-line pt-2">
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold text-ink">{r.fullName}</p>
+                    <p className="truncate font-mono text-[11px] text-muted">
+                      {r.ok ? `${r.companyId ?? '—'} · ${r.email}` : r.error ?? 'Failed'}
+                    </p>
+                  </div>
+                  <Badge tone={r.ok ? 'success' : 'danger'}>{r.ok ? 'CREATED' : 'ERROR'}</Badge>
+                </div>
+              ))}
+            </div>
+          )}
+        </form>
       </Modal>
     </div>
   );

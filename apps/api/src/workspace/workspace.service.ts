@@ -37,6 +37,7 @@ export interface ClientItem {
   contactPhone: string;
   address: string;
   notes: string;
+  portalToken?: string;
   createdAt: string;
 }
 
@@ -88,6 +89,7 @@ export interface TaskItem {
   sprintId: string | null;
   sprintName: string | null;
   code: string;
+  issueType?: 'EPIC' | 'STORY' | 'TASK' | 'BUG';
   title: string;
   description: string;
   status: 'BACKLOG' | 'TODO' | 'IN_PROGRESS' | 'IN_REVIEW' | 'TESTING' | 'BLOCKED' | 'COMPLETED';
@@ -99,6 +101,9 @@ export interface TaskItem {
   assigneeEmail: string;
   dueDate: string;
   labels: string[];
+  blockedByIds?: string[];
+  prUrl?: string | null;
+  branchName?: string | null;
   subtasks?: Array<{ id: string; title: string; done: boolean }>;
   comments?: Array<{ id: string; authorName: string; body: string; createdAt: string }>;
 }
@@ -161,6 +166,8 @@ export interface TimeEntryItem {
   latitude?: number | null;
   longitude?: number | null;
   locationLabel?: string | null;
+  workMode?: 'OFFICE' | 'WFH' | 'CLIENT_SITE';
+  selfieUrl?: string | null;
 }
 
 export interface AttendanceItem {
@@ -670,6 +677,8 @@ export class WorkspaceService implements OnModuleInit {
   }> = [];
 
   private readonly notificationBus = new EventEmitter();
+  private readonly workspaceBus = new EventEmitter();
+  private workspaceVersion = Date.now();
 
   private notifications: Array<{
     id: string;
@@ -960,6 +969,8 @@ export class WorkspaceService implements OnModuleInit {
         },
       });
       this.lastMeetingsSyncAt = Date.now();
+      this.workspaceVersion = Date.now();
+      this.workspaceBus.emit('mutated', { organizationId: orgId, version: this.workspaceVersion });
     } catch (err) {
       this.logger.warn(`Failed to persist workspace_state to Supabase: ${(err as Error).message}`);
     }
@@ -1352,6 +1363,9 @@ export class WorkspaceService implements OnModuleInit {
       sprintId: sprint?.id ?? null,
       sprintName: sprint?.name ?? null,
       code: `${projCode}-T${String(countInProject).padStart(2, '0')}`,
+      issueType: (['EPIC', 'STORY', 'TASK', 'BUG'].includes(String(body.issueType ?? '').toUpperCase())
+        ? String(body.issueType).toUpperCase()
+        : 'TASK') as TaskItem['issueType'],
       title,
       description: String(body.description ?? '').trim(),
       status: (body.status as TaskItem['status']) || 'TODO',
@@ -1368,8 +1382,17 @@ export class WorkspaceService implements OnModuleInit {
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean),
+      blockedByIds: Array.isArray(body.blockedByIds) ? body.blockedByIds.map(String) : [],
+      prUrl: body.prUrl ? String(body.prUrl) : null,
+      branchName: body.branchName
+        ? String(body.branchName)
+        : `feat/${projCode.toLowerCase()}-t${String(countInProject).padStart(2, '0')}-${title
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .slice(0, 28)}`,
     };
     this.tasks.unshift(created);
+    this.recalculateProjectProgress(projId);
     this.persistState(actor.organizationId);
 
     void (async () => {
@@ -1412,11 +1435,24 @@ export class WorkspaceService implements OnModuleInit {
     return created;
   }
 
+  private recalculateProjectProgress(projectId: string): void {
+    const project = this.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    const pTasks = this.tasks.filter((t) => t.projectId === projectId);
+    if (pTasks.length === 0) return;
+    const totalPts = pTasks.reduce((sum, t) => sum + Math.max(1, t.storyPoints || 1), 0);
+    const donePts = pTasks
+      .filter((t) => t.status === 'COMPLETED')
+      .reduce((sum, t) => sum + Math.max(1, t.storyPoints || 1), 0);
+    project.progressPercent = Math.min(100, Math.round((donePts / totalPts) * 100));
+  }
+
   updateTask(id: string, body: Record<string, unknown>) {
     const task = this.tasks.find((t) => t.id === id);
     if (!task) throw new NotFoundException('Task not found.');
     if (body.status) task.status = body.status as TaskItem['status'];
     if (body.priority) task.priority = body.priority as TaskItem['priority'];
+    if (body.issueType) task.issueType = String(body.issueType).toUpperCase() as TaskItem['issueType'];
     if (body.assigneeName !== undefined) task.assigneeName = String(body.assigneeName);
     if (body.title !== undefined && String(body.title).trim()) task.title = String(body.title).trim();
     if (body.description !== undefined) task.description = String(body.description);
@@ -1424,9 +1460,13 @@ export class WorkspaceService implements OnModuleInit {
     if (body.storyPoints !== undefined) task.storyPoints = Number(body.storyPoints) || 0;
     if (body.estimatedHours !== undefined) task.estimatedHours = Number(body.estimatedHours) || 0;
     if (body.actualHours !== undefined) task.actualHours = Number(body.actualHours) || 0;
+    if (body.prUrl !== undefined) task.prUrl = body.prUrl ? String(body.prUrl) : null;
+    if (body.branchName !== undefined) task.branchName = body.branchName ? String(body.branchName) : null;
+    if (Array.isArray(body.blockedByIds)) task.blockedByIds = body.blockedByIds.map(String);
     if (Array.isArray(body.labels)) task.labels = body.labels.map(String);
     if (Array.isArray(body.subtasks)) task.subtasks = body.subtasks as TaskItem['subtasks'];
     if (Array.isArray(body.comments)) task.comments = body.comments as TaskItem['comments'];
+    this.recalculateProjectProgress(task.projectId);
     this.persistState();
     void this.prisma.task?.updateMany?.({
       where: { id: task.id },
@@ -1474,6 +1514,25 @@ export class WorkspaceService implements OnModuleInit {
       createdAt: new Date().toISOString(),
     };
     this.bugs.unshift(created);
+    if (created.severity === 'CRITICAL' || created.severity === 'BLOCKER') {
+      const alert = {
+        id: `ntf_${randomUUID().slice(0, 8)}`,
+        type: 'TASK' as const,
+        title: `🚨 ${created.severity} Bug Logged: ${created.code}`,
+        body: `${actor.fullName} reported "${created.title}" in ${created.projectName}.`,
+        targetUserId: '*',
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
+        actionUrl: '/bugs',
+        readByIds: [actor.id],
+        authorName: actor.fullName,
+        createdAt: new Date().toISOString(),
+      };
+      this.notifications.unshift(alert);
+      this.notificationBus.emit('notification', {
+        organizationId: actor.organizationId,
+        notification: alert,
+      });
+    }
     this.persistState(actor.organizationId);
 
     void (async () => {
@@ -5861,6 +5920,277 @@ export class WorkspaceService implements OnModuleInit {
       geofenceStatus,
       distanceMeters,
       lastLocationAt: record.lastLocationAt,
+    };
+  }
+
+  // ─── Global Live Real-Time Stream ─────────────────────────────────────────
+  getWorkspaceVersion(): number {
+    return this.workspaceVersion;
+  }
+
+  onWorkspaceMutated(
+    listener: (evt: { organizationId?: string; version: number }) => void,
+  ): () => void {
+    this.workspaceBus.setMaxListeners(200);
+    this.workspaceBus.on('mutated', listener);
+    return () => {
+      this.workspaceBus.off('mutated', listener);
+    };
+  }
+
+  // ─── Sri Lanka Leave Balances & 2026 Poya / Mercantile Holidays ──────────
+  async getLeaveSummaryAndHolidays(actor: AuthUser) {
+    await this.syncSnapshotFromSupabase(actor.organizationId);
+    const holidays2026 = [
+      { date: '2026-01-03', name: 'Duruthu Full Moon Poya Day', type: 'POYA' },
+      { date: '2026-01-15', name: 'Tamil Thai Pongal Day', type: 'MERCANTILE' },
+      { date: '2026-02-01', name: 'Navam Full Moon Poya Day', type: 'POYA' },
+      { date: '2026-02-04', name: 'Independence Day', type: 'MERCANTILE' },
+      { date: '2026-03-02', name: 'Madin Full Moon Poya Day', type: 'POYA' },
+      { date: '2026-04-01', name: 'Bak Full Moon Poya Day', type: 'POYA' },
+      { date: '2026-04-13', name: 'Sinhala & Tamil New Year Eve', type: 'MERCANTILE' },
+      { date: '2026-04-14', name: 'Sinhala & Tamil New Year Day', type: 'MERCANTILE' },
+      { date: '2026-05-01', name: 'May Day & Vesak Full Moon Poya', type: 'MERCANTILE' },
+      { date: '2026-05-02', name: 'Day Following Vesak Poya', type: 'POYA' },
+      { date: '2026-05-30', name: 'Adhi Poson Full Moon Poya', type: 'POYA' },
+      { date: '2026-06-29', name: 'Poson Full Moon Poya Day', type: 'POYA' },
+      { date: '2026-07-29', name: 'Esala Full Moon Poya Day', type: 'POYA' },
+      { date: '2026-08-27', name: 'Nikini Full Moon Poya Day', type: 'POYA' },
+      { date: '2026-09-26', name: 'Binara Full Moon Poya Day', type: 'POYA' },
+      { date: '2026-10-25', name: 'Vap Full Moon Poya Day', type: 'POYA' },
+      { date: '2026-11-24', name: 'Il Full Moon Poya Day', type: 'POYA' },
+      { date: '2026-12-23', name: 'Unduvap Full Moon Poya Day', type: 'POYA' },
+      { date: '2026-12-25', name: 'Christmas Day', type: 'MERCANTILE' },
+    ];
+
+    const myApproved = this.leaveRequests.filter(
+      (lr) => lr.userId === actor.id && lr.status === 'APPROVED',
+    );
+    const usedByType = (kind: string) =>
+      myApproved
+        .filter((l) => l.type.toUpperCase() === kind)
+        .reduce((sum, l) => {
+          const d1 = new Date(l.startDate).getTime();
+          const d2 = new Date(l.endDate).getTime();
+          const days = Number.isFinite(d1) && Number.isFinite(d2)
+            ? Math.max(1, Math.round((d2 - d1) / 86_400_000) + 1)
+            : 1;
+          return sum + days;
+        }, 0);
+
+    const annualUsed = usedByType('ANNUAL');
+    const casualUsed = usedByType('CASUAL');
+    const medicalUsed = usedByType('SICK') + usedByType('MEDICAL');
+
+    const teamUpcoming = this.leaveRequests
+      .filter((lr) => lr.status === 'APPROVED' || lr.status === 'PENDING')
+      .slice(0, 30);
+
+    return {
+      entitlements: {
+        annual: { total: 14, used: annualUsed, remaining: Math.max(0, 14 - annualUsed) },
+        casual: { total: 7, used: casualUsed, remaining: Math.max(0, 7 - casualUsed) },
+        medical: { total: 7, used: medicalUsed, remaining: Math.max(0, 7 - medicalUsed) },
+      },
+      holidays2026,
+      teamCalendar: teamUpcoming,
+    };
+  }
+
+  // ─── Sri Lanka OT (1.5x / 2x) + EPF (8% / 12%) + ETF (3%) Payroll Summary ─
+  async getSriLankaPayrollSummary(actor: AuthUser) {
+    await this.syncSnapshotFromSupabase(actor.organizationId);
+    const poyaSet = new Set([
+      '2026-01-03', '2026-01-15', '2026-02-01', '2026-02-04', '2026-03-02',
+      '2026-04-01', '2026-04-13', '2026-04-14', '2026-05-01', '2026-05-02',
+      '2026-05-30', '2026-06-29', '2026-07-29', '2026-08-27', '2026-09-26',
+      '2026-10-25', '2026-11-24', '2026-12-23', '2026-12-25',
+    ]);
+
+    const byUser = new Map<
+      string,
+      {
+        userId: string;
+        userName: string;
+        regularMinutes: number;
+        weekdayOtMinutes: number;
+        holidayOtMinutes: number;
+        billableMinutes: number;
+        daysWorked: number;
+      }
+    >();
+
+    const visibleEntries = this.isManagerOrAdmin(actor)
+      ? this.timeEntries
+      : this.timeEntries.filter((te) => te.userId === actor.id);
+
+    for (const te of visibleEntries) {
+      const dateStr = te.startedAt.slice(0, 10);
+      const dayOfWeek = new Date(te.startedAt).getDay(); // 0=Sun, 6=Sat
+      const isHolidayOrWeekend = dayOfWeek === 0 || dayOfWeek === 6 || poyaSet.has(dateStr);
+      const row = byUser.get(te.userId) ?? {
+        userId: te.userId,
+        userName: te.userName,
+        regularMinutes: 0,
+        weekdayOtMinutes: 0,
+        holidayOtMinutes: 0,
+        billableMinutes: 0,
+        daysWorked: 0,
+      };
+      if (isHolidayOrWeekend) {
+        row.holidayOtMinutes += te.durationMinutes;
+      } else if (te.durationMinutes > 480) {
+        row.regularMinutes += 480;
+        row.weekdayOtMinutes += te.durationMinutes - 480;
+      } else {
+        row.regularMinutes += te.durationMinutes;
+      }
+      if (te.billable) row.billableMinutes += te.durationMinutes;
+      row.daysWorked += 1;
+      byUser.set(te.userId, row);
+    }
+
+    const defaultHourlyLkr = 1250;
+    const rows = Array.from(byUser.values()).map((r) => {
+      const regHours = Number((r.regularMinutes / 60).toFixed(2));
+      const ot15Hours = Number((r.weekdayOtMinutes / 60).toFixed(2));
+      const ot20Hours = Number((r.holidayOtMinutes / 60).toFixed(2));
+      const basePay = Math.round(regHours * defaultHourlyLkr);
+      const otPay = Math.round(ot15Hours * defaultHourlyLkr * 1.5 + ot20Hours * defaultHourlyLkr * 2);
+      const grossLkr = basePay + otPay;
+      const epfEmployee8 = Math.round(basePay * 0.08);
+      const epfEmployer12 = Math.round(basePay * 0.12);
+      const etfEmployer3 = Math.round(basePay * 0.03);
+      const netPayLkr = grossLkr - epfEmployee8;
+      return {
+        ...r,
+        regHours,
+        ot15Hours,
+        ot20Hours,
+        basePay,
+        otPay,
+        grossLkr,
+        epfEmployee8,
+        epfEmployer12,
+        etfEmployer3,
+        netPayLkr,
+      };
+    });
+
+    return { currency: 'LKR', rows };
+  }
+
+  async submitWeeklyTimesheet(actor: AuthUser, body: { weekLabel?: string; notes?: string }) {
+    await this.syncSnapshotFromSupabase(actor.organizationId, true);
+    const mine = this.timeEntries.filter((te) => te.userId === actor.id && te.status !== 'APPROVED');
+    const totalMin = mine.reduce((sum, te) => sum + te.durationMinutes, 0);
+    for (const te of mine) {
+      te.status = 'SUBMITTED';
+    }
+    const approval = {
+      id: `apr_${randomUUID().slice(0, 8)}`,
+      type: 'TIMESHEET',
+      title: `Weekly Timesheet — ${actor.fullName} (${body.weekLabel || 'Current Week'})`,
+      description: `${(totalMin / 60).toFixed(1)} hrs logged across ${mine.length} entries. ${body.notes || ''}`.trim(),
+      requestedById: actor.id,
+      requestedByName: actor.fullName,
+      status: 'PENDING' as const,
+      createdAt: new Date().toISOString(),
+    };
+    this.approvals.unshift(approval);
+    const notif = {
+      id: `ntf_${randomUUID().slice(0, 8)}`,
+      type: 'APPROVAL' as const,
+      title: `Timesheet Submitted: ${actor.fullName}`,
+      body: `${actor.fullName} submitted ${(totalMin / 60).toFixed(1)}h for approval.`,
+      targetUserId: '*',
+      allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER'],
+      actionUrl: '/approvals',
+      readByIds: [actor.id],
+      authorName: actor.fullName,
+      createdAt: new Date().toISOString(),
+    };
+    this.notifications.unshift(notif);
+    this.notificationBus.emit('notification', { organizationId: actor.organizationId, notification: notif });
+    await this.persistStateNow(actor.organizationId);
+    return { ok: true, submittedEntries: mine.length, totalHours: Number((totalMin / 60).toFixed(2)), approval };
+  }
+
+  // ─── GitHub PR Webhook Auto-Transition (Jira Enterprise Integration) ─────
+  async handleGithubWebhook(payload: Record<string, unknown>) {
+    await this.syncSnapshotFromSupabase(undefined, true);
+    const pr = (payload.pull_request as Record<string, unknown> | undefined) ?? null;
+    if (!pr) return { ok: true, matched: false };
+    const action = String(payload.action ?? '');
+    const merged = Boolean(pr.merged);
+    const title = String(pr.title ?? '');
+    const headRef = String((pr.head as Record<string, unknown> | undefined)?.ref ?? '');
+    const htmlUrl = String(pr.html_url ?? '');
+    const haystack = `${title} ${headRef}`.toUpperCase();
+
+    const matchedTask = this.tasks.find((t) => haystack.includes(t.code.toUpperCase()));
+    if (!matchedTask) return { ok: true, matched: false };
+
+    if (htmlUrl) matchedTask.prUrl = htmlUrl;
+    if (headRef) matchedTask.branchName = headRef;
+    if (action === 'opened' || action === 'reopened') {
+      matchedTask.status = 'IN_REVIEW';
+    } else if (action === 'closed' && merged) {
+      matchedTask.status = 'TESTING';
+    }
+    this.recalculateProjectProgress(matchedTask.projectId);
+    await this.persistStateNow();
+    return { ok: true, matched: true, taskCode: matchedTask.code, newStatus: matchedTask.status };
+  }
+
+  // ─── External Client Portal (Public Read-Only Project & Milestone View) ──
+  async getOrCreateClientPortalLink(actor: AuthUser, clientId: string) {
+    await this.syncSnapshotFromSupabase(actor.organizationId, true);
+    const client = this.clients.find((c) => c.id === clientId);
+    if (!client) throw new NotFoundException('Client not found.');
+    if (!client.portalToken) {
+      client.portalToken = `cp_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+      await this.persistStateNow(actor.organizationId);
+    }
+    return { clientId: client.id, clientName: client.name, portalToken: client.portalToken };
+  }
+
+  async getPublicClientPortal(portalToken: string) {
+    const clean = String(portalToken ?? '').trim();
+    if (!clean) throw new BadRequestException('Portal token is required.');
+    await this.syncSnapshotFromSupabase(undefined, true);
+    const client = this.clients.find((c) => c.portalToken === clean);
+    if (!client) throw new NotFoundException('Client portal link is invalid or expired.');
+
+    const clientProjects = this.projects
+      .filter((p) => p.clientId === client.id || p.clientName.toLowerCase() === client.name.toLowerCase())
+      .map((p) => {
+        const pTasks = this.tasks.filter((t) => t.projectId === p.id);
+        return {
+          id: p.id,
+          code: p.code,
+          name: p.name,
+          description: p.description,
+          status: p.status,
+          progressPercent: p.progressPercent,
+          startDate: p.startDate,
+          expectedEndDate: p.expectedEndDate,
+          managerName: p.managerName,
+          stages: p.stages,
+          totalTasks: pTasks.length,
+          completedTasks: pTasks.filter((t) => t.status === 'COMPLETED').length,
+        };
+      });
+
+    return {
+      organizationName: this.settings.name || 'Yakunex Technologies',
+      client: {
+        name: client.name,
+        contactName: client.contactName,
+        contactEmail: client.contactEmail,
+      },
+      projects: clientProjects,
+      updatedAt: new Date().toISOString(),
     };
   }
 }

@@ -1,4 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req } from '@nestjs/common';
+import { Role } from '@prisma/client';
 import type { Request } from 'express';
 import { CurrentUser, RequirePermissions } from '../common/decorators';
 import type { AuthUser } from '../common/types';
@@ -79,6 +80,38 @@ export class UsersController {
   @RequirePermissions(PERMISSIONS.USERS_MANAGE_PERMISSIONS)
   catalog() {
     return this.users.permissionCatalog();
+  }
+
+  @Post('bulk')
+  @RequirePermissions(PERMISSIONS.USERS_WRITE)
+  bulkCreate(
+    @CurrentUser() actor: AuthUser,
+    @Body() body: { rows: Array<{ fullName: string; nameWithInitials?: string; lastName?: string; role: Role; title?: string; email?: string }> },
+    @Req() req: Request,
+  ) {
+    return this.users.bulkCreate(actor, body.rows ?? [], metaOf(req));
+  }
+
+  @Post(':id/offboard')
+  @RequirePermissions(PERMISSIONS.USERS_WRITE)
+  offboard(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: { reason?: string },
+    @Req() req: Request,
+  ) {
+    return this.users.offboardUser(actor, id, body?.reason, metaOf(req));
+  }
+
+  @Post(':id/promote-staff')
+  @RequirePermissions(PERMISSIONS.USERS_ASSIGN_ROLES)
+  promoteStaff(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: { title?: string },
+    @Req() req: Request,
+  ) {
+    return this.users.promoteInternToStaff(actor, id, body?.title, metaOf(req));
   }
 
   @Delete(':id')

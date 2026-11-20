@@ -79,12 +79,7 @@ export class AuthService {
     const raw = email.trim();
     const normalizedEmail = raw.toLowerCase();
     const normalizedCompanyId = raw.toUpperCase();
-    const emailCandidates =
-      normalizedEmail === 'admin@projectflow.local' ||
-      normalizedEmail === 'admin@yakunexhub.local' ||
-      normalizedEmail === 'administrator@dir.yakunx.com'
-        ? ['administrator@dir.yakunx.com', 'admin@yakunexhub.local', 'admin@projectflow.local']
-        : [normalizedEmail];
+    const emailCandidates = [normalizedEmail];
 
     const user = this.prisma.findUserByIdentifierCached
       ? await this.prisma.findUserByIdentifierCached(emailCandidates, normalizedCompanyId)
@@ -347,12 +342,7 @@ export class AuthService {
     const raw = email.trim();
     const normalizedEmail = raw.toLowerCase();
     const normalizedCompanyId = raw.toUpperCase();
-    const emailCandidates =
-      normalizedEmail === 'admin@projectflow.local' ||
-      normalizedEmail === 'admin@yakunexhub.local' ||
-      normalizedEmail === 'administrator@dir.yakunx.com'
-        ? ['administrator@dir.yakunx.com', 'admin@yakunexhub.local', 'admin@projectflow.local']
-        : [normalizedEmail];
+    const emailCandidates = [normalizedEmail];
 
     const user = this.prisma.findUserByIdentifierCached
       ? await this.prisma.findUserByIdentifierCached(emailCandidates, normalizedCompanyId)
@@ -481,6 +471,50 @@ export class AuthService {
     });
 
     return { ok: true, message: 'Password has been reset successfully. You can now sign in.' };
+  }
+
+  async listActiveSessions(userId: string) {
+    try {
+      const rows = await this.prisma.refreshToken.findMany({
+        where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
+        orderBy: { createdAt: 'desc' },
+        take: 25,
+        select: {
+          id: true,
+          ipAddress: true,
+          userAgent: true,
+          createdAt: true,
+          expiresAt: true,
+        },
+      });
+      return rows;
+    } catch {
+      return [];
+    }
+  }
+
+  async logoutAllDevices(actor: AuthUser, meta: RequestMeta) {
+    for (const [k, rt] of this.refreshTokenCache.entries()) {
+      if (rt.userId === actor.id) {
+        this.refreshTokenCache.delete(k);
+      }
+    }
+    await this.prisma.refreshToken
+      .updateMany({
+        where: { userId: actor.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      })
+      .catch(() => undefined);
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'LOGOUT_ALL_DEVICES',
+      entityType: 'User',
+      entityId: actor.id,
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent,
+    });
+    return { ok: true, message: 'Signed out from all active devices.' };
   }
 
   private async issueTokens(user: User, familyId: string, meta: RequestMeta): Promise<TokenPair> {

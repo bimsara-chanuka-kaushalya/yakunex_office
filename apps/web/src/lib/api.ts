@@ -174,13 +174,58 @@ export function refreshSession(): Promise<boolean> {
     }));
 }
 
+const LIVE_REALTIME_PREFIXES = [
+  '/tasks',
+  '/projects',
+  '/sprints',
+  '/bugs',
+  '/chat',
+  '/time-entries',
+  '/attendance',
+  '/leave',
+  '/approvals',
+  '/notifications',
+  '/meetings',
+  '/users',
+  '/finance',
+  '/assets',
+  '/performance',
+  '/interns',
+  '/profile',
+  '/clients',
+  '/documents',
+  '/organization',
+  '/dashboard',
+];
+
+function isLiveRealtimePath(path: string): boolean {
+  return LIVE_REALTIME_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`) || path.startsWith(`${prefix}?`));
+}
+
+function broadcastWorkspaceMutation(path: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(new CustomEvent('yakunex:workspace-mutated', { detail: { path, ts: Date.now() } }));
+  } catch {
+    // ignore
+  }
+  try {
+    const bc = new BroadcastChannel('yakunex_live_sync');
+    bc.postMessage({ type: 'mutated', path, ts: Date.now() });
+    bc.close();
+  } catch {
+    // BroadcastChannel unsupported
+  }
+}
+
 export async function api<T>(path: string, init: RequestInit = {}, allowRetry = true): Promise<T> {
   hydrateStaleCacheFromStorage();
   const method = (init.method ?? 'GET').toUpperCase();
 
   if (method === 'GET' && allowRetry) {
     const now = Date.now();
-    const cached = getCache.get(path);
+    const isLive = isLiveRealtimePath(path);
+    const cached = !isLive ? getCache.get(path) : undefined;
     if (cached && cached.expiresAt > now) {
       return cached.data as T;
     }
@@ -190,7 +235,9 @@ export async function api<T>(path: string, init: RequestInit = {}, allowRetry = 
     }
     const promise = executeRequest<T>(path, init, allowRetry)
       .then((data) => {
-        getCache.set(path, { data, expiresAt: Date.now() + getCacheTtlMs() });
+        if (!isLive) {
+          getCache.set(path, { data, expiresAt: Date.now() + getCacheTtlMs() });
+        }
         persistStaleCacheToStorage(path, data);
         return data;
       })
@@ -199,7 +246,9 @@ export async function api<T>(path: string, init: RequestInit = {}, allowRetry = 
         const isAuthFailure = err instanceof ApiError && (err.status === 401 || err.status === 403);
         if (!isAuthFailure && staleCache.has(path)) {
           const fallback = staleCache.get(path) as T;
-          getCache.set(path, { data: fallback, expiresAt: Date.now() + 8_000 });
+          if (!isLive) {
+            getCache.set(path, { data: fallback, expiresAt: Date.now() + 8_000 });
+          }
           return fallback;
         }
         throw err;
@@ -211,9 +260,12 @@ export async function api<T>(path: string, init: RequestInit = {}, allowRetry = 
     return promise;
   }
 
-  // Any mutation invalidates fresh GET TTLs (while keeping staleCache for offline/3G fallback).
+  // Any mutation invalidates fresh GET TTLs and broadcasts an instant live-sync signal across all open tabs.
   if (method !== 'GET') {
     clearApiCache();
+    const result = await executeRequest<T>(path, init, allowRetry);
+    broadcastWorkspaceMutation(path);
+    return result;
   }
 
   return executeRequest<T>(path, init, allowRetry);

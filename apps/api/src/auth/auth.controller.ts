@@ -85,6 +85,23 @@ export class AuthController {
     return { user, permissions: [...permissions] };
   }
 
+  @Get('sessions')
+  listSessions(@CurrentUser() user: AuthUser) {
+    return this.auth.listActiveSessions(user.id);
+  }
+
+  @Post('logout-all')
+  @HttpCode(HttpStatus.OK)
+  async logoutAll(
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.auth.logoutAllDevices(user, metaOf(req));
+    clearAuthCookies(res);
+    return result;
+  }
+
   @Post('change-password')
   @HttpCode(HttpStatus.OK)
   async changePassword(

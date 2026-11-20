@@ -1,0 +1,17 @@
+{
+  "name": "Yakunex Hub — Enterprise Workspace",
+  "short_name": "Yakunex Hub",
+  "description": "Unified Enterprise Delivery, Agile Sprints, GPS Time Tracking & Zoom-grade Video Meetings.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#08090C",
+  "theme_color": "#C9961E",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

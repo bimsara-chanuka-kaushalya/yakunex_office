@@ -25,15 +25,17 @@ import {
   Users,
   Video,
 } from 'lucide-react';
-import { PERMISSIONS } from './permissions';
+import { PERMISSIONS, type Role } from './permissions';
 
 export interface NavItem {
   /** Route segment and i18n key. */
   key: string;
   href: string;
   icon: LucideIcon;
-  /** Permission required to see the item. Omitted = visible to every signed-in user. */
+  /** Permission required to see the item. Omitted = visible to every signed-in user in allowedRoles. */
   permission?: string;
+  /** Explicit roles that should see this item in the clean sidebar. */
+  allowedRoles?: Role[];
   /** Roadmap phase from the product specification. */
   phase: number;
   /** True when the page is implemented in this release. */
@@ -50,6 +52,7 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
         key: 'dashboard',
         href: '/dashboard',
         icon: LayoutDashboard,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
         phase: 1,
         ready: true,
         description: 'Role-based overview of your work and company.',
@@ -58,14 +61,16 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
         key: 'profile',
         href: '/profile',
         icon: UserCircle,
+        allowedRoles: ['INTERN'],
         phase: 1,
         ready: true,
-        description: 'View your personal profile, update DP, and request ID/contact updates.',
+        description: 'View your personal profile and update DP.',
       },
       {
         key: 'organization',
         href: '/organization',
         icon: Network,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN'],
         phase: 1,
         ready: true,
         description: 'Company hierarchy, departments and reporting managers.',
@@ -74,142 +79,157 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
         key: 'notifications',
         href: '/notifications',
         icon: Bell,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF', 'INTERN'],
         phase: 4,
         ready: true,
-        description: 'Company announcements and personal notifications.',
+        description: 'Company announcements, live meeting alerts and notifications.',
       },
     ],
   },
   {
-    title: { en: 'Delivery', si: 'ක්‍රියාත්මක කිරීම' },
+    title: { en: 'Delivery & Agile', si: 'ක්‍රියාත්මක කිරීම' },
     items: [
       {
         key: 'projects',
         href: '/projects',
         icon: FolderKanban,
         permission: PERMISSIONS.PROJECTS_READ,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
         phase: 2,
         ready: true,
-        description: 'Create projects, set stages, budgets and milestones.',
+        description: 'Projects, milestones, timeline, budgets and client portal links.',
       },
       {
         key: 'tasks',
         href: '/tasks',
         icon: ListChecks,
         permission: PERMISSIONS.TASKS_READ,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
         phase: 2,
         ready: true,
-        description: 'Tasks, subtasks, dependencies and Kanban, list, and timeline views.',
+        description: 'Epics, stories, drag-and-drop Kanban board, worklog timer & dependencies.',
       },
       {
         key: 'sprints',
         href: '/sprints',
         icon: Repeat,
         permission: PERMISSIONS.TASKS_READ,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
         phase: 2,
         ready: true,
-        description: 'Backlog, sprint planning, burndown and velocity.',
-      },
-      {
-        key: 'clients',
-        href: '/clients',
-        icon: Building2,
-        permission: PERMISSIONS.PROJECTS_READ,
-        phase: 2,
-        ready: true,
-        description: 'Client profiles, requirements and delivery history.',
+        description: 'Backlog, sprint planning, burndown and team velocity charts.',
       },
       {
         key: 'bugs',
         href: '/bugs',
         icon: Bug,
         permission: PERMISSIONS.TASKS_READ,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
         phase: 5,
         ready: true,
-        description: 'Bug reports, severity, verification and QA approval.',
+        description: 'Bug tracker, severity SLAs, verification and QA approval.',
+      },
+      {
+        key: 'clients',
+        href: '/clients',
+        icon: Building2,
+        permission: PERMISSIONS.PROJECTS_READ,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER'],
+        phase: 2,
+        ready: true,
+        description: 'Client CRM profiles, portals, requirements and delivery history.',
       },
       {
         key: 'documents',
         href: '/documents',
         icon: FileText,
         permission: PERMISSIONS.PROJECTS_READ,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
         phase: 5,
         ready: true,
-        description: 'SRS, proposals, designs and versioned project files.',
+        description: 'Company wiki, SRS, proposals, designs and versioned project files.',
       },
     ],
   },
   {
-    title: { en: 'Time & people', si: 'කාලය සහ පුද්ගලයින්' },
+    title: { en: 'Workforce & Time', si: 'කාලය සහ පුද්ගලයින්' },
     items: [
       {
         key: 'users',
         href: '/users',
         icon: Users,
         permission: PERMISSIONS.USERS_READ,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN'],
         phase: 1,
         ready: true,
-        description: 'Staff, interns and their roles.',
+        description: 'Staff, interns, onboarding, bulk CSV import, offboarding and roles.',
       },
       {
         key: 'time-tracker',
         href: '/time-tracker',
         icon: Clock,
         permission: PERMISSIONS.TIME_OWN,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
         phase: 3,
         ready: true,
-        description: 'Clock in, task timers, breaks and timesheets.',
+        description: 'Jibble-grade clock in, selfie/GPS verification, project timers & timesheets.',
       },
       {
         key: 'attendance',
         href: '/attendance',
         icon: CalendarCheck,
         permission: PERMISSIONS.TIME_OWN,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
         phase: 3,
         ready: true,
-        description: 'Daily attendance, late arrivals and working hours.',
+        description: 'Daily attendance, live GPS map, OT rules (1.5x/2x) & EPF/ETF payroll export.',
       },
       {
         key: 'leave',
         href: '/leave',
         icon: Plane,
         permission: PERMISSIONS.TIME_OWN,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
         phase: 3,
         ready: true,
-        description: 'Leave requests and approvals.',
+        description: 'Leave balances, Sri Lanka Poya holidays, team calendar & approvals.',
       },
       {
         key: 'approvals',
         href: '/approvals',
         icon: CheckSquare,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER'],
         phase: 2,
         ready: true,
-        description: 'Centralized approval requests and decisions.',
+        description: 'Centralized leave, timesheet & expense approval queue.',
       },
       {
         key: 'performance',
         href: '/performance',
         icon: Award,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF'],
         phase: 5,
         ready: true,
-        description: 'Employee goals, KPIs and manager reviews.',
+        description: 'Employee OKRs, KPIs and manager reviews.',
       },
       {
         key: 'assets',
         href: '/assets',
         icon: Laptop,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN'],
         phase: 6,
         ready: true,
-        description: 'Company laptops, monitors, licenses and assignments.',
+        description: 'Company laptops, monitors, SaaS license renewals & assignments.',
       },
       {
         key: 'interns',
         href: '/interns',
         icon: GraduationCap,
         permission: PERMISSIONS.USERS_READ,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER'],
         phase: 6,
         ready: true,
-        description: 'Mentors, training plans, daily logs and evaluations.',
+        description: 'Mentors, training plans, evaluations & Intern-to-Staff conversion.',
       },
     ],
   },
@@ -221,59 +241,64 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
         href: '/chat',
         icon: MessagesSquare,
         permission: PERMISSIONS.CHAT_USE,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF', 'INTERN'],
         phase: 4,
         ready: true,
-        description: 'Direct messages, project channels and file sharing.',
+        description: 'Direct messages, project channels, standups and file sharing.',
       },
       {
         key: 'meetings',
         href: '/meetings',
         icon: Video,
         permission: PERMISSIONS.CHAT_USE,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF', 'INTERN'],
         phase: 4,
         ready: true,
-        description: 'Scheduled meetings, notes and action items.',
+        description: 'Zoom Pro video meetings, waiting rooms, whiteboard, polls & recordings.',
       },
     ],
   },
   {
-    title: { en: 'Insight & control', si: 'විශ්ලේෂණය සහ පාලනය' },
+    title: { en: 'Insight & Control', si: 'විශ්ලේෂණය සහ පාලනය' },
     items: [
       {
         key: 'reports',
         href: '/reports',
         icon: BarChart3,
-        permission: PERMISSIONS.DASHBOARD_ADMIN,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER'],
         phase: 6,
         ready: true,
-        description: 'Project, time, attendance and performance reports.',
+        description: 'Delivery, time, attendance, OT and performance analytics.',
       },
       {
         key: 'finance',
         href: '/finance',
         icon: DollarSign,
         permission: PERMISSIONS.FINANCIALS_READ,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN'],
         phase: 6,
         ready: true,
-        description: 'Revenue, expenses, invoices and payroll ledger.',
+        description: 'Client invoices, expenses, payroll & EPF/ETF ledger.',
       },
       {
         key: 'audit-logs',
         href: '/audit-logs',
         icon: ShieldCheck,
         permission: PERMISSIONS.AUDIT_READ,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN'],
         phase: 1,
         ready: true,
-        description: 'Every security-relevant change, with actor and time.',
+        description: 'Every security-relevant change, with actor, IP and timestamp.',
       },
       {
         key: 'settings',
         href: '/settings',
         icon: Settings,
         permission: PERMISSIONS.SETTINGS_MANAGE,
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN'],
         phase: 1,
         ready: true,
-        description: 'Company profile, working hours, time zone and activity policy.',
+        description: 'Company profile, multi-geofence offices, work shifts and security.',
       },
     ],
   },
@@ -281,13 +306,35 @@ export const NAV_SECTIONS: { title: { en: string; si: string }; items: NavItem[]
 
 export const ALL_NAV_ITEMS: NavItem[] = NAV_SECTIONS.flatMap((section) => section.items);
 
-export const INTERN_ALLOWED_MODULES = new Set(['profile', 'meetings', 'chat']);
+export const INTERN_ALLOWED_MODULES = new Set(['profile', 'meetings', 'chat', 'notifications']);
 
 export function isModuleLockedForRole(key: string, role?: string | null): boolean {
   if (role === 'INTERN') {
     return !INTERN_ALLOWED_MODULES.has(key);
   }
+  const item = ALL_NAV_ITEMS.find((i) => i.key === key);
+  if (item?.allowedRoles && role && !item.allowedRoles.includes(role as Role)) {
+    return true;
+  }
   return false;
+}
+
+export function isNavItemVisibleForRole(
+  item: NavItem,
+  role: string | null | undefined,
+  can: (perm: string) => boolean,
+): boolean {
+  if (!item.ready) return false;
+  if (role === 'INTERN') {
+    return INTERN_ALLOWED_MODULES.has(item.key);
+  }
+  if (item.allowedRoles && role && !item.allowedRoles.includes(role as Role)) {
+    return false;
+  }
+  if (item.permission && !can(item.permission)) {
+    return false;
+  }
+  return true;
 }
 
 export function findNavItem(key: string): NavItem | undefined {

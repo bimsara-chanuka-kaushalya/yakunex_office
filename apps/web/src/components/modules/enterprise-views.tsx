@@ -24,6 +24,7 @@ import { Field, Input, Select } from '@/components/ui/field';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/components/providers';
 import { api, liveGet, patch, post } from '@/lib/api';
+import { useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
 import { PERMISSIONS } from '@/lib/permissions';
 
@@ -67,13 +68,9 @@ export function OrganizationView() {
 
   useEffect(() => {
     void load();
-    const id = setInterval(() => {
-      if (typeof document !== 'undefined' && !document.hidden) {
-        void load();
-      }
-    }, 5_000);
-    return () => clearInterval(id);
   }, [load]);
+
+  useLiveSync(load);
 
   async function onCreateDept(e: FormEvent) {
     e.preventDefault();
@@ -239,13 +236,9 @@ export function ApprovalsView() {
 
   useEffect(() => {
     void load();
-    const id = setInterval(() => {
-      if (typeof document !== 'undefined' && !document.hidden) {
-        void load();
-      }
-    }, 5_000);
-    return () => clearInterval(id);
   }, [load]);
+
+  useLiveSync(load);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -394,13 +387,9 @@ export function FinanceView() {
 
   useEffect(() => {
     void load();
-    const id = setInterval(() => {
-      if (typeof document !== 'undefined' && !document.hidden) {
-        void load();
-      }
-    }, 5_000);
-    return () => clearInterval(id);
   }, [load]);
+
+  useLiveSync(load);
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -605,13 +594,9 @@ export function AssetsView() {
 
   useEffect(() => {
     void load();
-    const id = setInterval(() => {
-      if (typeof document !== 'undefined' && !document.hidden) {
-        void load();
-      }
-    }, 5_000);
-    return () => clearInterval(id);
   }, [load]);
+
+  useLiveSync(load);
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -701,13 +686,9 @@ export function PerformanceView() {
 
   useEffect(() => {
     void load();
-    const id = setInterval(() => {
-      if (typeof document !== 'undefined' && !document.hidden) {
-        void load();
-      }
-    }, 5_000);
-    return () => clearInterval(id);
   }, [load]);
+
+  useLiveSync(load);
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -937,6 +918,10 @@ export function ProfileView() {
   const [profile, setProfile] = useState<EmployeeProfilePayload | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<
+    Array<{ id: string; ipAddress?: string | null; userAgent?: string | null; createdAt: string }>
+  >([]);
+  const [revokingSessions, setRevokingSessions] = useState(false);
 
   // Admin / HR editable fields
   const [fullName, setFullName] = useState('');
@@ -1003,13 +988,27 @@ export function ProfileView() {
 
   useEffect(() => {
     void load();
-    const id = setInterval(() => {
-      if (typeof document !== 'undefined' && !document.hidden) {
-        void load();
-      }
-    }, 5_000);
-    return () => clearInterval(id);
-  }, [load]);
+    if (!selectedUserId || selectedUserId === user?.id) {
+      liveGet<Array<{ id: string; ipAddress?: string | null; userAgent?: string | null; createdAt: string }>>(
+        '/auth/sessions',
+      )
+        .then((res) => setSessions(Array.isArray(res) ? res : []))
+        .catch(() => setSessions([]));
+    }
+  }, [load, selectedUserId, user?.id]);
+
+  useLiveSync(load);
+
+  async function onLogoutAllDevices() {
+    if (!window.confirm('Sign out from all active devices including this browser?')) return;
+    setRevokingSessions(true);
+    try {
+      await post('/auth/logout-all', {});
+      window.location.href = '/login';
+    } finally {
+      setRevokingSessions(false);
+    }
+  }
 
   useEffect(() => {
     api<{ employees?: Array<{ id: string; companyId: string | null; fullName: string }> }>('/organization')
@@ -1230,6 +1229,47 @@ export function ProfileView() {
           )}
         </form>
       </Card>
+
+      {/* Active Sessions & Remote Device Security (Self only) */}
+      {(!selectedUserId || selectedUserId === user?.id) && (
+        <Card>
+          <CardHeader
+            title="Active Sessions & Device Security"
+            description="Review signed-in devices and revoke all active sessions remotely."
+            action={
+              <Button
+                size="sm"
+                variant="danger"
+                disabled={revokingSessions}
+                onClick={() => void onLogoutAllDevices()}
+              >
+                {revokingSessions ? 'Signing out...' : 'Sign Out All Devices'}
+              </Button>
+            }
+          />
+          <div className="divide-y divide-line">
+            {sessions.length === 0 ? (
+              <p className="p-5 text-xs text-muted">Current browser session is active.</p>
+            ) : (
+              sessions.map((s) => (
+                <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 px-5 py-3 text-xs">
+                  <div>
+                    <p className="font-semibold text-ink">{(s.userAgent || 'Browser Session').slice(0, 72)}</p>
+                    <p className="text-muted">IP: {s.ipAddress || '—'}</p>
+                  </div>
+                  <span className="font-mono text-muted">
+                    {new Date(s.createdAt).toLocaleString('en-LK', {
+                      dateStyle: 'medium',
+                      timeStyle: 'short',
+                      timeZone: 'Asia/Colombo',
+                    })}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

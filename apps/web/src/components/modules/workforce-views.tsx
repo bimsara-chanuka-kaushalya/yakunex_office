@@ -37,6 +37,7 @@ import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api, ApiError, patch, post } from '@/lib/api';
+import { useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
 import { PERMISSIONS } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
@@ -165,6 +166,8 @@ export function TimeTrackerView() {
   const [manualOpen, setManualOpen] = useState(false);
   const [manualMinutes, setManualMinutes] = useState('60');
   const [manualNote, setManualNote] = useState('');
+  const [weeklyNotice, setWeeklyNotice] = useState<string | null>(null);
+  const [submittingWeek, setSubmittingWeek] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -190,6 +193,8 @@ export function TimeTrackerView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useLiveSync(load);
 
   useEffect(() => {
     if (!activeTimer) {
@@ -381,10 +386,24 @@ export function TimeTrackerView() {
 
   async function handleSubmitAllSaved() {
     setError(null);
-    for (const e of savedEntries) {
-      await post(`/time-entries/${e.id}/submit`).catch(() => undefined);
+    setWeeklyNotice(null);
+    setSubmittingWeek(true);
+    try {
+      const weekLabel =
+        weekDays.length >= 7 ? `${weekDays[0].iso} → ${weekDays[6].iso}` : 'Current Week';
+      const res = await post<{ submittedEntries: number; totalHours: number }>(
+        '/workforce/timesheets/submit',
+        { weekLabel },
+      );
+      setWeeklyNotice(
+        `Weekly timesheet submitted for approval (${res.submittedEntries} entries · ${res.totalHours}h).`,
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not submit weekly timesheet.');
+    } finally {
+      setSubmittingWeek(false);
     }
-    await load();
   }
 
   return (
@@ -452,8 +471,21 @@ export function TimeTrackerView() {
           <Button variant="secondary" onClick={() => setManualOpen(true)}>
             <Plus className="h-4 w-4" /> Log manual time
           </Button>
+          <Button
+            size="sm"
+            disabled={submittingWeek || entries.length === 0}
+            onClick={() => void handleSubmitAllSaved()}
+          >
+            <Send className="h-4 w-4" /> {submittingWeek ? 'Submitting…' : 'Submit Weekly Timesheet'}
+          </Button>
         </div>
       </header>
+
+      {weeklyNotice && (
+        <div className="rounded-xl border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
+          {weeklyNotice}
+        </div>
+      )}
 
       <Card className="border-gold/40 bg-surface p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -902,12 +934,29 @@ interface LiveBoardMember {
   locationTrail?: Array<{ lat: number; lon: number; at: string }>;
 }
 
+interface SriLankaPayrollRow {
+  userId: string;
+  userName: string;
+  regHours: number;
+  ot15Hours: number;
+  ot20Hours: number;
+  basePay: number;
+  otPay: number;
+  grossLkr: number;
+  epfEmployee8: number;
+  epfEmployer12: number;
+  etfEmployer3: number;
+  netPayLkr: number;
+  daysWorked: number;
+}
+
 export function AttendanceView() {
   const { user, can } = useAuth();
   const canKiosk = can(PERMISSIONS.TIME_APPROVE);
   const [todayRecord, setTodayRecord] = useState<AttendanceRow | null>(null);
   const [records, setRecords] = useState<AttendanceRow[]>([]);
   const [liveBoard, setLiveBoard] = useState<LiveBoardMember[]>([]);
+  const [payrollRows, setPayrollRows] = useState<SriLankaPayrollRow[]>([]);
   const [officeGeofence, setOfficeGeofence] = useState<{
     latitude: number;
     longitude: number;
@@ -926,7 +975,7 @@ export function AttendanceView() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [res, org] = await Promise.all([
+      const [res, org, payroll] = await Promise.all([
         api<{
           todayRecord: AttendanceRow | null;
           records: AttendanceRow[];
@@ -934,10 +983,12 @@ export function AttendanceView() {
           officeGeofence?: { latitude: number; longitude: number; radiusMeters: number };
         }>('/attendance'),
         api<{ employees?: Array<{ id: string; fullName: string; companyId: string | null }> }>('/organization').catch(() => ({ employees: [] })),
+        api<{ currency: string; rows: SriLankaPayrollRow[] }>('/workforce/sri-lanka-payroll').catch(() => ({ currency: 'LKR', rows: [] })),
       ]);
       setTodayRecord(res.todayRecord);
       setRecords(res.records);
       setLiveBoard(Array.isArray(res.liveBoard) ? res.liveBoard : []);
+      setPayrollRows(Array.isArray(payroll?.rows) ? payroll.rows : []);
       if (res.officeGeofence) setOfficeGeofence(res.officeGeofence);
       const emps = Array.isArray(org?.employees) ? org.employees : [];
       setEmployees(emps);
@@ -950,6 +1001,8 @@ export function AttendanceView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useLiveSync(load);
 
   // Real-time continuous GPS tracking while clocked in + 15s live board refresh
   const isClockedInActive = Boolean(todayRecord?.clockInAt && !todayRecord?.clockOutAt);
@@ -1378,6 +1431,94 @@ export function AttendanceView() {
         )}
       </Card>
 
+      {/* Sri Lanka OT (1.5x / 2x) + EPF (8%/12%) & ETF (3%) Payroll Summary */}
+      <Card>
+        <CardHeader
+          title="Sri Lanka OT, EPF & ETF Payroll Readiness"
+          description="Live regular hours, 1.5x weekday OT (>8h/day), 2.0x Weekend/Poya OT, EPF (8% employee / 12% employer) & ETF (3%)."
+          badge={<Badge tone="gold">LKR · SL Labor Rules</Badge>}
+        />
+        {payrollRows.length === 0 ? (
+          <p className="px-6 pb-6 text-xs text-muted">
+            Log time entries in Time Tracker to generate live Sri Lanka OT, EPF &amp; ETF payroll breakdowns.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[820px] text-left text-sm">
+              <thead className="bg-canvas/60 text-xs uppercase tracking-wider text-muted">
+                <tr>
+                  <th className="px-5 py-3">Employee</th>
+                  <th className="px-4 py-3 text-right">Reg / 1.5x / 2x (h)</th>
+                  <th className="px-4 py-3 text-right">Gross (LKR)</th>
+                  <th className="px-4 py-3 text-right">EPF 8% / 12%</th>
+                  <th className="px-4 py-3 text-right">ETF 3%</th>
+                  <th className="px-4 py-3 text-right">Net Pay (LKR)</th>
+                  <th className="px-5 py-3 text-right">Payslip</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {payrollRows.map((p) => (
+                  <tr key={p.userId} className="hover:bg-canvas/40">
+                    <td className="px-5 py-3 font-medium text-ink">
+                      {p.userName}
+                      <span className="ml-2 text-xs text-muted">({p.daysWorked}d)</span>
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-xs">
+                      {p.regHours}h / <span className="text-warning">{p.ot15Hours}h</span> /{' '}
+                      <span className="text-gold-strong dark:text-gold">{p.ot20Hours}h</span>
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-xs">
+                      LKR {p.grossLkr.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-xs text-muted">
+                      -{p.epfEmployee8.toLocaleString()} / +{p.epfEmployer12.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-xs text-muted">
+                      +{p.etfEmployer3.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-xs font-bold text-ink">
+                      LKR {p.netPayLkr.toLocaleString()}
+                    </td>
+                    <td className="px-5 py-3 text-right">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() =>
+                          exportBrandedPdf({
+                            title: `Sri Lanka Payslip — ${p.userName}`,
+                            subtitle: 'Yakunex Technologies · OT (1.5x/2x), EPF (8%/12%) & ETF (3%) Statement',
+                            generatedByEmail: user?.email,
+                            generatedByName: user?.fullName,
+                            kpis: [
+                              { label: 'Gross Pay', value: `LKR ${p.grossLkr.toLocaleString()}` },
+                              { label: 'EPF Employee (8%)', value: `-LKR ${p.epfEmployee8.toLocaleString()}` },
+                              { label: 'Employer EPF+ETF (15%)', value: `LKR ${(p.epfEmployer12 + p.etfEmployer3).toLocaleString()}` },
+                              { label: 'Net Take-Home', value: `LKR ${p.netPayLkr.toLocaleString()}` },
+                            ],
+                            columns: ['Component', 'Detail', 'Amount (LKR)'],
+                            rows: [
+                              ['Regular Hours', `${p.regHours}h`, p.basePay.toLocaleString()],
+                              ['Overtime (1.5x Weekday + 2.0x Weekend/Poya)', `${p.ot15Hours}h + ${p.ot20Hours}h`, p.otPay.toLocaleString()],
+                              ['Gross Earnings', `${(p.regHours + p.ot15Hours + p.ot20Hours).toFixed(2)}h total`, p.grossLkr.toLocaleString()],
+                              ['EPF Employee Deduction (8%)', 'Statutory deduction', `-${p.epfEmployee8.toLocaleString()}`],
+                              ['EPF Employer Contribution (12%)', 'Company statutory', p.epfEmployer12.toLocaleString()],
+                              ['ETF Employer Contribution (3%)', 'Company statutory', p.etfEmployer3.toLocaleString()],
+                              ['Net Payable Salary', 'Bank transfer amount', p.netPayLkr.toLocaleString()],
+                            ],
+                          })
+                        }
+                      >
+                        <Download className="h-3.5 w-3.5" /> PDF
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
       <Modal open={kioskOpen} title="Workforce Kiosk — Team Clock-In / Out" onClose={() => setKioskOpen(false)}>
         <form onSubmit={submitKiosk} className="space-y-4">
           <Field label="Employee" htmlFor="ksk-emp">
@@ -1422,10 +1563,20 @@ interface LeaveRow {
   decisionNote: string | null;
 }
 
+interface LeaveSummaryPayload {
+  entitlements: {
+    annual: { total: number; used: number; remaining: number };
+    casual: { total: number; used: number; remaining: number };
+    medical: { total: number; used: number; remaining: number };
+  };
+  holidays2026: Array<{ date: string; name: string; type: string }>;
+}
+
 export function LeaveView() {
   const { can } = useAuth();
   const canApprove = can(PERMISSIONS.LEAVE_APPROVE);
   const [requests, setRequests] = useState<LeaveRow[]>([]);
+  const [leaveSummary, setLeaveSummary] = useState<LeaveSummaryPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
 
@@ -1438,7 +1589,12 @@ export function LeaveView() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setRequests(await api<LeaveRow[]>('/leave'));
+      const [reqs, summary] = await Promise.all([
+        api<LeaveRow[]>('/leave'),
+        api<LeaveSummaryPayload>('/leave/summary').catch(() => null),
+      ]);
+      setRequests(reqs);
+      if (summary) setLeaveSummary(summary);
     } finally {
       setLoading(false);
     }
@@ -1447,6 +1603,8 @@ export function LeaveView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useLiveSync(load);
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -1475,26 +1633,56 @@ export function LeaveView() {
         </Button>
       </header>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          label="Annual leave allowance"
-          value="14 days"
-          hint="12 days remaining in 2026"
+          label="Annual Leave"
+          value={`${leaveSummary?.entitlements.annual.remaining ?? 14} / ${leaveSummary?.entitlements.annual.total ?? 14}d`}
+          hint={`${leaveSummary?.entitlements.annual.used ?? 0}d used this year`}
           icon={<Plane className="h-4 w-4" />}
         />
         <StatCard
-          label="Sick / Medical leave"
-          value="7 days"
-          hint="7 days remaining"
+          label="Casual Leave"
+          value={`${leaveSummary?.entitlements.casual.remaining ?? 7} / ${leaveSummary?.entitlements.casual.total ?? 7}d`}
+          hint={`${leaveSummary?.entitlements.casual.used ?? 0}d used this year`}
           icon={<CalendarCheck className="h-4 w-4" />}
         />
         <StatCard
-          label="Pending approvals"
+          label="Sick / Medical Leave"
+          value={`${leaveSummary?.entitlements.medical.remaining ?? 7} / ${leaveSummary?.entitlements.medical.total ?? 7}d`}
+          hint={`${leaveSummary?.entitlements.medical.used ?? 0}d used this year`}
+          icon={<CalendarCheck className="h-4 w-4" />}
+        />
+        <StatCard
+          label="Pending Approvals"
           value={requests.filter((r) => r.status === 'PENDING').length}
           hint="Awaiting review"
           icon={<Clock className="h-4 w-4" />}
         />
       </div>
+
+      {leaveSummary && leaveSummary.holidays2026.length > 0 && (
+        <Card>
+          <CardHeader
+            title="Sri Lanka 2026 Poya & Mercantile Holidays"
+            description="Official non-working calendar dates excluded from leave deductions."
+            badge={<Badge tone="gold">{leaveSummary.holidays2026.length} Dates</Badge>}
+          />
+          <div className="grid gap-2 px-5 pb-5 sm:grid-cols-2 lg:grid-cols-4">
+            {leaveSummary.holidays2026.slice(0, 12).map((h) => (
+              <div
+                key={`${h.date}-${h.name}`}
+                className="flex items-center justify-between gap-2 rounded-xl border border-line bg-canvas/50 px-3 py-2 text-xs"
+              >
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-ink">{h.name}</p>
+                  <p className="font-mono text-[11px] text-muted">{h.date}</p>
+                </div>
+                <Badge tone={h.type === 'POYA' ? 'gold' : 'neutral'}>{h.type}</Badge>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       <Card>
         <CardHeader title="Leave requests" description="Submitted leave applications and approval decisions." />
@@ -1700,6 +1888,8 @@ export function InternsView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useLiveSync(load);
 
   async function toggleTask(internId: string, taskId: string) {
     setError(null);

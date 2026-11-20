@@ -956,5 +956,76 @@ export class WorkspaceController {
   getRoleInsights(@CurrentUser() actor: AuthUser) {
     return this.workspace.getRoleInsights(actor);
   }
+
+  // ─── Global Zero-Refresh Live Workspace SSE Stream ────────────────────────
+  @Sse('workspace/live-stream')
+  @SkipThrottle()
+  streamWorkspaceLive(@CurrentUser() actor: AuthUser): Observable<MessageEvent> {
+    return new Observable<MessageEvent>((subscriber) => {
+      let closed = false;
+      let lastVer = this.workspace.getWorkspaceVersion();
+      subscriber.next({ data: { kind: 'connected', version: lastVer } });
+
+      const unsub = this.workspace.onWorkspaceMutated(({ organizationId, version }) => {
+        if (closed) return;
+        if (organizationId && actor.organizationId && organizationId !== actor.organizationId) return;
+        lastVer = version;
+        subscriber.next({ data: { kind: 'mutated', version } });
+      });
+
+      const ping = setInterval(() => {
+        if (!closed) {
+          subscriber.next({ data: { kind: 'ping', version: lastVer } });
+        }
+      }, 15_000);
+
+      return () => {
+        closed = true;
+        unsub();
+        clearInterval(ping);
+      };
+    });
+  }
+
+  // ─── Sri Lanka Workforce Leave Balances, Holidays & Payroll ───────────────
+  @Get('leave/summary')
+  getLeaveSummary(@CurrentUser() actor: AuthUser) {
+    return this.workspace.getLeaveSummaryAndHolidays(actor);
+  }
+
+  @Get('workforce/sri-lanka-payroll')
+  getSriLankaPayroll(@CurrentUser() actor: AuthUser) {
+    return this.workspace.getSriLankaPayrollSummary(actor);
+  }
+
+  @Post('workforce/timesheets/submit')
+  submitWeeklyTimesheet(
+    @CurrentUser() actor: AuthUser,
+    @Body() body: { weekLabel?: string; notes?: string },
+  ) {
+    return this.workspace.submitWeeklyTimesheet(actor, body ?? {});
+  }
+
+  // ─── GitHub PR Webhook (Jira Enterprise Integration) ──────────────────────
+  @Post('integrations/github/webhook')
+  @Public()
+  @SkipThrottle()
+  githubWebhook(@Body() body: Record<string, unknown>) {
+    return this.workspace.handleGithubWebhook(body ?? {});
+  }
+
+  // ─── External Client Portal ───────────────────────────────────────────────
+  @Post('clients/:id/portal-link')
+  @RequirePermissions(PERMISSIONS.PROJECTS_READ)
+  getClientPortalLink(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.getOrCreateClientPortalLink(actor, id);
+  }
+
+  @Get('clients/portal/:token')
+  @Public()
+  @SkipThrottle()
+  getPublicClientPortal(@Param('token') token: string) {
+    return this.workspace.getPublicClientPortal(token);
+  }
 }
 

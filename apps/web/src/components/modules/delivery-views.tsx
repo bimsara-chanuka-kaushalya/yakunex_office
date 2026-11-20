@@ -6,13 +6,17 @@ import {
   Bug,
   Building2,
   Calendar,
+  Check,
   CheckCircle2,
   CheckSquare,
   Clock,
   Download,
+  ExternalLink,
   FileText,
   FolderKanban,
+  GitBranch,
   Kanban,
+  Link2,
   List,
   ListChecks,
   Mail,
@@ -33,6 +37,7 @@ import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api, del, patch, post } from '@/lib/api';
+import { useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
 import { PERMISSIONS } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
@@ -106,6 +111,8 @@ export function ProjectsView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useLiveSync(load);
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -456,6 +463,9 @@ interface TaskRow {
   description: string;
   status: 'BACKLOG' | 'TODO' | 'IN_PROGRESS' | 'IN_REVIEW' | 'TESTING' | 'BLOCKED' | 'COMPLETED';
   priority: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  issueType?: 'EPIC' | 'STORY' | 'TASK' | 'BUG';
+  prUrl?: string | null;
+  branchName?: string | null;
   storyPoints: number;
   estimatedHours: number;
   actualHours: number;
@@ -486,6 +496,8 @@ export function TasksView() {
   const [priorityFilter, setPriorityFilter] = useState('');
   const [onlyMine, setOnlyMine] = useState(false);
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
+  const [dragOverCol, setDragOverCol] = useState<TaskRow['status'] | null>(null);
+  const [copiedBranchId, setCopiedBranchId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
   // Task Detail Inspector state
@@ -504,6 +516,7 @@ export function TasksView() {
   const [description, setDescription] = useState('');
   const [projectId, setProjectId] = useState('');
   const [priority, setPriority] = useState<TaskRow['priority']>('HIGH');
+  const [issueType, setIssueType] = useState<'EPIC' | 'STORY' | 'TASK' | 'BUG'>('TASK');
   const [storyPoints, setStoryPoints] = useState('5');
   const [estimatedHours, setEstimatedHours] = useState('8');
   const [assigneeName, setAssigneeName] = useState('');
@@ -528,6 +541,8 @@ export function TasksView() {
     void load();
   }, [load]);
 
+  useLiveSync(load);
+
   function openTaskDetail(task: TaskRow) {
     setSelectedTask(task);
     setEditTitle(task.title);
@@ -548,6 +563,7 @@ export function TasksView() {
       description,
       projectId,
       priority,
+      issueType,
       storyPoints: Number(storyPoints),
       estimatedHours: Number(estimatedHours),
       assigneeName,
@@ -560,8 +576,21 @@ export function TasksView() {
   }
 
   async function moveTask(id: string, status: TaskRow['status']) {
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
     await patch(`/tasks/${id}`, { status });
     await load();
+  }
+
+  function copyGitBranch(task: TaskRow) {
+    const slug = task.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 36);
+    const branch = task.branchName || `feat/${task.code.toLowerCase()}-${slug || 'task'}`;
+    void navigator.clipboard.writeText(`git checkout -b ${branch}`).catch(() => undefined);
+    setCopiedBranchId(task.id);
+    setTimeout(() => setCopiedBranchId((prev) => (prev === task.id ? null : prev)), 1800);
   }
 
   async function saveTaskDetails(e: FormEvent) {
@@ -767,25 +796,42 @@ export function TasksView() {
         <div className="grid gap-4 lg:grid-cols-5">
           {KANBAN_COLUMNS.map((col) => {
             const colTasks = filtered.filter((t) => t.status === col.key);
+            const wipExceeded = col.key === 'IN_PROGRESS' && colTasks.length > 5;
+            const isDropTarget = dragOverCol === col.key;
             return (
               <div
                 key={col.key}
                 onDragOver={(e) => {
-                  if (canWrite) e.preventDefault();
+                  if (canWrite) {
+                    e.preventDefault();
+                    if (dragOverCol !== col.key) setDragOverCol(col.key);
+                  }
+                }}
+                onDragLeave={() => {
+                  if (dragOverCol === col.key) setDragOverCol(null);
                 }}
                 onDrop={() => {
+                  setDragOverCol(null);
                   if (canWrite && draggedTaskId) {
                     void moveTask(draggedTaskId, col.key);
                     setDraggedTaskId(null);
                   }
                 }}
-                className="flex min-h-[260px] flex-col rounded-[20px] bg-ink/[0.03] p-3 dark:bg-white/[0.03]"
+                className={cn(
+                  'flex min-h-[260px] flex-col rounded-[20px] p-3 transition-colors',
+                  isDropTarget
+                    ? 'bg-gold/15 ring-2 ring-gold/60'
+                    : 'bg-ink/[0.03] dark:bg-white/[0.03]',
+                )}
               >
-                <div className="mb-3 flex items-center justify-between px-1.5">
+                <div className="mb-3 flex items-center justify-between gap-1.5 px-1.5">
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
                     {col.label}
                   </span>
-                  <Badge>{colTasks.length}</Badge>
+                  <div className="flex items-center gap-1.5">
+                    {wipExceeded && <Badge tone="danger">WIP &gt; 5</Badge>}
+                    <Badge tone={wipExceeded ? 'danger' : 'neutral'}>{colTasks.length}</Badge>
+                  </div>
                 </div>
                 <div className="space-y-3">
                   {colTasks.map((task) => {
@@ -796,12 +842,23 @@ export function TasksView() {
                         key={task.id}
                         draggable={canWrite}
                         onDragStart={() => setDraggedTaskId(task.id)}
+                        onDragEnd={() => {
+                          setDraggedTaskId(null);
+                          setDragOverCol(null);
+                        }}
                         onClick={() => openTaskDetail(task)}
                         className="cursor-pointer"
                       >
                         <Card hoverable className="p-3.5">
                           <div className="flex items-center justify-between gap-2">
-                            <span className="font-mono text-[11px] font-medium text-muted">{task.code}</span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono text-[11px] font-medium text-muted">{task.code}</span>
+                              {task.issueType && (
+                                <Badge tone={task.issueType === 'BUG' ? 'danger' : task.issueType === 'EPIC' ? 'gold' : 'neutral'}>
+                                  {task.issueType}
+                                </Badge>
+                              )}
+                            </div>
                             <Badge
                               tone={
                                 task.priority === 'CRITICAL'
@@ -816,6 +873,31 @@ export function TasksView() {
                           </div>
                           <p className="mt-2 text-[14px] font-semibold leading-snug text-ink">{task.title}</p>
                           <p className="mt-1 line-clamp-2 text-xs text-muted">{task.description}</p>
+                          <div className="mt-2 flex flex-wrap items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              onClick={() => copyGitBranch(task)}
+                              title="Copy git checkout -b command"
+                              className="inline-flex items-center gap-1 rounded-md border border-line bg-canvas px-2 py-0.5 font-mono text-[10px] text-muted transition hover:border-gold/40 hover:text-ink"
+                            >
+                              {copiedBranchId === task.id ? (
+                                <Check className="h-3 w-3 text-success" />
+                              ) : (
+                                <GitBranch className="h-3 w-3 text-gold" />
+                              )}
+                              {copiedBranchId === task.id ? 'Copied' : 'Branch'}
+                            </button>
+                            {task.prUrl && (
+                              <a
+                                href={task.prUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 rounded-md border border-success/30 bg-success/10 px-2 py-0.5 text-[10px] font-semibold text-success hover:underline"
+                              >
+                                <ExternalLink className="h-2.5 w-2.5" /> PR
+                              </a>
+                            )}
+                          </div>
                           {subs.length > 0 && (
                             <div className="mt-2.5 flex items-center gap-2 text-[11px] text-muted">
                               <CheckSquare className="h-3 w-3 text-gold-strong dark:text-gold" />
@@ -1140,7 +1222,19 @@ export function TasksView() {
               />
             </Field>
           </div>
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Field label="Issue Type" htmlFor="tsk-type">
+              <Select
+                id="tsk-type"
+                value={issueType}
+                onChange={(e) => setIssueType(e.target.value as 'EPIC' | 'STORY' | 'TASK' | 'BUG')}
+              >
+                <option value="TASK">Task</option>
+                <option value="STORY">Story</option>
+                <option value="EPIC">Epic</option>
+                <option value="BUG">Bug</option>
+              </Select>
+            </Field>
             <Field label="Priority" htmlFor="tsk-prio">
               <Select
                 id="tsk-prio"
@@ -1240,6 +1334,8 @@ export function SprintsView() {
     void load();
   }, [load]);
 
+  useLiveSync(load);
+
   async function onCreate(e: FormEvent) {
     e.preventDefault();
     await post('/sprints', { name, goal, startDate, endDate });
@@ -1274,6 +1370,68 @@ export function SprintsView() {
         <Skeleton className="h-48 rounded-2xl" />
       ) : (
         <div className="space-y-4">
+          {sprints.length > 0 && (() => {
+            const maxPts = Math.max(10, ...sprints.map((s) => Math.max(s.totalPoints, s.completedPoints)));
+            const active = sprints.find((s) => s.status === 'ACTIVE') ?? sprints[0];
+            const remainingPts = Math.max(0, active.totalPoints - active.completedPoints);
+            return (
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card className="p-5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-semibold text-ink">Sprint Velocity Chart (Story Points)</h3>
+                      <p className="text-xs text-muted">Committed vs Completed story points per sprint</p>
+                    </div>
+                    <Badge tone="gold">{sprints.length} Sprints</Badge>
+                  </div>
+                  <svg viewBox="0 0 360 140" className="mt-4 h-36 w-full" role="img" aria-label="Sprint velocity chart">
+                    {sprints.slice(0, 6).map((s, idx) => {
+                      const x = 18 + idx * 56;
+                      const hTotal = Math.max(4, Math.round((s.totalPoints / maxPts) * 95));
+                      const hDone = Math.max(2, Math.round((s.completedPoints / maxPts) * 95));
+                      return (
+                        <g key={s.id}>
+                          <rect x={x} y={110 - hTotal} width={18} height={hTotal} rx={4} className="fill-ink/15 dark:fill-white/15" />
+                          <rect x={x + 20} y={110 - hDone} width={18} height={hDone} rx={4} className="fill-gold" />
+                          <text x={x + 19} y={128} textAnchor="middle" className="fill-current text-[9px] text-muted">
+                            S{idx + 1}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                </Card>
+
+                <Card className="p-5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-semibold text-ink">Burndown — {active.name}</h3>
+                      <p className="text-xs text-muted">
+                        Ideal guideline vs current remaining scope ({remainingPts} / {active.totalPoints} pts left)
+                      </p>
+                    </div>
+                    <Badge tone={active.status === 'ACTIVE' ? 'gold' : 'success'}>{active.status}</Badge>
+                  </div>
+                  <svg viewBox="0 0 360 140" className="mt-4 h-36 w-full" role="img" aria-label="Sprint burndown chart">
+                    <line x1="20" y1="15" x2="340" y2="115" stroke="currentColor" strokeOpacity="0.25" strokeDasharray="4 4" strokeWidth="2" />
+                    <polyline
+                      fill="none"
+                      stroke="#d4af37"
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      points={`20,15 180,${Math.round(15 + (100 * (active.completedPoints / Math.max(1, active.totalPoints))) * 0.55)} 340,${Math.round(15 + (100 * (active.completedPoints / Math.max(1, active.totalPoints))))}`}
+                    />
+                    <circle cx="20" cy="15" r="4" fill="#d4af37" />
+                    <circle cx="340" cy={Math.round(15 + (100 * (active.completedPoints / Math.max(1, active.totalPoints))))} r="4" fill="#d4af37" />
+                    <text x="20" y="132" className="fill-current text-[9px] text-muted">Start ({active.totalPoints} pts)</text>
+                    <text x="275" y="132" className="fill-current text-[9px] text-muted">Now ({remainingPts} left)</text>
+                  </svg>
+                </Card>
+              </div>
+            );
+          })()}
+
           {sprints.map((sp) => {
             const pct =
               sp.totalPoints > 0 ? Math.round((sp.completedPoints / sp.totalPoints) * 100) : 0;
@@ -1418,6 +1576,19 @@ export function ClientsView() {
   const [clients, setClients] = useState<ClientRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [copiedPortalId, setCopiedPortalId] = useState<string | null>(null);
+
+  async function onCopyPortalLink(client: ClientRow) {
+    try {
+      const res = await post<{ portalToken: string }>(`/clients/${client.id}/portal-link`, {});
+      const url = `${window.location.origin}/portal/${res.portalToken}`;
+      await navigator.clipboard.writeText(url).catch(() => undefined);
+      setCopiedPortalId(client.id);
+      setTimeout(() => setCopiedPortalId((prev) => (prev === client.id ? null : prev)), 2500);
+    } catch {
+      // ignore
+    }
+  }
 
   const [name, setName] = useState('');
   const [contactName, setContactName] = useState('');
@@ -1438,6 +1609,8 @@ export function ClientsView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useLiveSync(load);
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -1501,11 +1674,19 @@ export function ClientsView() {
                   </p>
                 </div>
               </div>
-              <div className="mt-5 flex items-center justify-between border-t border-line pt-3 text-xs">
-                <span className="text-muted">Contracted value</span>
-                <span className="font-semibold text-ink">
-                  LKR {c.totalBudget.toLocaleString()}
-                </span>
+              <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3 text-xs">
+                <div>
+                  <span className="text-muted">Contracted value</span>
+                  <p className="font-semibold text-ink">LKR {c.totalBudget.toLocaleString()}</p>
+                </div>
+                <Button size="sm" variant="secondary" onClick={() => void onCopyPortalLink(c)}>
+                  {copiedPortalId === c.id ? (
+                    <Check className="h-3.5 w-3.5 text-success" />
+                  ) : (
+                    <Link2 className="h-3.5 w-3.5 text-gold" />
+                  )}
+                  {copiedPortalId === c.id ? 'Portal URL Copied!' : 'Client Portal Link'}
+                </Button>
               </div>
             </Card>
           ))}
@@ -1623,6 +1804,8 @@ export function BugsView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useLiveSync(load);
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -1848,6 +2031,8 @@ export function DocumentsView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useLiveSync(load);
 
   function onFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];

@@ -23,6 +23,8 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [capsLockOn, setCapsLockOn] = useState(false);
+  const [rememberDevice, setRememberDevice] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -120,7 +122,7 @@ export default function LoginPage() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="YNX-0001 or admin@yakunexhub.local"
+                placeholder="YNX-DIR-0001 or name@yakunx.com"
                 className="h-11"
               />
             </Field>
@@ -144,10 +146,25 @@ export default function LoginPage() {
                 minLength={8}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                onKeyUp={(e) => setCapsLockOn(e.getModifierState('CapsLock'))}
                 placeholder="••••••••••••"
                 className="h-11"
               />
             </Field>
+
+            <div className="flex items-center justify-between text-xs">
+              <label className="flex cursor-pointer items-center gap-2 text-muted">
+                <input
+                  type="checkbox"
+                  checked={rememberDevice}
+                  onChange={(e) => setRememberDevice(e.target.checked)}
+                />
+                <span>Trust this device for 30 days</span>
+              </label>
+              {capsLockOn && (
+                <span className="font-semibold text-amber-500">Caps Lock is ON</span>
+              )}
+            </div>
 
             <div aria-live="polite" className="min-h-[1.25rem]">
               {error && (
@@ -165,7 +182,7 @@ export default function LoginPage() {
 
         {/* Footer */}
         <div className="text-center text-[11px] text-muted">
-          Yakunex Hub · Enterprise Suite v0.1.0
+          Yakunex Hub · Enterprise Cloud Workspace · Protected with Argon2id &amp; TLS
         </div>
       </section>
     </main>

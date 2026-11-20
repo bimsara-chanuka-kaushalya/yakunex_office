@@ -3,13 +3,12 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Lock } from 'lucide-react';
 import { useAuth, useLang } from '@/components/providers';
 import { YakunexMark } from '@/components/brand/logo';
 import { Avatar } from '@/components/ui/avatar';
 import { playAlertChime, showDesktopNotification } from '@/lib/alerts';
 import { liveGet } from '@/lib/api';
-import { NAV_SECTIONS, isModuleLockedForRole } from '@/lib/nav';
+import { NAV_SECTIONS, isNavItemVisibleForRole } from '@/lib/nav';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 
@@ -92,13 +91,12 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </Link>
       </div>
 
-      {/* macOS Source List Navigation */}
+      {/* Clean Role-Specific Navigation (Zero Locked Clutter) */}
       <div className="flex-1 space-y-5 overflow-y-auto px-3 py-4">
         {NAV_SECTIONS.map((section) => {
-          const isIntern = user?.role === 'INTERN';
-          const items = isIntern
-            ? section.items
-            : section.items.filter((item) => !item.permission || can(item.permission));
+          const items = section.items.filter((item) =>
+            isNavItemVisibleForRole(item, user?.role, can),
+          );
           if (items.length === 0) return null;
           return (
             <div key={section.title.en}>
@@ -107,7 +105,6 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
               </p>
               <ul className="space-y-0.5">
                 {items.map((item) => {
-                  const locked = !item.ready || isModuleLockedForRole(item.key, user?.role);
                   const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
                   const Icon = item.icon;
                   return (
@@ -120,9 +117,7 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                           'group relative flex items-center gap-2.5 rounded-[10px] px-2.5 py-[7px] text-[13px] font-medium transition-all duration-150 ease-spring',
                           active
                             ? 'bg-gold/15 font-semibold text-gold-strong shadow-2xs dark:bg-gold/20 dark:text-gold'
-                            : locked
-                              ? 'text-muted/60 hover:bg-ink/[0.03] dark:hover:bg-white/[0.04]'
-                              : 'text-ink/80 hover:bg-ink/[0.05] hover:text-ink dark:hover:bg-white/[0.07]',
+                            : 'text-ink/80 hover:bg-ink/[0.05] hover:text-ink dark:hover:bg-white/[0.07]',
                         )}
                       >
                         <Icon
@@ -130,28 +125,18 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                             'h-4 w-4 shrink-0 transition-transform duration-150 group-hover:scale-105',
                             active
                               ? 'text-gold-strong dark:text-gold'
-                              : locked
-                                ? 'text-muted/50'
-                                : 'text-muted group-hover:text-ink',
+                              : 'text-muted group-hover:text-ink',
                           )}
                         />
                         <span className="flex-1 truncate">{t(item.key)}</span>
-                        {!locked && item.key === 'notifications' && badges.notifications > 0 && (
+                        {item.key === 'notifications' && badges.notifications > 0 && (
                           <span className="rounded-full bg-danger px-1.5 py-0.5 font-mono text-[10px] font-bold text-white">
                             {badges.notifications}
                           </span>
                         )}
-                        {!locked && item.key === 'approvals' && badges.approvals > 0 && (
+                        {item.key === 'approvals' && badges.approvals > 0 && (
                           <span className="rounded-full bg-gold px-1.5 py-0.5 font-mono text-[10px] font-bold text-gold-ink">
                             {badges.approvals}
-                          </span>
-                        )}
-                        {locked && (
-                          <span
-                            className="flex items-center rounded bg-ink/[0.05] px-1.5 py-0.5 text-[10px] text-muted dark:bg-white/[0.08]"
-                            title={item.ready ? 'Temporarily locked' : 'Planned module'}
-                          >
-                            <Lock className="h-2.5 w-2.5" />
                           </span>
                         )}
                       </Link>

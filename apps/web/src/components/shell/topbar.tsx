@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
-import { ALL_NAV_ITEMS, findNavItem } from '@/lib/nav';
+import { ALL_NAV_ITEMS, findNavItem, isNavItemVisibleForRole } from '@/lib/nav';
 
 const THEME_OPTIONS: { value: ThemeChoice; icon: typeof Sun; labelKey: string }[] = [
   { value: 'light', icon: Sun, labelKey: 'lightTheme' },
@@ -43,7 +43,9 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
   }, []);
 
   const searchableItems = useMemo(() => {
-    const permitted = ALL_NAV_ITEMS.filter((item) => !item.permission || can(item.permission));
+    const permitted = ALL_NAV_ITEMS.filter((item) =>
+      isNavItemVisibleForRole(item, user?.role, can),
+    );
     const q = query.trim().toLowerCase();
     if (!q) return permitted;
     return permitted.filter(
@@ -52,7 +54,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
         item.description.toLowerCase().includes(q) ||
         item.key.toLowerCase().includes(q),
     );
-  }, [can, query, t]);
+  }, [can, query, t, user?.role]);
 
   async function handleLogout() {
     await logout();

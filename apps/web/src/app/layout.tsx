@@ -20,6 +20,7 @@ export const metadata: Metadata = {
   description:
     'Yakunex Hub is an enterprise workspace, project delivery, sprint tracking, time management, and video collaboration platform by Yakunex Technologies.',
   applicationName: 'Yakunex Hub',
+  manifest: '/manifest.json',
   keywords: [
     'Yakunex Hub',
     'Yakunex',

@@ -534,6 +534,132 @@ export class UsersService {
     return Object.values(PERMISSIONS);
   }
 
+  /** 1-Click Enterprise Offboarding: revoke all sessions, deactivate account, log immutable audit entry. */
+  async offboardUser(actor: AuthUser, targetId: string, reason: string | undefined, meta: { ipAddress?: string; userAgent?: string }) {
+    if (targetId === actor.id) {
+      throw new BadRequestException('You cannot offboard your own account.');
+    }
+    const target = await this.findTargetOrFail(actor, targetId);
+    assertCanManageTarget(actor.role, target.role);
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: target.id },
+        data: { status: UserStatus.DEACTIVATED, mustChangePassword: true },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId: target.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+    ]);
+
+    this.prisma.upsertUserInCache?.({ ...target, status: UserStatus.DEACTIVATED, mustChangePassword: true });
+    this.rbac.invalidateCache?.(target.id);
+
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'USER_OFFBOARDED',
+      entityType: 'User',
+      entityId: target.id,
+      metadata: { reason: reason || 'Offboarding completed', companyId: target.companyId, email: target.email },
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent,
+    });
+
+    return {
+      ok: true,
+      userId: target.id,
+      status: UserStatus.DEACTIVATED,
+      message: `${target.fullName} has been offboarded and all active sessions revoked.`,
+    };
+  }
+
+  /** 1-Click Intern -> Full-Time Core Staff Promotion */
+  async promoteInternToStaff(actor: AuthUser, targetId: string, newTitle: string | undefined, meta: { ipAddress?: string; userAgent?: string }) {
+    const target = await this.findTargetOrFail(actor, targetId);
+    if (target.role !== Role.INTERN) {
+      throw new BadRequestException('Only Intern accounts can be promoted with this action.');
+    }
+    assertCanAssignRole(actor.role, Role.STAFF);
+    const updated = await this.prisma.user.update({
+      where: { id: target.id },
+      data: {
+        role: Role.STAFF,
+        title: newTitle?.trim() || target.title || 'Software Engineer',
+      },
+      select: publicUserSelect,
+    });
+    this.rbac.invalidateCache?.(target.id);
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'INTERN_PROMOTED_TO_STAFF',
+      entityType: 'User',
+      entityId: target.id,
+      metadata: { previousRole: Role.INTERN, newRole: Role.STAFF, title: updated.title },
+      ipAddress: meta.ipAddress,
+      userAgent: meta.userAgent,
+    });
+    return updated;
+  }
+
+  /** Bulk CSV Employee Onboarding */
+  async bulkCreate(
+    actor: AuthUser,
+    rows: Array<{ fullName: string; nameWithInitials?: string; lastName?: string; role: Role; title?: string; email?: string }>,
+    meta: { ipAddress?: string; userAgent?: string },
+  ) {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      throw new BadRequestException('Provide at least one employee row to import.');
+    }
+    const capped = rows.slice(0, 50);
+    const results: Array<{
+      fullName: string;
+      ok: boolean;
+      companyId?: string | null;
+      email?: string;
+      activationToken?: string;
+      error?: string;
+    }> = [];
+
+    for (const row of capped) {
+      try {
+        const created = await this.create(
+          actor,
+          {
+            fullName: row.fullName,
+            nameWithInitials: row.nameWithInitials,
+            lastName: row.lastName,
+            role: row.role || Role.STAFF,
+            title: row.title,
+            email: row.email,
+          } as CreateUserDto,
+          meta,
+        );
+        results.push({
+          fullName: row.fullName,
+          ok: true,
+          companyId: created.user.companyId,
+          email: created.user.email,
+          activationToken: created.activationToken,
+        });
+      } catch (err) {
+        results.push({
+          fullName: row.fullName || 'Unknown',
+          ok: false,
+          error: err instanceof Error ? err.message : 'Failed to create user',
+        });
+      }
+    }
+    return {
+      total: capped.length,
+      createdCount: results.filter((r) => r.ok).length,
+      failedCount: results.filter((r) => !r.ok).length,
+      results,
+    };
+  }
+
   private async findTargetOrFail(actor: AuthUser, targetId: string): Promise<User> {
     const target = await this.prisma.user.findFirst({
       where: { id: targetId, organizationId: actor.organizationId, deletedAt: null },
