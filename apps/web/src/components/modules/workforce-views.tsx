@@ -36,6 +36,7 @@ import { Card, CardHeader, StatCard } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useToast } from '@/components/ui/toast';
 import { api, ApiError, patch, post } from '@/lib/api';
 import { useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
@@ -1676,6 +1677,7 @@ interface LeaveSummaryPayload {
 
 export function LeaveView() {
   const { user, can } = useAuth();
+  const toast = useToast();
   const canApprove = can(PERMISSIONS.LEAVE_APPROVE);
   const [requests, setRequests] = useState<LeaveRow[]>([]);
   const [leaveSummary, setLeaveSummary] = useState<LeaveSummaryPayload | null>(null);
@@ -1745,8 +1747,13 @@ export function LeaveView() {
   }
 
   async function decide(id: string, status: 'APPROVED' | 'REJECTED') {
-    await patch(`/leave/${id}/decision`, { status });
-    await load();
+    try {
+      await patch(`/leave/${id}/decision`, { status });
+      toast.success(`Leave request ${status.toLowerCase()}.`);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Unable to update leave decision.');
+    }
   }
 
   return (

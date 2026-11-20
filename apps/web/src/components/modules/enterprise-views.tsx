@@ -55,6 +55,7 @@ interface OrgPayload {
 
 export function OrganizationView() {
   const { can } = useAuth();
+  const toast = useToast();
   const [data, setData] = useState<OrgPayload | null>(null);
   const [deptName, setDeptName] = useState('');
   const [deptCode, setDeptCode] = useState('');
@@ -76,23 +77,33 @@ export function OrganizationView() {
 
   async function onCreateDept(e: FormEvent) {
     e.preventDefault();
-    await post('/organization/departments', { name: deptName, code: deptCode, headTitle });
-    setDeptName('');
-    setDeptCode('');
-    setHeadTitle('');
-    setNotice('Department created.');
-    await load();
+    try {
+      await post('/organization/departments', { name: deptName, code: deptCode, headTitle });
+      setDeptName('');
+      setDeptCode('');
+      setHeadTitle('');
+      setNotice('Department created.');
+      toast.success('Department created.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to create department.');
+    }
   }
 
   async function onAssignManager(e: FormEvent) {
     e.preventDefault();
     if (!selectedEmpId) return;
-    await patch('/organization/assign-manager', {
-      userId: selectedEmpId,
-      managerId: selectedMgrId || null,
-    });
-    setNotice('Reporting manager updated.');
-    await load();
+    try {
+      await patch('/organization/assign-manager', {
+        userId: selectedEmpId,
+        managerId: selectedMgrId || null,
+      });
+      setNotice('Reporting manager updated.');
+      toast.success('Reporting manager updated.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to update reporting manager.');
+    }
   }
 
   if (!data) return <Skeleton className="h-80 rounded-2xl" />;
@@ -224,6 +235,7 @@ interface ApprovalRow {
 
 export function ApprovalsView() {
   const { can } = useAuth();
+  const toast = useToast();
   const [rows, setRows] = useState<ApprovalRow[] | null>(null);
   const [type, setType] = useState('EXPENSE');
   const [title, setTitle] = useState('');
@@ -244,21 +256,31 @@ export function ApprovalsView() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    await post('/approvals', {
-      type,
-      title,
-      description,
-      amount: amount ? Number(amount) : undefined,
-    });
-    setTitle('');
-    setDescription('');
-    setAmount('');
-    await load();
+    try {
+      await post('/approvals', {
+        type,
+        title,
+        description,
+        amount: amount ? Number(amount) : undefined,
+      });
+      setTitle('');
+      setDescription('');
+      setAmount('');
+      toast.success('Approval request submitted.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to submit approval request.');
+    }
   }
 
   async function onDecide(row: ApprovalRow, status: 'APPROVED' | 'REJECTED' | 'RETURNED') {
-    await patch(`/approvals/${row.id}/decision`, { status, source: row.source });
-    await load();
+    try {
+      await patch(`/approvals/${row.id}/decision`, { status, source: row.source });
+      toast.success(`Request ${status.toLowerCase()}.`);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to process approval decision.');
+    }
   }
 
   if (!rows) return <Skeleton className="h-72 rounded-2xl" />;
@@ -387,6 +409,7 @@ interface ClientInvoiceRow {
 
 export function FinanceView() {
   const { user, can } = useAuth();
+  const toast = useToast();
   const [data, setData] = useState<FinancePayload | null>(null);
   const [invoices, setInvoices] = useState<ClientInvoiceRow[]>([]);
   const [payrollRows, setPayrollRows] = useState<PayrollEmployeeRow[]>([]);
@@ -425,34 +448,49 @@ export function FinanceView() {
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
-    await post('/finance/entries', { type, category, amount: Number(amount), description });
-    setCategory('');
-    setAmount('');
-    setDescription('');
-    await load();
+    try {
+      await post('/finance/entries', { type, category, amount: Number(amount), description });
+      setCategory('');
+      setAmount('');
+      setDescription('');
+      toast.success('Financial entry recorded.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to record financial entry.');
+    }
   }
 
   async function onCreateInvoice(e: FormEvent) {
     e.preventDefault();
     const unitPrice = Number(invAmount);
     if (!invClient.trim() || !Number.isFinite(unitPrice) || unitPrice <= 0) return;
-    await post('/finance/invoices', {
-      clientName: invClient.trim(),
-      projectName: invProject.trim() || null,
-      currency: 'LKR',
-      applySscl: invApplySscl,
-      applyVat: invApplyVat,
-      lineItems: [{ description: invDesc.trim() || 'IT Services', quantity: 1, unitPrice }],
-    });
-    setInvClient('');
-    setInvProject('');
-    setInvAmount('');
-    await load();
+    try {
+      await post('/finance/invoices', {
+        clientName: invClient.trim(),
+        projectName: invProject.trim() || null,
+        currency: 'LKR',
+        applySscl: invApplySscl,
+        applyVat: invApplyVat,
+        lineItems: [{ description: invDesc.trim() || 'IT Services', quantity: 1, unitPrice }],
+      });
+      setInvClient('');
+      setInvProject('');
+      setInvAmount('');
+      toast.success('Client tax invoice issued.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to issue tax invoice.');
+    }
   }
 
   async function onMarkInvoiceStatus(id: string, status: ClientInvoiceRow['status']) {
-    await patch(`/finance/invoices/${id}/status`, { status });
-    await load();
+    try {
+      await patch(`/finance/invoices/${id}/status`, { status });
+      toast.success(`Invoice marked ${status}.`);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to update invoice status.');
+    }
   }
 
   if (!data) return <Skeleton className="h-72 rounded-2xl" />;
@@ -739,6 +777,7 @@ interface AssetRow {
 
 export function AssetsView() {
   const { can } = useAuth();
+  const toast = useToast();
   const [rows, setRows] = useState<AssetRow[] | null>(null);
   const [name, setName] = useState('');
   const [category, setCategory] = useState('LAPTOP');
@@ -757,10 +796,15 @@ export function AssetsView() {
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
-    await post('/assets', { name, category, assignedToName: assignedToName || null });
-    setName('');
-    setAssignedToName('');
-    await load();
+    try {
+      await post('/assets', { name, category, assignedToName: assignedToName || null });
+      setName('');
+      setAssignedToName('');
+      toast.success('Asset registered.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to register asset.');
+    }
   }
 
   if (!rows) return <Skeleton className="h-72 rounded-2xl" />;
@@ -829,6 +873,7 @@ interface PerformanceRow {
 }
 
 export function PerformanceView() {
+  const toast = useToast();
   const [rows, setRows] = useState<PerformanceRow[] | null>(null);
   const [employeeName, setEmployeeName] = useState('');
   const [goalTitle, setGoalTitle] = useState('');
@@ -849,16 +894,21 @@ export function PerformanceView() {
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
-    await post('/performance', {
-      employeeName: employeeName || undefined,
-      goalTitle,
-      completionPercent: Number(completionPercent),
-      rating: Number(rating),
-      feedback,
-    });
-    setGoalTitle('');
-    setFeedback('');
-    await load();
+    try {
+      await post('/performance', {
+        employeeName: employeeName || undefined,
+        goalTitle,
+        completionPercent: Number(completionPercent),
+        rating: Number(rating),
+        feedback,
+      });
+      setGoalTitle('');
+      setFeedback('');
+      toast.success('Performance goal saved.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to save performance goal.');
+    }
   }
 
   if (!rows) return <Skeleton className="h-72 rounded-2xl" />;
@@ -931,6 +981,7 @@ interface NotificationRow {
 
 export function NotificationsView() {
   const { can } = useAuth();
+  const toast = useToast();
   const [rows, setRows] = useState<NotificationRow[] | null>(null);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -963,15 +1014,24 @@ export function NotificationsView() {
 
   async function onPublish(e: FormEvent) {
     e.preventDefault();
-    await post('/notifications/announcements', { title, body });
-    setTitle('');
-    setBody('');
-    await load();
+    try {
+      await post('/notifications/announcements', { title, body });
+      setTitle('');
+      setBody('');
+      toast.success('Announcement published.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to publish announcement.');
+    }
   }
 
   async function onMarkRead(id: string) {
-    await patch(`/notifications/${id}/read`, {});
-    await load();
+    try {
+      await patch(`/notifications/${id}/read`, {});
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to mark notification as read.');
+    }
   }
 
   if (!rows) return <Skeleton className="h-72 rounded-2xl" />;
@@ -1180,6 +1240,8 @@ export function ProfileView() {
     try {
       await post('/auth/logout-all', {});
       window.location.href = '/login';
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to sign out all devices.');
     } finally {
       setRevokingSessions(false);
       setLogoutAllOpen(false);

@@ -51,6 +51,7 @@ import { Card, CardHeader, StatCard } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useToast } from '@/components/ui/toast';
 import { api, del, liveGet, patch, post, put } from '@/lib/api';
 import { useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
@@ -128,6 +129,7 @@ const QUICK_REACTIONS = ['👍', '❤️', '🎉'];
 export function ChatView() {
   const { user } = useAuth();
   const { lang } = useLang();
+  const toast = useToast();
   const [channels, setChannels] = useState<ChatChannel[]>([]);
   const [activeId, setActiveId] = useState<string>('ch_general');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -239,85 +241,124 @@ export function ChatView() {
   async function onSend(e: FormEvent) {
     e.preventDefault();
     if (!text.trim() && !pendingAttachment) return;
-    await post(`/chat/channels/${activeId}/messages`, {
-      body: text.trim() || `Attachment: ${pendingAttachment?.name ?? 'File'}`,
-      replyToId: replyTo?.id,
-      attachmentUrl: pendingAttachment?.dataUrl,
-      attachmentName: pendingAttachment?.name,
-    });
-    setText('');
-    setReplyTo(null);
-    setPendingAttachment(null);
-    await loadMessages(activeId);
+    try {
+      await post(`/chat/channels/${activeId}/messages`, {
+        body: text.trim() || `Attachment: ${pendingAttachment?.name ?? 'File'}`,
+        replyToId: replyTo?.id,
+        attachmentUrl: pendingAttachment?.dataUrl,
+        attachmentName: pendingAttachment?.name,
+      });
+      setText('');
+      setReplyTo(null);
+      setPendingAttachment(null);
+      await loadMessages(activeId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to send message.');
+    }
   }
 
   async function onCreateChannel(e: FormEvent) {
     e.preventDefault();
-    const created = await post<ChatChannel>('/chat/channels', {
-      name: newChannelName,
-      description: newChannelDesc,
-      type: newChannelType,
-      category: newChannelCategory,
-      privacy: newChannelPrivacy,
-      memberIds: selectedMemberIds,
-    });
-    setModalOpen(false);
-    setNewChannelName('');
-    setNewChannelDesc('');
-    setSelectedMemberIds([]);
-    await loadChannels();
-    setActiveId(created.id);
+    try {
+      const created = await post<ChatChannel>('/chat/channels', {
+        name: newChannelName,
+        description: newChannelDesc,
+        type: newChannelType,
+        category: newChannelCategory,
+        privacy: newChannelPrivacy,
+        memberIds: selectedMemberIds,
+      });
+      setModalOpen(false);
+      setNewChannelName('');
+      setNewChannelDesc('');
+      setSelectedMemberIds([]);
+      toast.success(`Group #${created.name} created.`);
+      await loadChannels();
+      setActiveId(created.id);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to create group.');
+    }
   }
 
   async function onStartDm(member: OrgMember) {
-    const ch = await post<ChatChannel>('/chat/direct', {
-      targetUserId: member.id,
-      targetUserName: member.name,
-    });
-    setDmModalOpen(false);
-    setDmSearch('');
-    await loadChannels();
-    setActiveId(ch.id);
+    try {
+      const ch = await post<ChatChannel>('/chat/direct', {
+        targetUserId: member.id,
+        targetUserName: member.name,
+      });
+      setDmModalOpen(false);
+      setDmSearch('');
+      await loadChannels();
+      setActiveId(ch.id);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to start direct message.');
+    }
   }
 
   async function onSaveEdit(e: FormEvent) {
     e.preventDefault();
     if (!editingMsg || !editText.trim()) return;
-    await patch(`/chat/messages/${editingMsg.id}`, { body: editText });
-    setEditingMsg(null);
-    setEditText('');
-    await loadMessages(activeId);
+    try {
+      await patch(`/chat/messages/${editingMsg.id}`, { body: editText });
+      setEditingMsg(null);
+      setEditText('');
+      await loadMessages(activeId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to edit message.');
+    }
   }
 
   async function onDeleteMessage(msgId: string) {
-    await del(`/chat/messages/${msgId}`);
-    await loadMessages(activeId);
+    try {
+      await del(`/chat/messages/${msgId}`);
+      await loadMessages(activeId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to delete message.');
+    }
   }
 
   async function onReact(msgId: string, emoji: string) {
-    await post(`/chat/messages/${msgId}/react`, { emoji });
-    await loadMessages(activeId);
+    try {
+      await post(`/chat/messages/${msgId}/react`, { emoji });
+      await loadMessages(activeId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to add reaction.');
+    }
   }
 
   async function onTogglePin(msgId: string) {
-    await patch(`/chat/messages/${msgId}/pin`, {});
-    await loadMessages(activeId);
+    try {
+      await patch(`/chat/messages/${msgId}/pin`, {});
+      await loadMessages(activeId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to update pin state.');
+    }
   }
 
   async function onConvertToTask(msg: ChatMessage) {
-    await post(`/chat/messages/${msg.id}/to-task`, {});
-    setBanner(`Task created from message by ${msg.senderName}.`);
-    await loadMessages(activeId);
+    try {
+      await post(`/chat/messages/${msg.id}/to-task`, {});
+      setBanner(`Task created from message by ${msg.senderName}.`);
+      toast.success('Task created from chat message.');
+      await loadMessages(activeId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to convert message to task.');
+    }
   }
 
   async function onStartChannelMeeting() {
     if (!activeChannel) return;
-    const mt = await post<MeetingRow>(`/chat/channels/${activeChannel.id}/meeting`, {
-      title: `${activeChannel.name} Sync`,
-      agenda: `Channel huddle for #${activeChannel.name}`,
-    });
-    setBanner(`Meeting started (${mt.roomCode}) — open Meetings to join.`);
-    await loadMessages(activeId);
+    try {
+      const mt = await post<MeetingRow>(`/chat/channels/${activeChannel.id}/meeting`, {
+        title: `${activeChannel.name} Sync`,
+        agenda: `Channel huddle for #${activeChannel.name}`,
+      });
+      setBanner(`Meeting started (${mt.roomCode}) — open Meetings to join.`);
+      toast.success(`Meeting started (${mt.roomCode}).`);
+      await loadMessages(activeId);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to start channel meeting.');
+    }
   }
 
   function toggleMemberSelection(id: string) {
@@ -960,6 +1001,7 @@ const ROLE_AUDIENCE_OPTIONS = [
 
 export function MeetingsView() {
   const { user } = useAuth();
+  const toast = useToast();
   const [meetings, setMeetings] = useState<MeetingRow[]>([]);
   const [policy, setPolicy] = useState<MeetingAccessPolicy | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1277,8 +1319,13 @@ export function MeetingsView() {
   };
 
   const markCompleted = async (id: string) => {
-    await patch(`/meetings/${id}`, { status: 'COMPLETED' });
-    await load();
+    try {
+      await patch(`/meetings/${id}`, { status: 'COMPLETED' });
+      toast.success('Meeting ended.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to end meeting.');
+    }
   };
 
   const copyInvite = async (mtg: MeetingRow) => {
@@ -2477,6 +2524,7 @@ const ROLES_ORDER: Role[] = ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF',
 
 export function SettingsView() {
   const { lang } = useLang();
+  const toast = useToast();
   const [data, setData] = useState<SettingsPayload | null>(null);
   const [name, setName] = useState('');
   const [timezone, setTimezone] = useState('Asia/Colombo');
@@ -2508,43 +2556,59 @@ export function SettingsView() {
   useLiveSync(load);
 
   function useCurrentGpsForOffice() {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) return;
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      toast.error('Geolocation is not supported in this browser.');
+      return;
+    }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setOfficeLatitude(pos.coords.latitude.toFixed(6));
         setOfficeLongitude(pos.coords.longitude.toFixed(6));
+        toast.success('Office GPS coordinates captured.');
       },
-      () => undefined,
+      (err) => {
+        toast.error(err.message || 'Location permission denied.');
+      },
       { enableHighAccuracy: true, timeout: 10000 },
     );
   }
 
   async function saveOrgSettings(e: FormEvent) {
     e.preventDefault();
-    await put('/settings', {
-      name,
-      timezone,
-      workDayStart,
-      workDayEnd,
-      idleTimeoutMinutes: Number(idleTimeoutMinutes),
-      officeLatitude: Number(officeLatitude),
-      officeLongitude: Number(officeLongitude),
-      officeRadiusMeters: Number(officeRadiusMeters),
-    });
-    setSavedNotice('Organization profile, working policies, and office geofence saved.');
-    setTimeout(() => setSavedNotice(null), 3000);
-    await load();
+    try {
+      await put('/settings', {
+        name,
+        timezone,
+        workDayStart,
+        workDayEnd,
+        idleTimeoutMinutes: Number(idleTimeoutMinutes),
+        officeLatitude: Number(officeLatitude),
+        officeLongitude: Number(officeLongitude),
+        officeRadiusMeters: Number(officeRadiusMeters),
+      });
+      setSavedNotice('Organization profile, working policies, and office geofence saved.');
+      toast.success('Organization settings saved.');
+      setTimeout(() => setSavedNotice(null), 3000);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to save settings.');
+    }
   }
 
   async function toggleRolePermission(role: Role, permKey: string) {
     if (!data || role === 'SUPER_ADMIN') return;
-    const current = new Set(data.roleMatrix[role] ?? []);
-    if (current.has(permKey)) current.delete(permKey);
-    else current.add(permKey);
-    await put('/settings/role-permissions', { role, permissions: [...current] });
-    setSavedNotice(`Updated default permissions for ${ROLE_LABELS[role][lang]}.`);
-    setTimeout(() => setSavedNotice(null), 3000);
-    await load();
+    try {
+      const current = new Set(data.roleMatrix[role] ?? []);
+      if (current.has(permKey)) current.delete(permKey);
+      else current.add(permKey);
+      await put('/settings/role-permissions', { role, permissions: [...current] });
+      setSavedNotice(`Updated default permissions for ${ROLE_LABELS[role][lang]}.`);
+      toast.success(`Updated permissions for ${ROLE_LABELS[role][lang]}.`);
+      setTimeout(() => setSavedNotice(null), 3000);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to update role permissions.');
+    }
   }
 
   if (!data) {

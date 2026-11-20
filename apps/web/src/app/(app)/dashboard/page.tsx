@@ -182,7 +182,7 @@ export default function DashboardPage() {
       const [attRes, insightsRes, profRes] = await Promise.all([
         api<{ liveBoard?: typeof liveBoard }>('/attendance').catch(() => ({ liveBoard: [] })),
         api<RoleInsights>('/dashboard/role-insights').catch(() => null),
-        api<{ firstName?: string; fullName?: string }>('/profile/me').catch(() => null),
+        api<{ firstName?: string; fullName?: string }>('/profile').catch(() => null),
         isAdminView
           ? api<AdminSummary>('/dashboard/admin').then(setSummary)
           : api<PersonalSummary>('/dashboard/me').then(setPersonal),

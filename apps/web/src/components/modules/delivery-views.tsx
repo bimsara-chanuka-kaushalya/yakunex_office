@@ -84,6 +84,7 @@ const PROJECT_STATUSES = [
 
 export function ProjectsView() {
   const { can } = useAuth();
+  const toast = useToast();
   const canWrite = can(PERMISSIONS.PROJECTS_WRITE);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -117,36 +118,50 @@ export function ProjectsView() {
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
-    await post('/projects', {
-      name,
-      clientName,
-      category,
-      priority,
-      budget: Number(budget),
-      expectedEndDate,
-      techStack,
-      description,
-    });
-    setModalOpen(false);
-    setName('');
-    setClientName('');
-    setDescription('');
-    await load();
+    try {
+      await post('/projects', {
+        name,
+        clientName,
+        category,
+        priority,
+        budget: Number(budget),
+        expectedEndDate,
+        techStack,
+        description,
+      });
+      setModalOpen(false);
+      setName('');
+      setClientName('');
+      setDescription('');
+      toast.success('Project created.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to create project.');
+    }
   }
 
   async function updateStatus(id: string, status: string) {
-    const progressPercent =
-      status === 'COMPLETED' ? 100 : status === 'TESTING' ? 85 : status === 'IN_PROGRESS' ? 60 : undefined;
-    await patch(`/projects/${id}`, { status, ...(progressPercent !== undefined ? { progressPercent } : {}) });
-    await load();
+    try {
+      const progressPercent =
+        status === 'COMPLETED' ? 100 : status === 'TESTING' ? 85 : status === 'IN_PROGRESS' ? 60 : undefined;
+      await patch(`/projects/${id}`, { status, ...(progressPercent !== undefined ? { progressPercent } : {}) });
+      toast.success(`Project status updated to ${status.replace('_', ' ')}.`);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to update project status.');
+    }
   }
 
   async function cycleStage(projectId: string, stage: ProjectStage) {
     if (!canWrite) return;
-    const order: ProjectStage['status'][] = ['PENDING', 'IN_PROGRESS', 'DONE'];
-    const next = order[(order.indexOf(stage.status) + 1) % order.length] ?? 'DONE';
-    await patch(`/projects/${projectId}`, { stageId: stage.id, stageStatus: next });
-    await load();
+    try {
+      const order: ProjectStage['status'][] = ['PENDING', 'IN_PROGRESS', 'DONE'];
+      const next = order[(order.indexOf(stage.status) + 1) % order.length] ?? 'DONE';
+      await patch(`/projects/${projectId}`, { stageId: stage.id, stageStatus: next });
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to update project stage.');
+    }
   }
 
   const filtered = projects.filter((p) => {
@@ -487,7 +502,9 @@ const KANBAN_COLUMNS: Array<{ key: TaskRow['status']; label: string }> = [
 
 export function TasksView() {
   const { user, can } = useAuth();
+  const toast = useToast();
   const canWrite = can(PERMISSIONS.TASKS_WRITE);
+  const canDelete = canWrite && user?.role !== 'INTERN';
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -559,27 +576,37 @@ export function TasksView() {
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
-    await post('/tasks', {
-      title,
-      description,
-      projectId,
-      priority,
-      issueType,
-      storyPoints: Number(storyPoints),
-      estimatedHours: Number(estimatedHours),
-      assigneeName,
-      dueDate,
-    });
-    setModalOpen(false);
-    setTitle('');
-    setDescription('');
-    await load();
+    try {
+      await post('/tasks', {
+        title,
+        description,
+        projectId,
+        priority,
+        issueType,
+        storyPoints: Number(storyPoints),
+        estimatedHours: Number(estimatedHours),
+        assigneeName,
+        dueDate,
+      });
+      setModalOpen(false);
+      setTitle('');
+      setDescription('');
+      toast.success('Task created.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to create task.');
+    }
   }
 
   async function moveTask(id: string, status: TaskRow['status']) {
     setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
-    await patch(`/tasks/${id}`, { status });
-    await load();
+    try {
+      await patch(`/tasks/${id}`, { status });
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to move task.');
+      await load();
+    }
   }
 
   function copyGitBranch(task: TaskRow) {
@@ -597,60 +624,82 @@ export function TasksView() {
   async function saveTaskDetails(e: FormEvent) {
     e.preventDefault();
     if (!selectedTask) return;
-    await patch(`/tasks/${selectedTask.id}`, {
-      title: editTitle,
-      description: editDesc,
-      assigneeName: editAssignee,
-      priority: editPriority,
-      status: editStatus,
-      actualHours: Number(editActualHours) || 0,
-      dueDate: editDueDate,
-    });
-    await load();
+    try {
+      await patch(`/tasks/${selectedTask.id}`, {
+        title: editTitle,
+        description: editDesc,
+        assigneeName: editAssignee,
+        priority: editPriority,
+        status: editStatus,
+        actualHours: Number(editActualHours) || 0,
+        dueDate: editDueDate,
+      });
+      toast.success('Task updated.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to save task changes.');
+    }
   }
 
   async function handleAddSubtask(e: FormEvent) {
     e.preventDefault();
     if (!selectedTask || !newSubtask.trim()) return;
-    const next = [
-      ...(selectedTask.subtasks ?? []),
-      { id: `sub_${Date.now()}`, title: newSubtask.trim(), done: false },
-    ];
-    await patch(`/tasks/${selectedTask.id}`, { subtasks: next });
-    setNewSubtask('');
-    await load();
+    try {
+      const next = [
+        ...(selectedTask.subtasks ?? []),
+        { id: `sub_${Date.now()}`, title: newSubtask.trim(), done: false },
+      ];
+      await patch(`/tasks/${selectedTask.id}`, { subtasks: next });
+      setNewSubtask('');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to add subtask.');
+    }
   }
 
   async function handleToggleSubtask(subId: string) {
     if (!selectedTask) return;
-    const next = (selectedTask.subtasks ?? []).map((s) =>
-      s.id === subId ? { ...s, done: !s.done } : s,
-    );
-    await patch(`/tasks/${selectedTask.id}`, { subtasks: next });
-    await load();
+    try {
+      const next = (selectedTask.subtasks ?? []).map((s) =>
+        s.id === subId ? { ...s, done: !s.done } : s,
+      );
+      await patch(`/tasks/${selectedTask.id}`, { subtasks: next });
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to update subtask.');
+    }
   }
 
   async function handleAddComment(e: FormEvent) {
     e.preventDefault();
     if (!selectedTask || !newComment.trim()) return;
-    const next = [
-      ...(selectedTask.comments ?? []),
-      {
-        id: `cmt_${Date.now()}`,
-        authorName: user?.fullName ?? 'Team Member',
-        body: newComment.trim(),
-        createdAt: new Date().toISOString(),
-      },
-    ];
-    await patch(`/tasks/${selectedTask.id}`, { comments: next });
-    setNewComment('');
-    await load();
+    try {
+      const next = [
+        ...(selectedTask.comments ?? []),
+        {
+          id: `cmt_${Date.now()}`,
+          authorName: user?.fullName ?? 'Team Member',
+          body: newComment.trim(),
+          createdAt: new Date().toISOString(),
+        },
+      ];
+      await patch(`/tasks/${selectedTask.id}`, { comments: next });
+      setNewComment('');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to post comment.');
+    }
   }
 
   async function handleDeleteTask(id: string) {
-    await del(`/tasks/${id}`);
-    setSelectedTask(null);
-    await load();
+    try {
+      await del(`/tasks/${id}`);
+      setSelectedTask(null);
+      toast.success('Task deleted.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to delete task.');
+    }
   }
 
   const filtered = tasks.filter((t) => {
@@ -1135,14 +1184,18 @@ export function TasksView() {
               </div>
               {canWrite && (
                 <div className="flex items-center justify-between pt-1">
-                  <Button
-                    type="button"
-                    variant="danger"
-                    size="sm"
-                    onClick={() => void handleDeleteTask(selectedTask.id)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" /> Delete Task
-                  </Button>
+                  {canDelete ? (
+                    <Button
+                      type="button"
+                      variant="danger"
+                      size="sm"
+                      onClick={() => void handleDeleteTask(selectedTask.id)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" /> Delete Task
+                    </Button>
+                  ) : (
+                    <span />
+                  )}
                   <Button type="submit" size="sm">Save Changes</Button>
                 </div>
               )}
@@ -1344,6 +1397,7 @@ interface SprintRow {
 
 export function SprintsView() {
   const { can } = useAuth();
+  const toast = useToast();
   const canWrite = can(PERMISSIONS.TASKS_WRITE);
   const [sprints, setSprints] = useState<SprintRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1370,16 +1424,26 @@ export function SprintsView() {
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
-    await post('/sprints', { name, goal, startDate, endDate });
-    setModalOpen(false);
-    setName('');
-    setGoal('');
-    await load();
+    try {
+      await post('/sprints', { name, goal, startDate, endDate });
+      setModalOpen(false);
+      setName('');
+      setGoal('');
+      toast.success('Sprint created.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to create sprint.');
+    }
   }
 
   async function changeStatus(id: string, status: SprintRow['status']) {
-    await patch(`/sprints/${id}`, { status });
-    await load();
+    try {
+      await patch(`/sprints/${id}`, { status });
+      toast.success(`Sprint marked ${status.toLowerCase()}.`);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to update sprint status.');
+    }
   }
 
   return (
@@ -1661,15 +1725,20 @@ export function ClientsView() {
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
-    await post('/clients', { name, contactName, contactEmail, contactPhone, address, notes });
-    setModalOpen(false);
-    setName('');
-    setContactName('');
-    setContactEmail('');
-    setContactPhone('');
-    setAddress('');
-    setNotes('');
-    await load();
+    try {
+      await post('/clients', { name, contactName, contactEmail, contactPhone, address, notes });
+      setModalOpen(false);
+      setName('');
+      setContactName('');
+      setContactEmail('');
+      setContactPhone('');
+      setAddress('');
+      setNotes('');
+      toast.success('Client added.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to add client.');
+    }
   }
 
   return (
@@ -1840,6 +1909,7 @@ const BUG_STATUSES: BugRow['status'][] = [
 
 export function BugsView() {
   const { can } = useAuth();
+  const toast = useToast();
   const canWrite = can(PERMISSIONS.TASKS_WRITE);
   const [bugs, setBugs] = useState<BugRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1868,24 +1938,34 @@ export function BugsView() {
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
-    await post('/bugs', {
-      title,
-      severity,
-      stepsToReproduce,
-      expectedResult,
-      actualResult,
-    });
-    setModalOpen(false);
-    setTitle('');
-    setStepsToReproduce('');
-    setExpectedResult('');
-    setActualResult('');
-    await load();
+    try {
+      await post('/bugs', {
+        title,
+        severity,
+        stepsToReproduce,
+        expectedResult,
+        actualResult,
+      });
+      setModalOpen(false);
+      setTitle('');
+      setStepsToReproduce('');
+      setExpectedResult('');
+      setActualResult('');
+      toast.success('Bug report submitted.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to submit bug report.');
+    }
   }
 
   async function changeStatus(id: string, status: BugRow['status']) {
-    await patch(`/bugs/${id}`, { status });
-    await load();
+    try {
+      await patch(`/bugs/${id}`, { status });
+      toast.success(`Bug status updated to ${status}.`);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to update bug status.');
+    }
   }
 
   return (
@@ -2066,6 +2146,7 @@ interface DocumentRow {
 
 export function DocumentsView() {
   const { user } = useAuth();
+  const toast = useToast();
   const [docs, setDocs] = useState<DocumentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
@@ -2101,7 +2182,7 @@ export function DocumentsView() {
       return;
     }
     if (file.size > 4 * 1024 * 1024) {
-      alert('Please select a file under 4 MB.');
+      toast.error('Please select a file under 4 MB.');
       e.target.value = '';
       return;
     }
@@ -2119,22 +2200,27 @@ export function DocumentsView() {
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
-    await post('/documents', {
-      title,
-      type,
-      folder,
-      summary,
-      fileDataUrl,
-      fileName,
-      mimeType,
-      sizeBytes,
-    });
-    setModalOpen(false);
-    setTitle('');
-    setSummary('');
-    setFileDataUrl(null);
-    setFileName(null);
-    await load();
+    try {
+      await post('/documents', {
+        title,
+        type,
+        folder,
+        summary,
+        fileDataUrl,
+        fileName,
+        mimeType,
+        sizeBytes,
+      });
+      setModalOpen(false);
+      setTitle('');
+      setSummary('');
+      setFileDataUrl(null);
+      setFileName(null);
+      toast.success('Document registered.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to save document.');
+    }
   }
 
   return (

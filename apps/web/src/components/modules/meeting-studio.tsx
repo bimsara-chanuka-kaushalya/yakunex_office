@@ -1593,7 +1593,7 @@ export function MeetingStudio({
                 if (active && initialCamOn) {
                   camOnRef.current = false;
                   setCamOn(false);
-                  void patch(`/meetings/${initialRoom.id}/participant`, { camOn: false });
+                  void mPatch('/participant', { camOn: false }).catch(() => undefined);
                   showToast('Camera in use or unavailable — joined with microphone audio.');
                 }
               } catch {
@@ -1602,17 +1602,17 @@ export function MeetingStudio({
                   camOnRef.current = false;
                   setMicOn(false);
                   setCamOn(false);
-                  void patch(`/meetings/${initialRoom.id}/participant`, {
+                  void mPatch('/participant', {
                     micOn: false,
                     camOn: false,
-                  });
+                  }).catch(() => undefined);
                   showToast('Microphone/camera not detected or blocked — joined as viewer.');
                 }
               }
             } else if (active && initialCamOn) {
               camOnRef.current = false;
               setCamOn(false);
-              void patch(`/meetings/${initialRoom.id}/participant`, { camOn: false });
+              void mPatch('/participant', { camOn: false }).catch(() => undefined);
               showToast('Camera in use or unavailable — click Start Video to retry.');
             }
           }
@@ -3634,7 +3634,7 @@ export function MeetingStudio({
           trackId: '',
           audioTrackId: '',
         }),
-        patch<MeetingRow>(`/meetings/${room.id}/participant`, {
+        mPatch<MeetingRow>('/participant', {
           screenSharing: false,
           screenStreamId: null,
         })
@@ -3783,7 +3783,7 @@ export function MeetingStudio({
         trackId: scrVideoTrack?.id ?? '',
         audioTrackId: scrAudioTrack?.id ?? '',
       }),
-      patch<MeetingRow>(`/meetings/${room.id}/participant`, {
+      mPatch<MeetingRow>('/participant', {
         screenSharing: true,
         screenStreamId: scr.id,
       })
@@ -3841,10 +3841,15 @@ export function MeetingStudio({
     const next = !handRaised;
     setHandRaised(next);
     setShowReactionTray(false);
-    const updated = await patch<MeetingRow>(`/meetings/${room.id}/participant`, {
-      handRaised: next,
-    });
-    setRoom(updated);
+    try {
+      const updated = await mPatch<MeetingRow>('/participant', {
+        handRaised: next,
+      });
+      setRoom(updated);
+    } catch (err) {
+      setHandRaised(!next);
+      showToast(err instanceof Error ? err.message : 'Unable to update hand raise.');
+    }
   };
 
   const sendReaction = async (emoji: string) => {
