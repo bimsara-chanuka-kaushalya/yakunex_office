@@ -2,8 +2,15 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { ChevronRight, LogOut, Menu, Monitor, Moon, Search, Sun } from 'lucide-react';
-import { useAuth, useLang, useTheme, type ThemeChoice } from '@/components/providers';
+import { ChevronRight, Eye, LogOut, Menu, Monitor, Moon, Search, Sun } from 'lucide-react';
+import {
+  ROLE_PREVIEW_OPTIONS,
+  useAuth,
+  useLang,
+  useTheme,
+  type RolePreviewPreset,
+  type ThemeChoice,
+} from '@/components/providers';
 import { Avatar } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/field';
@@ -20,7 +27,7 @@ const THEME_OPTIONS: { value: ThemeChoice; icon: typeof Sun; labelKey: string }[
 export function Topbar({ onMenu }: { onMenu: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, can, logout } = useAuth();
+  const { user, can, logout, isSuperAdminReal, previewRole, setPreviewRole } = useAuth();
   const { theme, setTheme } = useTheme();
   const { lang, setLang, t } = useLang();
 
@@ -107,6 +114,34 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
 
         {/* Right Actions */}
         <div className="ml-auto flex items-center gap-2.5">
+          {/* Super Admin Testing Role Preview Switcher */}
+          {isSuperAdminReal && (
+            <label
+              className="inline-flex items-center gap-1.5 rounded-full border border-gold/40 bg-gold/10 px-2.5 py-1 text-xs font-medium text-gold-strong dark:text-gold"
+              title="Super Admin Role Preview (Testing Only)"
+            >
+              <Eye className="h-3.5 w-3.5 shrink-0" />
+              <span className="hidden xl:inline">View as:</span>
+              <select
+                aria-label="Preview system as role"
+                value={previewRole ?? ''}
+                onChange={(e) => {
+                  const next = (e.target.value || null) as RolePreviewPreset | null;
+                  setPreviewRole(next);
+                  router.push('/dashboard');
+                }}
+                className="max-w-[140px] cursor-pointer bg-transparent text-xs font-semibold text-ink focus:outline-none dark:text-gold"
+              >
+                <option value="" className="bg-surface text-ink">Super Admin (Actual)</option>
+                {ROLE_PREVIEW_OPTIONS.map((opt) => (
+                  <option key={opt.key} value={opt.key} className="bg-surface text-ink">
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           {/* Apple Segmented Theme Switcher */}
           <div role="radiogroup" aria-label={t('theme')} className="segmented hidden sm:inline-flex">
             {THEME_OPTIONS.map(({ value, icon: Icon, labelKey }) => (

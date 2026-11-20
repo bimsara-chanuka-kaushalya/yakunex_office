@@ -4,6 +4,116 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { ToastProvider } from '@/components/ui/toast';
 import { api, ApiError, clearApiCache, post, refreshSession, warmWorkspaceCache } from '@/lib/api';
 import { translate, type Lang } from '@/lib/i18n';
+import { PERMISSIONS, type Role } from '@/lib/permissions';
+
+export type RolePreviewPreset =
+  | 'ADMIN'
+  | 'PROJECT_MANAGER'
+  | 'PM_HR'
+  | 'PM_ACC'
+  | 'STAFF'
+  | 'INTERN';
+
+export const ROLE_PREVIEW_OPTIONS: Array<{
+  key: RolePreviewPreset;
+  label: string;
+  role: Role;
+  permissions: string[];
+}> = [
+  {
+    key: 'ADMIN',
+    label: 'Admin (CTO / COO / CFO)',
+    role: 'ADMIN',
+    permissions: [
+      PERMISSIONS.USERS_READ,
+      PERMISSIONS.USERS_WRITE,
+      PERMISSIONS.USERS_ASSIGN_ROLES,
+      PERMISSIONS.USERS_MANAGE_PERMISSIONS,
+      PERMISSIONS.DASHBOARD_ADMIN,
+      PERMISSIONS.AUDIT_READ,
+      PERMISSIONS.SETTINGS_MANAGE,
+      PERMISSIONS.PROJECTS_READ,
+      PERMISSIONS.PROJECTS_WRITE,
+      PERMISSIONS.TASKS_READ,
+      PERMISSIONS.TASKS_WRITE,
+      PERMISSIONS.TIME_OWN,
+      PERMISSIONS.TIME_APPROVE,
+      PERMISSIONS.LEAVE_APPROVE,
+      PERMISSIONS.CHAT_USE,
+      PERMISSIONS.FINANCIALS_READ,
+    ],
+  },
+  {
+    key: 'PROJECT_MANAGER',
+    label: 'Project Manager (PM / PO / BA)',
+    role: 'PROJECT_MANAGER',
+    permissions: [
+      PERMISSIONS.USERS_READ,
+      PERMISSIONS.PROJECTS_READ,
+      PERMISSIONS.PROJECTS_WRITE,
+      PERMISSIONS.TASKS_READ,
+      PERMISSIONS.TASKS_WRITE,
+      PERMISSIONS.TIME_OWN,
+      PERMISSIONS.LEAVE_APPROVE,
+      PERMISSIONS.CHAT_USE,
+    ],
+  },
+  {
+    key: 'PM_HR',
+    label: 'HR Manager (PM + HR)',
+    role: 'PROJECT_MANAGER',
+    permissions: [
+      PERMISSIONS.USERS_READ,
+      PERMISSIONS.USERS_WRITE,
+      PERMISSIONS.PROJECTS_READ,
+      PERMISSIONS.TASKS_READ,
+      PERMISSIONS.TIME_OWN,
+      PERMISSIONS.TIME_APPROVE,
+      PERMISSIONS.LEAVE_APPROVE,
+      PERMISSIONS.CHAT_USE,
+    ],
+  },
+  {
+    key: 'PM_ACC',
+    label: 'Accountant (PM + Finance)',
+    role: 'PROJECT_MANAGER',
+    permissions: [
+      PERMISSIONS.USERS_READ,
+      PERMISSIONS.PROJECTS_READ,
+      PERMISSIONS.TASKS_READ,
+      PERMISSIONS.TIME_OWN,
+      PERMISSIONS.FINANCIALS_READ,
+      PERMISSIONS.FINANCIALS_WRITE,
+      PERMISSIONS.CHAT_USE,
+    ],
+  },
+  {
+    key: 'STAFF',
+    label: 'Staff (SE / QA / UI-UX / DevOps)',
+    role: 'STAFF',
+    permissions: [
+      PERMISSIONS.PROJECTS_READ,
+      PERMISSIONS.TASKS_READ,
+      PERMISSIONS.TASKS_WRITE,
+      PERMISSIONS.TIME_OWN,
+      PERMISSIONS.CHAT_USE,
+    ],
+  },
+  {
+    key: 'INTERN',
+    label: 'Intern (Trainee · 10d Leave · Join-Only)',
+    role: 'INTERN',
+    permissions: [
+      PERMISSIONS.PROJECTS_READ,
+      PERMISSIONS.TASKS_READ,
+      PERMISSIONS.TASKS_WRITE,
+      PERMISSIONS.TIME_OWN,
+      PERMISSIONS.CHAT_USE,
+    ],
+  },
+];
+
+const PREVIEW_ROLE_KEY = 'yh-sa-preview-role';
 
 // ─── Session ─────────────────────────────────────────────────────────────
 
@@ -26,6 +136,9 @@ interface AuthContextValue {
   user: SessionUser | null;
   permissions: Set<string>;
   can: (permission: string) => boolean;
+  isSuperAdminReal: boolean;
+  previewRole: RolePreviewPreset | null;
+  setPreviewRole: (preset: RolePreviewPreset | null) => void;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   reload: () => Promise<void>;
@@ -66,7 +179,27 @@ function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<SessionStatus>('loading');
   const [user, setUser] = useState<SessionUser | null>(null);
   const [permissions, setPermissions] = useState<Set<string>>(new Set());
+  const [previewRole, setPreviewRoleState] = useState<RolePreviewPreset | null>(null);
   const userRef = useRef<SessionUser | null>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const saved = window.sessionStorage.getItem(PREVIEW_ROLE_KEY) as RolePreviewPreset | null;
+    if (saved && ROLE_PREVIEW_OPTIONS.some((o) => o.key === saved)) {
+      setPreviewRoleState(saved);
+    }
+  }, []);
+
+  const setPreviewRole = useCallback((preset: RolePreviewPreset | null) => {
+    setPreviewRoleState(preset);
+    if (typeof window !== 'undefined') {
+      if (preset) {
+        window.sessionStorage.setItem(PREVIEW_ROLE_KEY, preset);
+      } else {
+        window.sessionStorage.removeItem(PREVIEW_ROLE_KEY);
+      }
+    }
+  }, []);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const warmedRef = useRef(false);
 
@@ -169,23 +302,43 @@ function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     await post('/auth/logout').catch(() => undefined);
     writeCachedSession(null);
+    setPreviewRole(null);
     clearApiCache();
     setUser(null);
     setPermissions(new Set());
     setStatus('anonymous');
-  }, []);
+  }, [setPreviewRole]);
+
+  const isSuperAdminReal = user?.role === 'SUPER_ADMIN';
+  const activePreview = isSuperAdminReal && previewRole
+    ? ROLE_PREVIEW_OPTIONS.find((o) => o.key === previewRole) ?? null
+    : null;
+
+  const effectiveUser = useMemo<SessionUser | null>(() => {
+    if (!user) return null;
+    if (!activePreview) return user;
+    return { ...user, role: activePreview.role };
+  }, [user, activePreview]);
+
+  const effectivePermissions = useMemo<Set<string>>(() => {
+    if (!activePreview) return permissions;
+    return new Set(activePreview.permissions);
+  }, [permissions, activePreview]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
       status,
-      user,
-      permissions,
-      can: (permission) => permissions.has(permission),
+      user: effectiveUser,
+      permissions: effectivePermissions,
+      can: (permission) => effectivePermissions.has(permission),
+      isSuperAdminReal,
+      previewRole: activePreview ? activePreview.key : null,
+      setPreviewRole,
       login,
       logout,
       reload,
     }),
-    [status, user, permissions, login, logout, reload],
+    [status, effectiveUser, effectivePermissions, isSuperAdminReal, activePreview, setPreviewRole, login, logout, reload],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

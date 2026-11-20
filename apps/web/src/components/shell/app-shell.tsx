@@ -2,7 +2,8 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { useAuth, useLang } from '@/components/providers';
+import { Eye, X } from 'lucide-react';
+import { ROLE_PREVIEW_OPTIONS, useAuth, useLang } from '@/components/providers';
 import { Sidebar } from './sidebar';
 import { Topbar } from './topbar';
 import { ForcePasswordChange } from './force-password-change';
@@ -12,7 +13,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { status, user } = useAuth();
+  const { status, user, isSuperAdminReal, previewRole, setPreviewRole } = useAuth();
+  const activePreviewLabel = ROLE_PREVIEW_OPTIONS.find((o) => o.key === previewRole)?.label;
   const { t } = useLang();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -56,6 +58,27 @@ export function AppShell({ children }: { children: ReactNode }) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar onMenu={() => setDrawerOpen(true)} />
+        {isSuperAdminReal && previewRole && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/30 bg-amber-500/15 px-4 py-2 text-xs font-medium text-amber-950 dark:text-amber-200">
+            <div className="flex items-center gap-2">
+              <Eye className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+              <span>
+                <strong>Super Admin Testing Preview:</strong> Viewing system as{' '}
+                <strong className="underline">{activePreviewLabel}</strong> (UI/Sidebar/Permissions preview only — no employee account is modified)
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setPreviewRole(null);
+                router.push('/dashboard');
+              }}
+              className="inline-flex items-center gap-1 rounded-full bg-amber-600 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-amber-700"
+            >
+              <X className="h-3 w-3" /> Exit Preview
+            </button>
+          </div>
+        )}
         <main id="main" className="flex-1 px-3.5 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
           <div className="mx-auto w-full max-w-7xl animate-fade-in">{children}</div>
         </main>
