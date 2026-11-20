@@ -29,6 +29,9 @@ export class PermissionsGuard implements CanActivate {
     if (!user) {
       throw new ForbiddenException('Not authorised.');
     }
+    if (user.role === 'SUPER_ADMIN') {
+      return true;
+    }
 
     const effective = await this.rbac.effectivePermissions(user.id, user.organizationId, user.role);
     const allowed = required.every((permission) => effective.has(permission));

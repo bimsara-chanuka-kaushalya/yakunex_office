@@ -330,7 +330,8 @@ function AuthProvider({ children }: { children: ReactNode }) {
       status,
       user: effectiveUser,
       permissions: effectivePermissions,
-      can: (permission) => effectivePermissions.has(permission),
+      can: (permission) =>
+        effectiveUser?.role === 'SUPER_ADMIN' || effectivePermissions.has(permission),
       isSuperAdminReal,
       previewRole: activePreview ? activePreview.key : null,
       setPreviewRole,

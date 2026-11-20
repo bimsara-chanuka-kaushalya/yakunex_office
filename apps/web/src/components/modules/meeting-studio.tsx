@@ -960,12 +960,12 @@ export function MeetingStudio({
   const canHostControl = useMemo(() => {
     if (isGuest) return false;
     const r = currentUser.role.toUpperCase();
+    if (r === 'SUPER_ADMIN') return true;
     if (r === 'INTERN' || policy?.waitingRoomControl === 'NONE') return false;
     return (
       room.organizerId === currentUser.id ||
       room.organizerName === currentUser.fullName ||
       (room.coHostIds ?? []).includes(currentUser.id) ||
-      r === 'SUPER_ADMIN' ||
       r === 'ADMIN' ||
       r === 'PROJECT_MANAGER'
     );
@@ -984,6 +984,7 @@ export function MeetingStudio({
   const canRecord = useMemo(() => {
     if (isGuest) return false;
     const r = currentUser.role.toUpperCase();
+    if (r === 'SUPER_ADMIN') return true;
     if (r === 'INTERN') return false;
     if (policy && policy.recordingScope === 'NONE') return false;
     if (!policy && r === 'STAFF' && !canHostControl) return false;
@@ -1552,38 +1553,51 @@ export function MeetingStudio({
             video: initialCamOn ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } : false,
           });
         } catch {
-          // Fallback 2: try audio-only if camera failed/unavailable
-          if (initialMicOn) {
+          // Fallback 2: try 3G / low-res VGA video (640x360 @ 15fps) or unconstrained video before dropping camera
           try {
             stream = await navigator.mediaDevices.getUserMedia({
-              audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-                sampleRate: 48000,
-              },
-              video: false,
+              audio: initialMicOn,
+              video: initialCamOn ? { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 15 } } : false,
             });
-            if (active && initialCamOn) {
+          } catch {
+            // Fallback 3: try audio-only if camera failed/in-use by another app
+            if (initialMicOn) {
+              try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                  audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                    sampleRate: 48000,
+                  },
+                  video: false,
+                });
+                if (active && initialCamOn) {
+                  camOnRef.current = false;
+                  setCamOn(false);
+                  void patch(`/meetings/${initialRoom.id}/participant`, { camOn: false });
+                  showToast('Camera in use or unavailable — joined with microphone audio.');
+                }
+              } catch {
+                if (active) {
+                  micOnRef.current = false;
+                  camOnRef.current = false;
+                  setMicOn(false);
+                  setCamOn(false);
+                  void patch(`/meetings/${initialRoom.id}/participant`, {
+                    micOn: false,
+                    camOn: false,
+                  });
+                  showToast('Microphone/camera not detected or blocked — joined as viewer.');
+                }
+              }
+            } else if (active && initialCamOn) {
               camOnRef.current = false;
               setCamOn(false);
               void patch(`/meetings/${initialRoom.id}/participant`, { camOn: false });
-              showToast('Camera unavailable — joined with microphone audio.');
-            }
-          } catch {
-            if (active) {
-              micOnRef.current = false;
-              camOnRef.current = false;
-              setMicOn(false);
-              setCamOn(false);
-              void patch(`/meetings/${initialRoom.id}/participant`, {
-                micOn: false,
-                camOn: false,
-              });
-              showToast('Microphone/camera not detected or blocked — joined as viewer.');
+              showToast('Camera in use or unavailable — click Start Video to retry.');
             }
           }
-        }
         }
       }
 
@@ -2090,6 +2104,9 @@ export function MeetingStudio({
 
   // Sync peer connections & screen-share state whenever participants enter, share, or leave
   useEffect(() => {
+    // In SFU mode, LiveKit TrackSubscribed / TrackUnsubscribed events manage remote streams directly;
+    // do not let the slower 3G HTTP poll delete a live SFU screen-share stream before the poll catches up!
+    if (sfuModeRef.current) return;
     const activeIds = new Set(room.participants.map((p) => p.userId));
     for (const stalePeerId of Object.keys(remoteScreenStreamsRef.current)) {
       const p = room.participants.find((item) => item.userId === stalePeerId);
@@ -2106,7 +2123,6 @@ export function MeetingStudio({
         });
       }
     }
-    if (sfuModeRef.current) return;
     for (const peerId of Array.from(pcsRef.current.keys())) {
       if (!activeIds.has(peerId)) {
         closePeer(peerId);
@@ -3043,9 +3059,13 @@ export function MeetingStudio({
     [],
   );
 
-  // Sync newly captured localStream tracks across peers created before getUserMedia resolved
+  // Sync newly captured localStream tracks across SFU & peers created before getUserMedia resolved
   useEffect(() => {
-    if (!localStream || pcsRef.current.size === 0) return;
+    if (!localStream) return;
+    if (sfuRoomRef.current?.state === 'connected') {
+      void syncSfuLocalTracks();
+    }
+    if (pcsRef.current.size === 0) return;
     let cancelled = false;
     const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
 
@@ -3262,6 +3282,9 @@ export function MeetingStudio({
       }
       base.addTrack(newTrack);
       commitLocalStream(base);
+      if (sfuRoomRef.current?.state === 'connected') {
+        await syncSfuLocalTracks();
+      }
 
       const renegotiateIds: string[] = [];
       const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
@@ -3686,8 +3709,15 @@ export function MeetingStudio({
     const lkRoom = sfuRoomRef.current;
     if (lkRoom && lkRoom.state === 'connected') {
       if (scrVideoTrack) {
+        const isSlow3G = activeTierRef.current === '3g-ultra' || activeTierRef.current === 'low-signal';
         await lkRoom.localParticipant
-          .publishTrack(scrVideoTrack, { source: Track.Source.ScreenShare })
+          .publishTrack(scrVideoTrack, {
+            source: Track.Source.ScreenShare,
+            simulcast: true,
+            screenShareEncoding: isSlow3G
+              ? { maxBitrate: 450_000, maxFramerate: 12 }
+              : { maxBitrate: 1_500_000, maxFramerate: 24 },
+          })
           .catch(() => undefined);
       }
       if (scrAudioTrack) {
@@ -4618,16 +4648,18 @@ export function MeetingStudio({
       };
     }
     for (const [peerId, stream] of Object.entries(remoteScreenStreams)) {
+      if (!hasLiveScreenVideo(stream)) continue;
       const p = room.participants.find((item) => item.userId === peerId);
-      if (!p || !p.screenSharing || !hasLiveScreenVideo(stream)) continue;
+      // In SFU mode, TrackSubscribed can arrive 1-2s before the 3G /room HTTP poll flips p.screenSharing=true
+      if (p && !p.screenSharing && !sfuActive) continue;
       return {
         userId: peerId,
-        presenterName: formatParticipantDisplay(p),
+        presenterName: p ? formatParticipantDisplay(p) : 'Presenter',
         stream,
       };
     }
     return null;
-  }, [currentUser, remoteScreenStreams, room.participants, screenStream]);
+  }, [currentUser, remoteScreenStreams, room.participants, screenStream, sfuActive]);
 
   const GALLERY_PAGE_SIZE = 16;
 
@@ -4674,12 +4706,12 @@ export function MeetingStudio({
   // Compute grid columns in Gallery View based on visible tile count (up to 16 per page for 100+ rooms)
   const gridColsClass = useMemo(() => {
     const n = visibleGalleryParticipants.length;
-    if (n <= 1) return 'grid-cols-1 max-w-4xl mx-auto';
-    if (n === 2) return 'grid-cols-1 md:grid-cols-2 max-w-6xl mx-auto';
-    if (n <= 4) return 'grid-cols-1 sm:grid-cols-2 max-w-6xl mx-auto';
-    if (n <= 6) return 'grid-cols-2 lg:grid-cols-3';
-    if (n <= 9) return 'grid-cols-2 sm:grid-cols-3';
-    return 'grid-cols-2 sm:grid-cols-3 xl:grid-cols-4';
+    if (n <= 1) return 'w-full grid-cols-1 max-w-4xl mx-auto';
+    if (n === 2) return 'w-full grid-cols-1 md:grid-cols-2 max-w-6xl mx-auto';
+    if (n <= 4) return 'w-full grid-cols-1 sm:grid-cols-2 max-w-6xl mx-auto';
+    if (n <= 6) return 'w-full grid-cols-2 lg:grid-cols-3';
+    if (n <= 9) return 'w-full grid-cols-2 sm:grid-cols-3';
+    return 'w-full grid-cols-2 sm:grid-cols-3 xl:grid-cols-4';
   }, [visibleGalleryParticipants.length]);
 
   const togglePinMainScreen = useCallback((userId: string) => {
@@ -4729,10 +4761,40 @@ export function MeetingStudio({
     const knownIds = new Set(room.participants.map((p) => p.userId));
     const visibleIds = new Set(visibleGalleryParticipants.map((p) => p.userId));
     const n = visibleGalleryParticipants.length;
-    const targetQuality =
-      n <= 4 ? VideoQuality.HIGH : n <= 9 ? VideoQuality.MEDIUM : VideoQuality.LOW;
+    const isSlow3G =
+      activeTierRef.current === '3g-ultra' ||
+      activeTierRef.current === 'low-signal' ||
+      networkStats.rttMs >= 220;
+    const targetQuality = isSlow3G
+      ? VideoQuality.LOW
+      : n <= 4
+        ? VideoQuality.HIGH
+        : n <= 9
+          ? VideoQuality.MEDIUM
+          : VideoQuality.LOW;
 
     for (const remote of lkRoom.remoteParticipants.values()) {
+      const scrPub = remote.getTrackPublication(Track.Source.ScreenShare) as
+        | RemoteTrackPublication
+        | undefined;
+      if (scrPub) {
+        try {
+          scrPub.setSubscribed(true);
+          scrPub.setVideoQuality(isSlow3G ? VideoQuality.MEDIUM : VideoQuality.HIGH);
+        } catch {
+          // ignore
+        }
+      }
+      const scrAudioPub = remote.getTrackPublication(Track.Source.ScreenShareAudio) as
+        | RemoteTrackPublication
+        | undefined;
+      if (scrAudioPub) {
+        try {
+          scrAudioPub.setSubscribed(true);
+        } catch {
+          // ignore
+        }
+      }
       const camPub = remote.getTrackPublication(Track.Source.Camera) as
         | RemoteTrackPublication
         | undefined;
@@ -4748,14 +4810,18 @@ export function MeetingStudio({
         camPub.setSubscribed(shouldWatch);
         if (shouldWatch) {
           camPub.setVideoQuality(
-            remote.identity === activeSpeakerParticipant?.userId ? VideoQuality.HIGH : targetQuality,
+            isSlow3G
+              ? VideoQuality.LOW
+              : remote.identity === activeSpeakerParticipant?.userId
+                ? VideoQuality.HIGH
+                : targetQuality,
           );
         }
       } catch {
         // Ignore transient track subscription errors
       }
     }
-  }, [activeSpeakerParticipant?.userId, layoutMode, room.participants, sfuActive, speakingUsers, visibleGalleryParticipants]);
+  }, [activeSpeakerParticipant?.userId, layoutMode, networkStats.rttMs, room.participants, sfuActive, speakingUsers, visibleGalleryParticipants]);
 
   return (
     <div
@@ -5443,8 +5509,8 @@ export function MeetingStudio({
               )}
             </div>
           ) : (
-            <div className="flex h-full flex-col gap-3">
-              <div className={cn('grid flex-1 content-center gap-4', gridColsClass)}>
+            <div className="flex h-full w-full flex-col gap-3">
+              <div className={cn('grid w-full flex-1 content-center gap-4', gridColsClass)}>
                 {visibleGalleryParticipants.map((p) => {
                   const isSelf = p.userId === currentUser.id;
                   const react = [...reactions].reverse().find((r) => r.userId === p.userId)?.emoji;

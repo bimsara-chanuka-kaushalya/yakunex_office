@@ -3003,6 +3003,7 @@ export class WorkspaceService implements OnModuleInit {
 
   private isMeetingHostOrCoHost(mtg: MeetingItem, actor: AuthUser): boolean {
     if (!actor || actor.id.startsWith('guest_')) return false;
+    if (actor.role === Role.SUPER_ADMIN) return true;
     return (
       mtg.organizerId === actor.id ||
       mtg.organizerName === actor.fullName ||
@@ -3012,6 +3013,7 @@ export class WorkspaceService implements OnModuleInit {
 
   private canControlMeeting(mtg: MeetingItem, actor: AuthUser): boolean {
     if (!actor || actor.id.startsWith('guest_')) return false;
+    if (actor.role === Role.SUPER_ADMIN) return true;
     const policy = this.resolveMeetingAccessPolicy(actor);
     if (policy.waitingRoomControl === 'NONE') return false;
     const isHostOrCoHost = this.isMeetingHostOrCoHost(mtg, actor);
