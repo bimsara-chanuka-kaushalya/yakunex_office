@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ToastProvider } from '@/components/ui/toast';
 import { api, ApiError, clearApiCache, post, refreshSession, warmWorkspaceCache } from '@/lib/api';
 import { translate, type Lang } from '@/lib/i18n';
 
@@ -292,7 +293,9 @@ export function Providers({ children }: { children: ReactNode }) {
   return (
     <ThemeProvider>
       <LanguageProvider>
-        <AuthProvider>{children}</AuthProvider>
+        <ToastProvider>
+          <AuthProvider>{children}</AuthProvider>
+        </ToastProvider>
       </LanguageProvider>
     </ThemeProvider>
   );

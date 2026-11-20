@@ -36,6 +36,7 @@ import { Card, StatCard } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useToast } from '@/components/ui/toast';
 import { api, del, patch, post } from '@/lib/api';
 import { useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
@@ -1572,6 +1573,7 @@ interface ClientRow {
 
 export function ClientsView() {
   const { can } = useAuth();
+  const toast = useToast();
   const canWrite = can(PERMISSIONS.PROJECTS_WRITE);
   const [clients, setClients] = useState<ClientRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1584,9 +1586,23 @@ export function ClientsView() {
       const url = `${window.location.origin}/portal/${res.portalToken}`;
       await navigator.clipboard.writeText(url).catch(() => undefined);
       setCopiedPortalId(client.id);
+      toast.success(`Client Portal link copied for ${client.name}.`);
       setTimeout(() => setCopiedPortalId((prev) => (prev === client.id ? null : prev)), 2500);
-    } catch {
-      // ignore
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to generate client portal link.');
+    }
+  }
+
+  async function onRotatePortalLink(client: ClientRow) {
+    try {
+      const res = await post<{ portalToken: string }>(`/clients/${client.id}/portal-link/rotate`, {});
+      const url = `${window.location.origin}/portal/${res.portalToken}`;
+      await navigator.clipboard.writeText(url).catch(() => undefined);
+      setCopiedPortalId(client.id);
+      toast.success(`Rotated & copied new Portal link for ${client.name}. Old link is now revoked.`);
+      setTimeout(() => setCopiedPortalId((prev) => (prev === client.id ? null : prev)), 2500);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Unable to rotate client portal link.');
     }
   }
 
@@ -1679,14 +1695,26 @@ export function ClientsView() {
                   <span className="text-muted">Contracted value</span>
                   <p className="font-semibold text-ink">LKR {c.totalBudget.toLocaleString()}</p>
                 </div>
-                <Button size="sm" variant="secondary" onClick={() => void onCopyPortalLink(c)}>
-                  {copiedPortalId === c.id ? (
-                    <Check className="h-3.5 w-3.5 text-success" />
-                  ) : (
-                    <Link2 className="h-3.5 w-3.5 text-gold" />
-                  )}
-                  {copiedPortalId === c.id ? 'Portal URL Copied!' : 'Client Portal Link'}
-                </Button>
+                {canWrite && (
+                  <div className="flex items-center gap-1.5">
+                    <Button size="sm" variant="secondary" onClick={() => void onCopyPortalLink(c)}>
+                      {copiedPortalId === c.id ? (
+                        <Check className="h-3.5 w-3.5 text-success" />
+                      ) : (
+                        <Link2 className="h-3.5 w-3.5 text-gold" />
+                      )}
+                      {copiedPortalId === c.id ? 'Copied!' : 'Portal Link'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      title="Revoke old portal URL and mint a new token"
+                      onClick={() => void onRotatePortalLink(c)}
+                    >
+                      <Repeat className="h-3.5 w-3.5 text-muted" />
+                    </Button>
+                  </div>
+                )}
               </div>
             </Card>
           ))}
@@ -2219,6 +2247,7 @@ export function DocumentsView() {
             <input
               id="dc-file"
               type="file"
+              accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg,.webp,.txt,.zip"
               onChange={onFileSelected}
               className="block w-full rounded-xl border border-line bg-surface px-3 py-2 text-xs text-ink file:mr-3 file:rounded-lg file:border-0 file:bg-gold/15 file:px-3 file:py-1 file:text-xs file:font-semibold file:text-gold-strong dark:file:text-gold"
             />

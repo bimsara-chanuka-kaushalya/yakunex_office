@@ -45,11 +45,11 @@ const ProfileView = dynamic(() => import('@/components/modules/enterprise-views'
 
 export default function ModulePage({ params }: { params: Promise<{ module: string }> }) {
   const { module } = use(params);
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const item = findNavItem(module);
 
   if (!item) notFound();
-  if (isModuleLockedForRole(module, user?.role)) {
+  if (isModuleLockedForRole(module, user?.role, can)) {
     return <LockedModuleNotice />;
   }
 

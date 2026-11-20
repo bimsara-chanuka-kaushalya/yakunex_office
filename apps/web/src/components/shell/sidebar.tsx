@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth, useLang } from '@/components/providers';
@@ -8,6 +8,7 @@ import { YakunexMark } from '@/components/brand/logo';
 import { Avatar } from '@/components/ui/avatar';
 import { playAlertChime, showDesktopNotification } from '@/lib/alerts';
 import { liveGet } from '@/lib/api';
+import { useLiveSync } from '@/lib/use-live-sync';
 import { NAV_SECTIONS, isNavItemVisibleForRole } from '@/lib/nav';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
@@ -22,53 +23,47 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   });
   const prevBadgesRef = useRef<{ notifications: number; approvals: number } | null>(null);
 
-  useEffect(() => {
+  const pollBadges = useCallback(async () => {
     if (!user) return;
-    let active = true;
     const isIntern = user.role === 'INTERN';
-    const poll = async () => {
-      try {
-        const [notifs, apps] = await Promise.all([
-          liveGet<Array<{ read?: boolean }>>('/notifications').catch(() => []),
-          isIntern ? Promise.resolve([]) : liveGet<Array<{ status?: string }>>('/approvals').catch(() => []),
-        ]);
-        if (!active) return;
-        const nextNotifs = Array.isArray(notifs) ? notifs.filter((n) => !n.read).length : 0;
-        const nextApprovals = Array.isArray(apps) ? apps.filter((a) => a.status === 'PENDING').length : 0;
-        const prev = prevBadgesRef.current;
-        if (prev && nextApprovals > prev.approvals) {
-          playAlertChime();
-          showDesktopNotification(
-            'Yakunex Hub Approval',
-            `You have ${nextApprovals} pending approval(s).`,
-          );
-        }
-        prevBadgesRef.current = { notifications: nextNotifs, approvals: nextApprovals };
-        setBadges({ notifications: nextNotifs, approvals: nextApprovals });
-      } catch {
-        // ignore transient polling errors
+    try {
+      const [notifs, apps] = await Promise.all([
+        liveGet<Array<{ read?: boolean }>>('/notifications').catch(() => []),
+        isIntern ? Promise.resolve([]) : liveGet<Array<{ status?: string }>>('/approvals').catch(() => []),
+      ]);
+      const nextNotifs = Array.isArray(notifs) ? notifs.filter((n) => !n.read).length : 0;
+      const nextApprovals = Array.isArray(apps) ? apps.filter((a) => a.status === 'PENDING').length : 0;
+      const prev = prevBadgesRef.current;
+      if (prev && nextApprovals > prev.approvals) {
+        playAlertChime();
+        showDesktopNotification(
+          'Yakunex Hub Approval',
+          `You have ${nextApprovals} pending approval(s).`,
+        );
       }
-    };
-    void poll();
-    const id = setInterval(() => {
-      if (typeof document !== 'undefined' && !document.hidden) {
-        void poll();
-      }
-    }, 3_500);
-    const onRefresh = () => void poll();
+      prevBadgesRef.current = { notifications: nextNotifs, approvals: nextApprovals };
+      setBadges({ notifications: nextNotifs, approvals: nextApprovals });
+    } catch {
+      // ignore transient errors
+    }
+  }, [user]);
+
+  useEffect(() => {
+    void pollBadges();
+    const onRefresh = () => void pollBadges();
     if (typeof window !== 'undefined') {
-      window.addEventListener('focus', onRefresh);
       window.addEventListener('yakunex:notifications-updated', onRefresh);
+      window.addEventListener('yakunex:meeting-started', onRefresh);
     }
     return () => {
-      active = false;
-      clearInterval(id);
       if (typeof window !== 'undefined') {
-        window.removeEventListener('focus', onRefresh);
         window.removeEventListener('yakunex:notifications-updated', onRefresh);
+        window.removeEventListener('yakunex:meeting-started', onRefresh);
       }
     };
-  }, [user]);
+  }, [pollBadges]);
+
+  useLiveSync(pollBadges);
 
   return (
     <nav
@@ -77,7 +72,11 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
     >
       {/* Brand Header */}
       <div className="flex items-center justify-between border-b border-sidebar-line/70 px-4 py-4">
-        <Link href="/dashboard" onClick={onNavigate} className="flex items-center gap-3">
+        <Link
+          href={user?.role === 'INTERN' ? '/profile' : '/dashboard'}
+          onClick={onNavigate}
+          className="flex items-center gap-3"
+        >
           <div className="relative">
             <YakunexMark className="h-9 w-9 drop-shadow-[0_2px_8px_rgba(201,150,30,0.28)]" />
             <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-sidebar bg-success" />

@@ -21,6 +21,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, StatCard } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuth } from '@/components/providers';
 import { api, liveGet, patch, post } from '@/lib/api';
@@ -922,6 +923,7 @@ export function ProfileView() {
     Array<{ id: string; ipAddress?: string | null; userAgent?: string | null; createdAt: string }>
   >([]);
   const [revokingSessions, setRevokingSessions] = useState(false);
+  const [logoutAllOpen, setLogoutAllOpen] = useState(false);
 
   // Admin / HR editable fields
   const [fullName, setFullName] = useState('');
@@ -1000,13 +1002,13 @@ export function ProfileView() {
   useLiveSync(load);
 
   async function onLogoutAllDevices() {
-    if (!window.confirm('Sign out from all active devices including this browser?')) return;
     setRevokingSessions(true);
     try {
       await post('/auth/logout-all', {});
       window.location.href = '/login';
     } finally {
       setRevokingSessions(false);
+      setLogoutAllOpen(false);
     }
   }
 
@@ -1241,7 +1243,7 @@ export function ProfileView() {
                 size="sm"
                 variant="danger"
                 disabled={revokingSessions}
-                onClick={() => void onLogoutAllDevices()}
+                onClick={() => setLogoutAllOpen(true)}
               >
                 {revokingSessions ? 'Signing out...' : 'Sign Out All Devices'}
               </Button>
@@ -1270,6 +1272,17 @@ export function ProfileView() {
           </div>
         </Card>
       )}
+
+      <ConfirmDialog
+        open={logoutAllOpen}
+        tone="danger"
+        title="Sign Out All Active Devices"
+        description="This immediately revokes every active refresh token and signs you out from all browsers and mobile devices, including this session."
+        confirmLabel="Sign Out Everywhere"
+        busy={revokingSessions}
+        onClose={() => setLogoutAllOpen(false)}
+        onConfirm={() => onLogoutAllDevices()}
+      />
     </div>
   );
 }

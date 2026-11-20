@@ -10,6 +10,7 @@ import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/ui/empty-state';
 import { api, ApiError, del, patch, post, put } from '@/lib/api';
@@ -254,28 +255,45 @@ export default function UsersPage() {
   const [bulkResults, setBulkResults] = useState<
     Array<{ fullName: string; ok: boolean; companyId?: string | null; email?: string; activationToken?: string; error?: string }>
   >([]);
+  const [offboardTarget, setOffboardTarget] = useState<UserRow | null>(null);
+  const [promoteTarget, setPromoteTarget] = useState<UserRow | null>(null);
+  const [hrActionBusy, setHrActionBusy] = useState(false);
 
-  async function onOffboard(row: UserRow) {
-    const reason = window.prompt(`Offboard ${row.fullName}? This revokes all sessions immediately. Optional reason:`, 'Resignation / Contract Completed');
-    if (reason === null) return;
+  async function confirmOffboard(reason: string) {
+    if (!offboardTarget) return;
+    setHrActionBusy(true);
     try {
-      await post(`/users/${row.id}/offboard`, { reason });
-      setNotice({ tone: 'success', text: `${row.fullName} offboarded and all sessions revoked.` });
+      await post(`/users/${offboardTarget.id}/offboard`, {
+        reason: reason || 'Resignation / Contract Completed',
+      });
+      setNotice({
+        tone: 'success',
+        text: `${offboardTarget.fullName} offboarded and all sessions revoked.`,
+      });
+      setOffboardTarget(null);
       await load();
     } catch (err) {
       setNotice({ tone: 'error', text: errorText(err) });
+    } finally {
+      setHrActionBusy(false);
     }
   }
 
-  async function onPromoteToStaff(row: UserRow) {
-    const nextTitle = window.prompt(`Promote ${row.fullName} from Intern to Full-Time Staff. Enter new title:`, 'Software Engineer');
-    if (!nextTitle) return;
+  async function confirmPromoteToStaff(nextTitle: string) {
+    if (!promoteTarget || !nextTitle) return;
+    setHrActionBusy(true);
     try {
-      await post(`/users/${row.id}/promote-staff`, { title: nextTitle });
-      setNotice({ tone: 'success', text: `${row.fullName} promoted to Full-Time Staff (${nextTitle}).` });
+      await post(`/users/${promoteTarget.id}/promote-staff`, { title: nextTitle });
+      setNotice({
+        tone: 'success',
+        text: `${promoteTarget.fullName} promoted to Full-Time Staff (${nextTitle}).`,
+      });
+      setPromoteTarget(null);
       await load();
     } catch (err) {
       setNotice({ tone: 'error', text: errorText(err) });
+    } finally {
+      setHrActionBusy(false);
     }
   }
 
@@ -563,7 +581,7 @@ export default function UsersPage() {
                               <Button
                                 variant="secondary"
                                 size="sm"
-                                onClick={() => void onPromoteToStaff(row)}
+                                onClick={() => setPromoteTarget(row)}
                                 title="Promote Intern to Full-Time Staff"
                               >
                                 <GraduationCap className="h-3.5 w-3.5 text-emerald-500" />
@@ -574,7 +592,7 @@ export default function UsersPage() {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => void onOffboard(row)}
+                                onClick={() => setOffboardTarget(row)}
                                 title="1-Click Offboard & Revoke All Sessions"
                               >
                                 <UserMinus className="h-3.5 w-3.5 text-danger" />
@@ -809,6 +827,35 @@ export default function UsersPage() {
           )}
         </form>
       </Modal>
+
+      <ConfirmDialog
+        open={Boolean(offboardTarget)}
+        tone="danger"
+        title={offboardTarget ? `Offboard ${offboardTarget.fullName}` : 'Offboard Employee'}
+        description="This deactivates the account immediately, revokes all active browser/mobile sessions, and records an immutable HR offboarding audit log entry."
+        confirmLabel="Confirm Offboarding"
+        inputLabel="Exit / Offboarding Reason"
+        defaultInputValue="Resignation / Contract Completed"
+        inputPlaceholder="e.g. Resignation, End of Internship"
+        busy={hrActionBusy}
+        onClose={() => setOffboardTarget(null)}
+        onConfirm={(val) => confirmOffboard(val)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(promoteTarget)}
+        tone="primary"
+        title={promoteTarget ? `Promote ${promoteTarget.fullName} to Staff` : 'Promote Intern'}
+        description="Transitions this trainee account from INTERN to full-time STAFF and unlocks core engineering workspace modules."
+        confirmLabel="Promote to Staff"
+        inputLabel="New Job Title / Designation"
+        defaultInputValue="Software Engineer"
+        inputPlaceholder="e.g. Software Engineer, QA Engineer, UI/UX Designer"
+        inputRequired
+        busy={hrActionBusy}
+        onClose={() => setPromoteTarget(null)}
+        onConfirm={(val) => confirmPromoteToStaff(val)}
+      />
     </div>
   );
 }

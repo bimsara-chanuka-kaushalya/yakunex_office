@@ -308,9 +308,33 @@ export const ALL_NAV_ITEMS: NavItem[] = NAV_SECTIONS.flatMap((section) => sectio
 
 export const INTERN_ALLOWED_MODULES = new Set(['profile', 'meetings', 'chat', 'notifications']);
 
-export function isModuleLockedForRole(key: string, role?: string | null): boolean {
+function hasDesignationUnlock(key: string, can?: (perm: string) => boolean): boolean {
+  if (!can) return false;
+  // HR Managers (baseRole: PROJECT_MANAGER + USERS_WRITE override) unlock Users, Organization & Assets
+  if ((key === 'users' || key === 'organization' || key === 'assets') && can(PERMISSIONS.USERS_WRITE)) {
+    return true;
+  }
+  // Accountants / Finance Leads (baseRole: PROJECT_MANAGER + FINANCIALS_WRITE override) unlock Finance
+  if (key === 'finance' && can(PERMISSIONS.FINANCIALS_READ) && can(PERMISSIONS.FINANCIALS_WRITE)) {
+    return true;
+  }
+  // Legal / Audit officers with explicit AUDIT_READ unlock Audit Logs
+  if (key === 'audit-logs' && can(PERMISSIONS.AUDIT_READ)) {
+    return true;
+  }
+  return false;
+}
+
+export function isModuleLockedForRole(
+  key: string,
+  role?: string | null,
+  can?: (perm: string) => boolean,
+): boolean {
   if (role === 'INTERN') {
     return !INTERN_ALLOWED_MODULES.has(key);
+  }
+  if (hasDesignationUnlock(key, can)) {
+    return false;
   }
   const item = ALL_NAV_ITEMS.find((i) => i.key === key);
   if (item?.allowedRoles && role && !item.allowedRoles.includes(role as Role)) {
@@ -327,6 +351,9 @@ export function isNavItemVisibleForRole(
   if (!item.ready) return false;
   if (role === 'INTERN') {
     return INTERN_ALLOWED_MODULES.has(item.key);
+  }
+  if (hasDesignationUnlock(item.key, can)) {
+    return true;
   }
   if (item.allowedRoles && role && !item.allowedRoles.includes(role as Role)) {
     return false;

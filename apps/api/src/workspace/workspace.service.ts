@@ -1604,6 +1604,18 @@ export class WorkspaceService implements OnModuleInit {
   async createDocument(actor: AuthUser, body: Record<string, unknown>) {
     const title = String(body.title ?? '').trim();
     if (title.length < 2) throw new BadRequestException('Document title is required.');
+    const mimeType = String(body.mimeType || 'application/pdf').toLowerCase().trim();
+    const blockedMimePatterns = ['text/html', 'image/svg', 'javascript', 'x-msdownload', 'x-sh', 'x-executable'];
+    if (blockedMimePatterns.some((pat) => mimeType.includes(pat))) {
+      throw new BadRequestException('Unsupported or unsafe file MIME type. Upload PDF, Office docs, CSV, or PNG/JPG images.');
+    }
+    const rawFileDataUrl =
+      typeof body.fileDataUrl === 'string' && body.fileDataUrl.startsWith('data:')
+        ? body.fileDataUrl
+        : null;
+    if (rawFileDataUrl && /^data:(text\/html|image\/svg|application\/javascript|text\/javascript)/i.test(rawFileDataUrl)) {
+      throw new BadRequestException('Executable or HTML/SVG data URLs are blocked for security.');
+    }
     const project = this.projects.find((p) => p.id === body.projectId) ?? null;
     const created: DocumentItem = {
       id: `doc_${randomUUID().slice(0, 8)}`,
@@ -1613,15 +1625,12 @@ export class WorkspaceService implements OnModuleInit {
       title,
       type: String(body.type || 'TECHNICAL_DOC'),
       version: Number(body.version) || 1,
-      mimeType: String(body.mimeType || 'application/pdf'),
+      mimeType,
       sizeBytes: Number(body.sizeBytes) || 524288,
       visibility: String(body.visibility || 'TEAM'),
       uploadedByName: actor.fullName,
       summary: String(body.summary ?? '').trim(),
-      fileDataUrl:
-        typeof body.fileDataUrl === 'string' && body.fileDataUrl.startsWith('data:')
-          ? body.fileDataUrl
-          : null,
+      fileDataUrl: rawFileDataUrl,
       fileName: typeof body.fileName === 'string' && body.fileName.trim() ? body.fileName.trim() : null,
       updatedAt: new Date().toISOString(),
     };
@@ -6117,7 +6126,21 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   // ─── GitHub PR Webhook Auto-Transition (Jira Enterprise Integration) ─────
-  async handleGithubWebhook(payload: Record<string, unknown>) {
+  async handleGithubWebhook(payload: Record<string, unknown>, signatureHeader?: string) {
+    const secret = process.env.GITHUB_WEBHOOK_SECRET?.trim();
+    if (secret) {
+      const provided = String(signatureHeader ?? '').trim();
+      if (!provided.startsWith('sha256=')) {
+        throw new ForbiddenException('Missing or malformed X-Hub-Signature-256 header.');
+      }
+      const expected = `sha256=${createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex')}`;
+      const a = Buffer.from(provided);
+      const b = Buffer.from(expected);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        throw new ForbiddenException('Invalid GitHub webhook signature.');
+      }
+    }
+
     await this.syncSnapshotFromSupabase(undefined, true);
     const pr = (payload.pull_request as Record<string, unknown> | undefined) ?? null;
     if (!pr) return { ok: true, matched: false };
@@ -6125,14 +6148,17 @@ export class WorkspaceService implements OnModuleInit {
     const merged = Boolean(pr.merged);
     const title = String(pr.title ?? '');
     const headRef = String((pr.head as Record<string, unknown> | undefined)?.ref ?? '');
-    const htmlUrl = String(pr.html_url ?? '');
+    const rawHtmlUrl = String(pr.html_url ?? '').trim();
+    const safeHtmlUrl = /^https:\/\/github\.com\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+\/pull\/\d+/i.test(rawHtmlUrl)
+      ? rawHtmlUrl
+      : '';
     const haystack = `${title} ${headRef}`.toUpperCase();
 
     const matchedTask = this.tasks.find((t) => haystack.includes(t.code.toUpperCase()));
     if (!matchedTask) return { ok: true, matched: false };
 
-    if (htmlUrl) matchedTask.prUrl = htmlUrl;
-    if (headRef) matchedTask.branchName = headRef;
+    if (safeHtmlUrl) matchedTask.prUrl = safeHtmlUrl;
+    if (headRef) matchedTask.branchName = headRef.slice(0, 120);
     if (action === 'opened' || action === 'reopened') {
       matchedTask.status = 'IN_REVIEW';
     } else if (action === 'closed' && merged) {
@@ -6153,6 +6179,23 @@ export class WorkspaceService implements OnModuleInit {
       await this.persistStateNow(actor.organizationId);
     }
     return { clientId: client.id, clientName: client.name, portalToken: client.portalToken };
+  }
+
+  async rotateClientPortalLink(actor: AuthUser, clientId: string) {
+    await this.syncSnapshotFromSupabase(actor.organizationId, true);
+    const client = this.clients.find((c) => c.id === clientId);
+    if (!client) throw new NotFoundException('Client not found.');
+    client.portalToken = `cp_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+    await this.persistStateNow(actor.organizationId);
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'CLIENT_PORTAL_TOKEN_ROTATED',
+      entityType: 'Client',
+      entityId: client.id,
+      metadata: { clientName: client.name },
+    });
+    return { clientId: client.id, clientName: client.name, portalToken: client.portalToken, rotated: true };
   }
 
   async getPublicClientPortal(portalToken: string) {

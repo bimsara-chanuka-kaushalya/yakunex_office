@@ -1606,6 +1606,28 @@ export function LeaveView() {
 
   useLiveSync(load);
 
+  // Auto-calculate Sri Lanka working days (skipping Sat/Sun & 2026 Poya/Mercantile holidays)
+  useEffect(() => {
+    if (!startDate || !endDate) return;
+    const start = new Date(`${startDate}T00:00:00Z`);
+    const end = new Date(`${endDate}T00:00:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return;
+    const holidaySet = new Set((leaveSummary?.holidays2026 ?? []).map((h) => h.date));
+    let workingDays = 0;
+    const cur = new Date(start);
+    let guard = 0;
+    while (cur <= end && guard < 90) {
+      const dow = cur.getUTCDay();
+      const iso = cur.toISOString().slice(0, 10);
+      if (dow !== 0 && dow !== 6 && !holidaySet.has(iso)) {
+        workingDays += 1;
+      }
+      cur.setUTCDate(cur.getUTCDate() + 1);
+      guard += 1;
+    }
+    if (workingDays > 0) setDays(String(workingDays));
+  }, [startDate, endDate, leaveSummary]);
+
   async function onCreate(e: FormEvent) {
     e.preventDefault();
     await post('/leave', { type, startDate, endDate, days: Number(days), reason });

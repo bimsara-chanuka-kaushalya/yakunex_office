@@ -143,7 +143,7 @@ export class WorkspaceController {
   }
 
   @Post('documents')
-  @RequirePermissions(PERMISSIONS.PROJECTS_READ)
+  @RequirePermissions(PERMISSIONS.TASKS_WRITE)
   createDocument(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
     return this.workspace.createDocument(actor, body);
   }
@@ -259,6 +259,7 @@ export class WorkspaceController {
   }
 
   @Post('interns/:id/evaluations')
+  @RequirePermissions(PERMISSIONS.USERS_READ)
   addInternEvaluation(
     @CurrentUser() actor: AuthUser,
     @Param('id') id: string,
@@ -707,6 +708,7 @@ export class WorkspaceController {
 
   // ─── Reports ──────────────────────────────────────────────────────────────
   @Get('reports/summary')
+  @RequirePermissions(PERMISSIONS.USERS_READ)
   getReportsSummary(@CurrentUser() actor: AuthUser) {
     return this.workspace.getReportsSummary(actor);
   }
@@ -796,6 +798,7 @@ export class WorkspaceController {
 
   // ─── Assets ───────────────────────────────────────────────────────────────
   @Get('assets')
+  @RequirePermissions(PERMISSIONS.USERS_READ)
   listAssets() {
     return this.workspace.listAssets();
   }
@@ -1010,15 +1013,24 @@ export class WorkspaceController {
   @Post('integrations/github/webhook')
   @Public()
   @SkipThrottle()
-  githubWebhook(@Body() body: Record<string, unknown>) {
-    return this.workspace.handleGithubWebhook(body ?? {});
+  githubWebhook(
+    @Body() body: Record<string, unknown>,
+    @Headers('x-hub-signature-256') signature?: string,
+  ) {
+    return this.workspace.handleGithubWebhook(body ?? {}, signature);
   }
 
   // ─── External Client Portal ───────────────────────────────────────────────
   @Post('clients/:id/portal-link')
-  @RequirePermissions(PERMISSIONS.PROJECTS_READ)
+  @RequirePermissions(PERMISSIONS.PROJECTS_WRITE)
   getClientPortalLink(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
     return this.workspace.getOrCreateClientPortalLink(actor, id);
+  }
+
+  @Post('clients/:id/portal-link/rotate')
+  @RequirePermissions(PERMISSIONS.PROJECTS_WRITE)
+  rotateClientPortalLink(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.rotateClientPortalLink(actor, id);
   }
 
   @Get('clients/portal/:token')

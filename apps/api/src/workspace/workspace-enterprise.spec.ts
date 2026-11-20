@@ -1,3 +1,5 @@
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { createHmac } from 'crypto';
 import { Role, UserStatus } from '@prisma/client';
 import type { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../common/types';
@@ -151,5 +153,54 @@ describe('WorkspaceService Enterprise Waves 1-5 Coverage', () => {
     expect(portal.projects.length).toBe(1);
     expect(portal.projects[0].progressPercent).toBe(50);
     expect((portal.projects[0] as Record<string, unknown>).budget).toBeUndefined();
+
+    // Rotating Client Portal link revokes the old token immediately
+    const rotated = await svc.rotateClientPortalLink(adminActor, client.id);
+    expect(rotated.portalToken).not.toBe(link.portalToken);
+    await expect(svc.getPublicClientPortal(link.portalToken)).rejects.toThrow();
+    const portalAfterRotate = await svc.getPublicClientPortal(rotated.portalToken);
+    expect(portalAfterRotate.client.name).toBe('LankaPay Solutions');
+  });
+
+  it('enforces GitHub webhook HMAC-SHA256 signatures, safe PR URLs, and blocks unsafe document MIME uploads', async () => {
+    const svc = makeService();
+    const project = await svc.createProject(adminActor, { name: 'Security Hardening' });
+    const task = await svc.createTask(adminActor, { projectId: project.id, title: 'Verify webhook HMAC' });
+
+    process.env.GITHUB_WEBHOOK_SECRET = 'test_webhook_secret_123';
+    try {
+      const payload = {
+        action: 'opened',
+        pull_request: {
+          title: `[${task.code}] Harden webhook`,
+          merged: false,
+          html_url: 'https://evil-phishing.example/pull/1',
+          head: { ref: `feat/${task.code.toLowerCase()}` },
+        },
+      };
+
+      // Missing/invalid signature rejected
+      await expect(svc.handleGithubWebhook(payload, undefined)).rejects.toThrow(ForbiddenException);
+      await expect(svc.handleGithubWebhook(payload, 'sha256=deadbeef')).rejects.toThrow(ForbiddenException);
+
+      // Valid HMAC passes, while non-GitHub phishing PR URL is ignored
+      const validSig = `sha256=${createHmac('sha256', process.env.GITHUB_WEBHOOK_SECRET).update(JSON.stringify(payload)).digest('hex')}`;
+      const res = await svc.handleGithubWebhook(payload, validSig);
+      expect(res.matched).toBe(true);
+      expect(res.newStatus).toBe('IN_REVIEW');
+      const updatedTask = svc.listTasks().find((t) => t.id === task.id);
+      expect(updatedTask?.prUrl).toBeFalsy();
+    } finally {
+      delete process.env.GITHUB_WEBHOOK_SECRET;
+    }
+
+    // Unsafe HTML/SVG document MIME types blocked
+    await expect(
+      svc.createDocument(adminActor, {
+        title: 'XSS PoC',
+        mimeType: 'text/html',
+        fileDataUrl: 'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==',
+      }),
+    ).rejects.toThrow(BadRequestException);
   });
 });

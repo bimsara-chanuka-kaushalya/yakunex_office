@@ -62,7 +62,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<Role, PermissionKey[]> = {
     P.CHAT_USE,
   ],
   STAFF: [P.PROJECTS_READ, P.TASKS_READ, P.TASKS_WRITE, P.TIME_OWN, P.CHAT_USE],
-  INTERN: [P.PROJECTS_READ, P.TASKS_READ, P.TASKS_WRITE, P.TIME_OWN, P.CHAT_USE],
+  INTERN: [P.CHAT_USE],
 };
 
 export function isPermissionKey(value: string): value is PermissionKey {
@@ -280,8 +280,19 @@ export const DESIGNATION_TIER_PRESETS: DesignationTierPreset[] = [
     tier: 'Tier 5: Trainees',
     title: 'Intern',
     baseRole: Role.INTERN,
-    grants: [P.TASKS_READ, P.TASKS_WRITE, P.TIME_OWN, P.CHAT_USE, P.CODE_READ],
-    revokes: [P.CODE_DEPLOY, P.FINANCIALS_READ, P.FINANCIALS_WRITE, P.LEGAL_READ, P.LEGAL_WRITE],
+    grants: [P.CHAT_USE],
+    revokes: [
+      P.PROJECTS_READ,
+      P.PROJECTS_WRITE,
+      P.TASKS_READ,
+      P.TASKS_WRITE,
+      P.TIME_OWN,
+      P.CODE_DEPLOY,
+      P.FINANCIALS_READ,
+      P.FINANCIALS_WRITE,
+      P.LEGAL_READ,
+      P.LEGAL_WRITE,
+    ],
   },
 ];
 

@@ -1,0 +1,49 @@
+name: Yakunex Hub CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  api-verify:
+    name: API Build & Jest Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install API dependencies
+        working-directory: apps/api
+        run: npm ci
+      - name: Generate Prisma client
+        working-directory: apps/api
+        run: npx prisma generate
+      - name: Build NestJS API
+        working-directory: apps/api
+        run: npm run build
+      - name: Run Jest unit & RBAC guard tests
+        working-directory: apps/api
+        run: npm test
+
+  web-verify:
+    name: Web Typecheck & Next.js Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install Web dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: TypeScript check (tsc --noEmit)
+        working-directory: apps/web
+        run: npm run lint
+      - name: Build Next.js production bundle
+        working-directory: apps/web
+        run: npm run build
