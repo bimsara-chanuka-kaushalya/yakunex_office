@@ -978,6 +978,7 @@ export class WorkspaceController {
       bankName?: string;
       bankBranch?: string;
       bankAccountNo?: string;
+      avatarUrl?: string;
     },
   ) {
     return this.workspace.adminUpdateProfile(actor, userId, body);

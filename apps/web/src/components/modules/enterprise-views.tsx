@@ -23,6 +23,7 @@ import { Card, CardHeader, StatCard } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useToast } from '@/components/ui/toast';
 import { useAuth } from '@/components/providers';
 import { api, liveGet, patch, post } from '@/lib/api';
 import { useLiveSync } from '@/lib/use-live-sync';
@@ -1072,6 +1073,7 @@ interface EmployeeProfilePayload {
 
 export function ProfileView() {
   const { user, can, reload } = useAuth();
+  const toast = useToast();
   const isSuperAdmin = user?.role === 'SUPER_ADMIN';
   const isHrOrSuperAdmin = isSuperAdmin || can(PERMISSIONS.USERS_WRITE);
 
@@ -1080,6 +1082,7 @@ export function ProfileView() {
   const [profile, setProfile] = useState<EmployeeProfilePayload | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [sessions, setSessions] = useState<
     Array<{ id: string; ipAddress?: string | null; userAgent?: string | null; createdAt: string }>
   >([]);
@@ -1133,7 +1136,7 @@ export function ProfileView() {
     setError(null);
     const endpoint = selectedUserId ? `/profile/${selectedUserId}` : '/profile';
     try {
-      const data = await api<EmployeeProfilePayload>(endpoint);
+      const data = await liveGet<EmployeeProfilePayload>(endpoint);
       applyProfileState(data);
     } catch (err) {
       if (user && (!selectedUserId || selectedUserId === user.id)) {
@@ -1171,8 +1174,6 @@ export function ProfileView() {
         .catch(() => setSessions([]));
     }
   }, [load, selectedUserId, user?.id]);
-
-  useLiveSync(load);
 
   async function onLogoutAllDevices() {
     setRevokingSessions(true);
@@ -1222,17 +1223,23 @@ export function ProfileView() {
   }
 
   async function handleDpFile(file: File | undefined) {
-    if (!file) return;
+    if (!file || !profile) return;
     setError(null);
     setNotice(null);
     try {
       const dataUrl = await compressAvatarToDataUrl(file);
-      const updated = await patch<EmployeeProfilePayload>('/profile/dp', { avatarUrl: dataUrl });
+      const isSelf = !selectedUserId || selectedUserId === user?.id;
+      const updated = isSelf
+        ? await patch<EmployeeProfilePayload>('/profile/dp', { avatarUrl: dataUrl })
+        : await patch<EmployeeProfilePayload>(`/profile/${profile.id}`, { avatarUrl: dataUrl });
       applyProfileState(updated);
       setNotice('Profile picture updated!');
-      void reload();
+      toast.success('Profile picture updated!');
+      if (isSelf) void reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update DP.');
+      const msg = err instanceof Error ? err.message : 'Failed to update DP.';
+      setError(msg);
+      toast.error(msg);
     }
   }
 
@@ -1241,6 +1248,7 @@ export function ProfileView() {
     if (!profile) return;
     setError(null);
     setNotice(null);
+    setSaving(true);
     try {
       const payload: Record<string, unknown> = {
         fullName,
@@ -1263,9 +1271,15 @@ export function ProfileView() {
       }
       const updated = await patch<EmployeeProfilePayload>(`/profile/${profile.id}`, payload);
       applyProfileState(updated);
-      setNotice('Profile updated successfully.');
+      setNotice(`Profile updated successfully for ${updated.fullName}.`);
+      toast.success(`Saved profile changes for ${updated.fullName}.`);
+      if (profile.id === user?.id) void reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update profile.');
+      const msg = err instanceof Error ? err.message : 'Failed to update profile.';
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -1337,7 +1351,7 @@ export function ProfileView() {
               <p className="mt-1 text-sm text-muted">
                 {profile.title || profile.role} · {profile.email}
               </p>
-              {isViewingSelf && (
+              {(isViewingSelf || isHrOrSuperAdmin) && (
                 <label className="mt-3 inline-flex cursor-pointer items-center gap-2 rounded-xl border border-gold/40 bg-gold/10 px-3 py-1.5 text-xs font-semibold text-gold-strong transition hover:bg-gold/20">
                   <Camera className="h-3.5 w-3.5" /> Change Profile Picture (DP)
                   <input
@@ -1431,8 +1445,8 @@ export function ProfileView() {
 
           {isHrOrSuperAdmin && (
             <div className="flex justify-end md:col-span-2">
-              <Button type="submit">
-                <UserCheck className="h-4 w-4" /> Save Profile Changes
+              <Button type="submit" disabled={saving}>
+                <UserCheck className="h-4 w-4" /> {saving ? 'Saving…' : 'Save Profile Changes'}
               </Button>
             </div>
           )}

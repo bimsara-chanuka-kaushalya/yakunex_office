@@ -5552,8 +5552,10 @@ export class WorkspaceService implements OnModuleInit {
     );
   }
 
-  async getEmployeeProfile(actor: AuthUser, targetUserId?: string) {
-    await this.syncSnapshotFromSupabase(actor.organizationId);
+  async getEmployeeProfile(actor: AuthUser, targetUserId?: string, skipSync = false) {
+    if (!skipSync) {
+      await this.syncSnapshotFromSupabase(actor.organizationId, true);
+    }
     const uid = targetUserId || actor.id;
     let dbUser: {
       id: string;
@@ -5740,6 +5742,7 @@ export class WorkspaceService implements OnModuleInit {
       bankName?: string;
       bankBranch?: string;
       bankAccountNo?: string;
+      avatarUrl?: string;
     },
   ) {
     if (!this.isHrOrSuperAdmin(actor)) {
@@ -5762,6 +5765,9 @@ export class WorkspaceService implements OnModuleInit {
       ...(body.address !== undefined ? { address: String(body.address).trim() } : {}),
       ...(body.birthday !== undefined ? { birthday: String(body.birthday).trim() } : {}),
       ...(body.phone !== undefined ? { phone: String(body.phone).trim() } : {}),
+      ...(body.avatarUrl !== undefined && String(body.avatarUrl).trim().length > 0
+        ? { avatarDataUrl: String(body.avatarUrl).trim() }
+        : {}),
       ...(body.monthlyBasicSalaryLkr !== undefined && Number.isFinite(Number(body.monthlyBasicSalaryLkr))
         ? { monthlyBasicSalaryLkr: Math.max(0, Math.round(Number(body.monthlyBasicSalaryLkr))) }
         : {}),
@@ -5782,6 +5788,9 @@ export class WorkspaceService implements OnModuleInit {
       dbPatch.fullName = String(body.fullName).trim();
     }
     if (body.phone !== undefined) dbPatch.phone = String(body.phone).trim() || null;
+    if (body.avatarUrl !== undefined && String(body.avatarUrl).trim().length > 0) {
+      dbPatch.avatarUrl = String(body.avatarUrl).trim();
+    }
     if (body.role !== undefined && actor.role === Role.SUPER_ADMIN) dbPatch.role = body.role;
     if (body.title !== undefined && actor.role === Role.SUPER_ADMIN) dbPatch.title = String(body.title).trim() || null;
 
@@ -5806,7 +5815,7 @@ export class WorkspaceService implements OnModuleInit {
       metadata: { fields: Object.keys(body) },
     });
 
-    return this.getEmployeeProfile(actor, targetUserId);
+    return this.getEmployeeProfile(actor, targetUserId, true);
   }
 
   private haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
