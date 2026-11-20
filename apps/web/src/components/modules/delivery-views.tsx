@@ -898,6 +898,37 @@ export function TasksView() {
                                 <ExternalLink className="h-2.5 w-2.5" /> PR
                               </a>
                             )}
+                            {canWrite && (() => {
+                              const idx = KANBAN_COLUMNS.findIndex((c) => c.key === col.key);
+                              const prevCol = idx > 0 ? KANBAN_COLUMNS[idx - 1] : null;
+                              const nextCol = idx < KANBAN_COLUMNS.length - 1 ? KANBAN_COLUMNS[idx + 1] : null;
+                              return (
+                                <div className="ml-auto flex items-center gap-1">
+                                  {prevCol && (
+                                    <button
+                                      type="button"
+                                      aria-label={`Move ${task.code} back to ${prevCol.label}`}
+                                      title={`Move to ${prevCol.label}`}
+                                      onClick={() => void moveTask(task.id, prevCol.key)}
+                                      className="rounded border border-line bg-canvas px-1.5 py-0.5 text-[10px] font-bold text-muted hover:border-gold/40 hover:text-ink"
+                                    >
+                                      ←
+                                    </button>
+                                  )}
+                                  {nextCol && (
+                                    <button
+                                      type="button"
+                                      aria-label={`Move ${task.code} forward to ${nextCol.label}`}
+                                      title={`Move to ${nextCol.label}`}
+                                      onClick={() => void moveTask(task.id, nextCol.key)}
+                                      className="rounded border border-line bg-canvas px-1.5 py-0.5 text-[10px] font-bold text-muted hover:border-gold/40 hover:text-ink"
+                                    >
+                                      →
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                           {subs.length > 0 && (
                             <div className="mt-2.5 flex items-center gap-2 text-[11px] text-muted">

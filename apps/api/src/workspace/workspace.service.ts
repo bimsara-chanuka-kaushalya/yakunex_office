@@ -653,6 +653,30 @@ export class WorkspaceService implements OnModuleInit {
     recordedAt: string;
   }> = [];
 
+  private clientInvoices: Array<{
+    id: string;
+    invoiceNumber: string;
+    clientId?: string | null;
+    clientName: string;
+    projectId?: string | null;
+    projectName?: string | null;
+    issueDate: string;
+    dueDate: string;
+    currency: string;
+    lineItems: Array<{ description: string; quantity: number; unitPrice: number; amount: number }>;
+    subtotal: number;
+    ssclRate: number;
+    ssclAmount: number;
+    vatRate: number;
+    vatAmount: number;
+    totalAmount: number;
+    status: 'DRAFT' | 'SENT' | 'PAID' | 'OVERDUE';
+    notes: string;
+    createdByName: string;
+    paidAt?: string | null;
+    createdAt: string;
+  }> = [];
+
   private assets: Array<{
     id: string;
     tag: string;
@@ -711,6 +735,12 @@ export class WorkspaceService implements OnModuleInit {
       role?: Role;
       title?: string;
       avatarDataUrl?: string;
+      monthlyBasicSalaryLkr?: number;
+      fixedAllowancesLkr?: number;
+      epfNumber?: string;
+      bankName?: string;
+      bankBranch?: string;
+      bankAccountNo?: string;
     }
   > = {};
 
@@ -816,6 +846,7 @@ export class WorkspaceService implements OnModuleInit {
         if (snap.reportingManagers && typeof snap.reportingManagers === 'object') this.reportingManagers = snap.reportingManagers as Record<string, string | null>;
         if (Array.isArray(snap.approvals)) this.approvals = snap.approvals as WorkspaceService['approvals'];
         if (Array.isArray(snap.financeEntries)) this.financeEntries = snap.financeEntries as WorkspaceService['financeEntries'];
+        if (Array.isArray(snap.clientInvoices)) this.clientInvoices = snap.clientInvoices as WorkspaceService['clientInvoices'];
         if (Array.isArray(snap.assets)) this.assets = snap.assets as WorkspaceService['assets'];
         if (Array.isArray(snap.performanceReviews)) this.performanceReviews = snap.performanceReviews as WorkspaceService['performanceReviews'];
         if (Array.isArray(snap.notifications)) this.notifications = snap.notifications as WorkspaceService['notifications'];
@@ -898,6 +929,9 @@ export class WorkspaceService implements OnModuleInit {
       if (Array.isArray(snap.financeEntries)) {
         this.financeEntries = snap.financeEntries as WorkspaceService['financeEntries'];
       }
+      if (Array.isArray(snap.clientInvoices)) {
+        this.clientInvoices = snap.clientInvoices as WorkspaceService['clientInvoices'];
+      }
       if (Array.isArray(snap.assets)) {
         this.assets = snap.assets as WorkspaceService['assets'];
       }
@@ -952,6 +986,7 @@ export class WorkspaceService implements OnModuleInit {
         reportingManagers: this.reportingManagers,
         approvals: this.approvals,
         financeEntries: this.financeEntries,
+        clientInvoices: this.clientInvoices,
         assets: this.assets,
         performanceReviews: this.performanceReviews,
         notifications: this.notifications,
@@ -5259,6 +5294,115 @@ export class WorkspaceService implements OnModuleInit {
     return entry;
   }
 
+  listInvoices() {
+    return this.clientInvoices;
+  }
+
+  async createInvoice(actor: AuthUser, body: Record<string, unknown>) {
+    const clientName = String(body.clientName ?? '').trim();
+    if (clientName.length < 2) throw new BadRequestException('Client name is required.');
+    const rawItems = Array.isArray(body.lineItems) ? body.lineItems : [];
+    const lineItems = rawItems
+      .map((item) => {
+        const rec = item as Record<string, unknown>;
+        const description = String(rec.description ?? '').trim();
+        const quantity = Math.max(0.1, Number(rec.quantity) || 1);
+        const unitPrice = Math.max(0, Number(rec.unitPrice) || 0);
+        return { description, quantity, unitPrice, amount: Math.round(quantity * unitPrice) };
+      })
+      .filter((i) => i.description.length > 0 && i.amount > 0);
+    if (lineItems.length === 0) {
+      throw new BadRequestException('At least one billable line item is required.');
+    }
+
+    const subtotal = lineItems.reduce((s, i) => s + i.amount, 0);
+    const applySscl = body.applySscl !== false;
+    const applyVat = body.applyVat !== false;
+    const ssclRate = applySscl ? 2.5 : 0;
+    const ssclAmount = Math.round(subtotal * (ssclRate / 100));
+    const vatRate = applyVat ? 18 : 0;
+    const vatAmount = Math.round((subtotal + ssclAmount) * (vatRate / 100));
+    const totalAmount = subtotal + ssclAmount + vatAmount;
+
+    const year = new Date().getFullYear();
+    const seq = String(this.clientInvoices.length + 1).padStart(4, '0');
+    const issueDate = String(body.issueDate || new Date().toISOString().slice(0, 10));
+    const dueDate = String(
+      body.dueDate || new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10),
+    );
+
+    const invoice = {
+      id: `inv_${randomUUID().slice(0, 8)}`,
+      invoiceNumber: `YNX-INV-${year}-${seq}`,
+      clientId: body.clientId ? String(body.clientId) : null,
+      clientName,
+      projectId: body.projectId ? String(body.projectId) : null,
+      projectName: body.projectName ? String(body.projectName).trim() : null,
+      issueDate,
+      dueDate,
+      currency: String(body.currency || 'LKR').toUpperCase(),
+      lineItems,
+      subtotal,
+      ssclRate,
+      ssclAmount,
+      vatRate,
+      vatAmount,
+      totalAmount,
+      status: 'SENT' as const,
+      notes: String(body.notes ?? '').trim(),
+      createdByName: actor.fullName,
+      paidAt: null as string | null,
+      createdAt: new Date().toISOString(),
+    };
+
+    this.clientInvoices.unshift(invoice);
+    await this.persistStateNow(actor.organizationId);
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'INVOICE_CREATED',
+      entityType: 'Invoice',
+      entityId: invoice.id,
+      metadata: { invoiceNumber: invoice.invoiceNumber, clientName, totalAmount },
+    });
+    return invoice;
+  }
+
+  async updateInvoiceStatus(
+    actor: AuthUser,
+    id: string,
+    status: 'DRAFT' | 'SENT' | 'PAID' | 'OVERDUE',
+  ) {
+    const inv = this.clientInvoices.find((i) => i.id === id);
+    if (!inv) throw new NotFoundException('Invoice not found.');
+    const wasPaid = inv.status === 'PAID';
+    inv.status = status;
+    if (status === 'PAID' && !wasPaid) {
+      inv.paidAt = new Date().toISOString();
+      this.financeEntries.unshift({
+        id: `fin_${randomUUID().slice(0, 8)}`,
+        type: 'INCOME',
+        category: `Client Invoice (${inv.invoiceNumber})`,
+        description: `Settled tax invoice for ${inv.clientName}${inv.projectName ? ` — ${inv.projectName}` : ''}`,
+        projectName: inv.projectName ?? null,
+        amount: inv.totalAmount,
+        status: 'PAID',
+        recordedByName: actor.fullName,
+        recordedAt: inv.paidAt,
+      });
+    }
+    await this.persistStateNow(actor.organizationId);
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: status === 'PAID' ? 'INVOICE_PAID' : 'INVOICE_UPDATED',
+      entityType: 'Invoice',
+      entityId: inv.id,
+      metadata: { invoiceNumber: inv.invoiceNumber, status, totalAmount: inv.totalAmount },
+    });
+    return inv;
+  }
+
   // ─── Assets ───────────────────────────────────────────────────────────────
   listAssets() {
     return this.assets;
@@ -5486,6 +5630,8 @@ export class WorkspaceService implements OnModuleInit {
       (a) => a.type === 'PROFILE_CHANGE' && a.status === 'PENDING' && a.meta?.targetUserId === base.id,
     );
 
+    const canViewComp = uid === actor.id || this.isHrOrSuperAdmin(actor);
+
     return {
       id: base.id,
       companyId: base.companyId,
@@ -5499,6 +5645,16 @@ export class WorkspaceService implements OnModuleInit {
       phone: ext.phone ?? base.phone ?? '',
       avatarUrl: ext.avatarDataUrl ?? base.avatarUrl ?? null,
       role: ext.role ?? base.role,
+      ...(canViewComp
+        ? {
+            monthlyBasicSalaryLkr: ext.monthlyBasicSalaryLkr ?? 200_000,
+            fixedAllowancesLkr: ext.fixedAllowancesLkr ?? 0,
+            epfNumber: ext.epfNumber ?? '',
+            bankName: ext.bankName ?? '',
+            bankBranch: ext.bankBranch ?? '',
+            bankAccountNo: ext.bankAccountNo ?? '',
+          }
+        : {}),
       title: ext.title ?? base.title ?? '',
       status: base.status,
       pendingRequests: pendingRequests.map((p) => ({
@@ -5578,6 +5734,12 @@ export class WorkspaceService implements OnModuleInit {
       phone?: string;
       role?: Role;
       title?: string;
+      monthlyBasicSalaryLkr?: number;
+      fixedAllowancesLkr?: number;
+      epfNumber?: string;
+      bankName?: string;
+      bankBranch?: string;
+      bankAccountNo?: string;
     },
   ) {
     if (!this.isHrOrSuperAdmin(actor)) {
@@ -5600,6 +5762,16 @@ export class WorkspaceService implements OnModuleInit {
       ...(body.address !== undefined ? { address: String(body.address).trim() } : {}),
       ...(body.birthday !== undefined ? { birthday: String(body.birthday).trim() } : {}),
       ...(body.phone !== undefined ? { phone: String(body.phone).trim() } : {}),
+      ...(body.monthlyBasicSalaryLkr !== undefined && Number.isFinite(Number(body.monthlyBasicSalaryLkr))
+        ? { monthlyBasicSalaryLkr: Math.max(0, Math.round(Number(body.monthlyBasicSalaryLkr))) }
+        : {}),
+      ...(body.fixedAllowancesLkr !== undefined && Number.isFinite(Number(body.fixedAllowancesLkr))
+        ? { fixedAllowancesLkr: Math.max(0, Math.round(Number(body.fixedAllowancesLkr))) }
+        : {}),
+      ...(body.epfNumber !== undefined ? { epfNumber: String(body.epfNumber).trim() } : {}),
+      ...(body.bankName !== undefined ? { bankName: String(body.bankName).trim() } : {}),
+      ...(body.bankBranch !== undefined ? { bankBranch: String(body.bankBranch).trim() } : {}),
+      ...(body.bankAccountNo !== undefined ? { bankAccountNo: String(body.bankAccountNo).trim() } : {}),
       ...(body.role !== undefined && actor.role === Role.SUPER_ADMIN ? { role: body.role } : {}),
       ...(body.title !== undefined && actor.role === Role.SUPER_ADMIN ? { title: String(body.title).trim() } : {}),
     };
@@ -6141,18 +6313,34 @@ export class WorkspaceService implements OnModuleInit {
 
     const defaultHourlyLkr = 1250;
     const rows = Array.from(byUser.values()).map((r) => {
+      const prof = this.userProfiles[r.userId] ?? {};
+      const monthlyBasic = prof.monthlyBasicSalaryLkr && prof.monthlyBasicSalaryLkr > 0
+        ? prof.monthlyBasicSalaryLkr
+        : 200_000;
+      const hourlyLkr = Math.round(monthlyBasic / 160) || defaultHourlyLkr;
+      const fixedAllowances = Math.max(0, Math.round(prof.fixedAllowancesLkr ?? 0));
+
       const regHours = Number((r.regularMinutes / 60).toFixed(2));
       const ot15Hours = Number((r.weekdayOtMinutes / 60).toFixed(2));
       const ot20Hours = Number((r.holidayOtMinutes / 60).toFixed(2));
-      const basePay = Math.round(regHours * defaultHourlyLkr);
-      const otPay = Math.round(ot15Hours * defaultHourlyLkr * 1.5 + ot20Hours * defaultHourlyLkr * 2);
-      const grossLkr = basePay + otPay;
+      const basePay = Math.round(regHours * hourlyLkr);
+      const otPay = Math.round(ot15Hours * hourlyLkr * 1.5 + ot20Hours * hourlyLkr * 2);
+      const grossLkr = basePay + otPay + fixedAllowances;
       const epfEmployee8 = Math.round(basePay * 0.08);
       const epfEmployer12 = Math.round(basePay * 0.12);
       const etfEmployer3 = Math.round(basePay * 0.03);
-      const netPayLkr = grossLkr - epfEmployee8;
+      const apitTaxLkr = this.computeSriLankaMonthlyApit(grossLkr);
+      const netPayLkr = Math.max(0, grossLkr - epfEmployee8 - apitTaxLkr);
       return {
         ...r,
+        hourlyLkr,
+        monthlyBasicSalaryLkr: monthlyBasic,
+        fixedAllowancesLkr: fixedAllowances,
+        epfNumber: prof.epfNumber ?? '',
+        nicNumber: prof.nicNumber ?? '',
+        bankName: prof.bankName ?? '',
+        bankBranch: prof.bankBranch ?? '',
+        bankAccountNo: prof.bankAccountNo ?? '',
         regHours,
         ot15Hours,
         ot20Hours,
@@ -6162,11 +6350,37 @@ export class WorkspaceService implements OnModuleInit {
         epfEmployee8,
         epfEmployer12,
         etfEmployer3,
+        apitTaxLkr,
         netPayLkr,
       };
     });
 
     return { currency: 'LKR', rows };
+  }
+
+  /**
+   * Sri Lanka IRD APIT (Advance Personal Income Tax) monthly progressive slabs (2025/2026 relief: LKR 150,000/month).
+   */
+  computeSriLankaMonthlyApit(monthlyGrossLkr: number): number {
+    if (!Number.isFinite(monthlyGrossLkr) || monthlyGrossLkr <= 150_000) return 0;
+    let remaining = monthlyGrossLkr - 150_000;
+    let tax = 0;
+    const slabs: Array<{ width: number; rate: number }> = [
+      { width: 83_333, rate: 0.06 },
+      { width: 41_667, rate: 0.18 },
+      { width: 41_667, rate: 0.24 },
+      { width: 41_667, rate: 0.30 },
+    ];
+    for (const slab of slabs) {
+      if (remaining <= 0) break;
+      const taxable = Math.min(remaining, slab.width);
+      tax += taxable * slab.rate;
+      remaining -= taxable;
+    }
+    if (remaining > 0) {
+      tax += remaining * 0.36;
+    }
+    return Math.round(tax);
   }
 
   async submitWeeklyTimesheet(actor: AuthUser, body: { weekLabel?: string; notes?: string }) {

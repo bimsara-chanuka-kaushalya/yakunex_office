@@ -937,6 +937,14 @@ interface LiveBoardMember {
 interface SriLankaPayrollRow {
   userId: string;
   userName: string;
+  hourlyLkr?: number;
+  monthlyBasicSalaryLkr?: number;
+  fixedAllowancesLkr?: number;
+  epfNumber?: string;
+  nicNumber?: string;
+  bankName?: string;
+  bankBranch?: string;
+  bankAccountNo?: string;
   regHours: number;
   ot15Hours: number;
   ot20Hours: number;
@@ -946,6 +954,7 @@ interface SriLankaPayrollRow {
   epfEmployee8: number;
   epfEmployer12: number;
   etfEmployer3: number;
+  apitTaxLkr?: number;
   netPayLkr: number;
   daysWorked: number;
 }
@@ -1431,20 +1440,103 @@ export function AttendanceView() {
         )}
       </Card>
 
-      {/* Sri Lanka OT (1.5x / 2x) + EPF (8%/12%) & ETF (3%) Payroll Summary */}
+      {/* Sri Lanka OT (1.5x / 2x) + EPF (8%/12%), ETF (3%) & IRD APIT Payroll Summary */}
       <Card>
         <CardHeader
-          title="Sri Lanka OT, EPF & ETF Payroll Readiness"
-          description="Live regular hours, 1.5x weekday OT (>8h/day), 2.0x Weekend/Poya OT, EPF (8% employee / 12% employer) & ETF (3%)."
-          badge={<Badge tone="gold">LKR · SL Labor Rules</Badge>}
+          title="Sri Lanka OT, EPF, ETF & APIT Payroll Engine"
+          description="Regular, 1.5x Weekday OT, 2.0x Weekend/Poya OT, EPF (8%/12%), ETF (3%), IRD APIT Tax & statutory bank exports."
+          action={
+            payrollRows.length > 0 ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    const csv = [
+                      'EPF No,Employee Name,NIC,Basic Earnings (LKR),EPF Employee 8%,EPF Employer 12%,Total EPF 20%',
+                      ...payrollRows.map((p) =>
+                        [
+                          p.epfNumber || 'PENDING',
+                          `"${p.userName}"`,
+                          p.nicNumber || '',
+                          p.basePay,
+                          p.epfEmployee8,
+                          p.epfEmployer12,
+                          p.epfEmployee8 + p.epfEmployer12,
+                        ].join(','),
+                      ),
+                    ].join('\n');
+                    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `yakunex-epf-c-form-${new Date().toISOString().slice(0, 7)}.csv`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                >
+                  <Download className="h-3.5 w-3.5" /> EPF C-Form
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    const csv = [
+                      'ETF/EPF No,Employee Name,NIC,Basic Earnings (LKR),ETF Employer 3%',
+                      ...payrollRows.map((p) =>
+                        [p.epfNumber || 'PENDING', `"${p.userName}"`, p.nicNumber || '', p.basePay, p.etfEmployer3].join(','),
+                      ),
+                    ].join('\n');
+                    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `yakunex-etf-r-form-${new Date().toISOString().slice(0, 7)}.csv`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                >
+                  <Download className="h-3.5 w-3.5" /> ETF R-Form
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    const csv = [
+                      'Bank Name,Branch,Account No,Beneficiary Name,Net Salary (LKR),Reference',
+                      ...payrollRows.map((p) =>
+                        [
+                          `"${p.bankName || 'Commercial Bank'}"`,
+                          `"${p.bankBranch || 'Colombo'}"`,
+                          p.bankAccountNo || 'PENDING',
+                          `"${p.userName}"`,
+                          p.netPayLkr,
+                          `SALARY-${new Date().toISOString().slice(0, 7)}`,
+                        ].join(','),
+                      ),
+                    ].join('\n');
+                    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `yakunex-slips-payroll-${new Date().toISOString().slice(0, 7)}.csv`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                >
+                  <Download className="h-3.5 w-3.5" /> Bank SLIPS
+                </Button>
+              </div>
+            ) : undefined
+          }
         />
         {payrollRows.length === 0 ? (
           <p className="px-6 pb-6 text-xs text-muted">
-            Log time entries in Time Tracker to generate live Sri Lanka OT, EPF &amp; ETF payroll breakdowns.
+            Log time entries in Time Tracker to generate live Sri Lanka OT, EPF, ETF &amp; APIT payroll breakdowns.
           </p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] text-left text-sm">
+            <table className="w-full min-w-[900px] text-left text-sm">
               <thead className="bg-canvas/60 text-xs uppercase tracking-wider text-muted">
                 <tr>
                   <th className="px-5 py-3">Employee</th>
@@ -1452,6 +1544,7 @@ export function AttendanceView() {
                   <th className="px-4 py-3 text-right">Gross (LKR)</th>
                   <th className="px-4 py-3 text-right">EPF 8% / 12%</th>
                   <th className="px-4 py-3 text-right">ETF 3%</th>
+                  <th className="px-4 py-3 text-right">APIT Tax</th>
                   <th className="px-4 py-3 text-right">Net Pay (LKR)</th>
                   <th className="px-5 py-3 text-right">Payslip</th>
                 </tr>
@@ -1476,6 +1569,9 @@ export function AttendanceView() {
                     <td className="px-4 py-3 text-right font-mono text-xs text-muted">
                       +{p.etfEmployer3.toLocaleString()}
                     </td>
+                    <td className="px-4 py-3 text-right font-mono text-xs text-danger">
+                      {p.apitTaxLkr ? `-${p.apitTaxLkr.toLocaleString()}` : '0'}
+                    </td>
                     <td className="px-4 py-3 text-right font-mono text-xs font-bold text-ink">
                       LKR {p.netPayLkr.toLocaleString()}
                     </td>
@@ -1486,24 +1582,26 @@ export function AttendanceView() {
                         onClick={() =>
                           exportBrandedPdf({
                             title: `Sri Lanka Payslip — ${p.userName}`,
-                            subtitle: 'Yakunex Technologies · OT (1.5x/2x), EPF (8%/12%) & ETF (3%) Statement',
+                            subtitle: 'Yakunex Technologies · OT (1.5x/2x), EPF (8%/12%), ETF (3%) & IRD APIT Statement',
                             generatedByEmail: user?.email,
                             generatedByName: user?.fullName,
                             kpis: [
                               { label: 'Gross Pay', value: `LKR ${p.grossLkr.toLocaleString()}` },
-                              { label: 'EPF Employee (8%)', value: `-LKR ${p.epfEmployee8.toLocaleString()}` },
+                              { label: 'EPF (8%) + APIT', value: `-LKR ${(p.epfEmployee8 + (p.apitTaxLkr ?? 0)).toLocaleString()}` },
                               { label: 'Employer EPF+ETF (15%)', value: `LKR ${(p.epfEmployer12 + p.etfEmployer3).toLocaleString()}` },
                               { label: 'Net Take-Home', value: `LKR ${p.netPayLkr.toLocaleString()}` },
                             ],
                             columns: ['Component', 'Detail', 'Amount (LKR)'],
                             rows: [
-                              ['Regular Hours', `${p.regHours}h`, p.basePay.toLocaleString()],
+                              ['Regular Hours', `${p.regHours}h @ LKR ${(p.hourlyLkr ?? 1250).toLocaleString()}/hr`, p.basePay.toLocaleString()],
                               ['Overtime (1.5x Weekday + 2.0x Weekend/Poya)', `${p.ot15Hours}h + ${p.ot20Hours}h`, p.otPay.toLocaleString()],
+                              ...(p.fixedAllowancesLkr ? [['Fixed Allowances', 'Monthly allowance', p.fixedAllowancesLkr.toLocaleString()]] : []),
                               ['Gross Earnings', `${(p.regHours + p.ot15Hours + p.ot20Hours).toFixed(2)}h total`, p.grossLkr.toLocaleString()],
-                              ['EPF Employee Deduction (8%)', 'Statutory deduction', `-${p.epfEmployee8.toLocaleString()}`],
+                              ['EPF Employee Deduction (8%)', p.epfNumber ? `EPF #${p.epfNumber}` : 'Statutory deduction', `-${p.epfEmployee8.toLocaleString()}`],
+                              ['IRD APIT Income Tax', 'Sri Lanka progressive slab', `-${(p.apitTaxLkr ?? 0).toLocaleString()}`],
                               ['EPF Employer Contribution (12%)', 'Company statutory', p.epfEmployer12.toLocaleString()],
                               ['ETF Employer Contribution (3%)', 'Company statutory', p.etfEmployer3.toLocaleString()],
-                              ['Net Payable Salary', 'Bank transfer amount', p.netPayLkr.toLocaleString()],
+                              ['Net Payable Salary', p.bankName ? `${p.bankName} ${p.bankAccountNo || ''}` : 'Bank SLIPS transfer', p.netPayLkr.toLocaleString()],
                             ],
                           })
                         }

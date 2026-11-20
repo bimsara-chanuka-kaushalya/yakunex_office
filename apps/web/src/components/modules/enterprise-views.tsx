@@ -365,25 +365,55 @@ interface PayrollEmployeeRow {
   hours?: number;
 }
 
+interface ClientInvoiceRow {
+  id: string;
+  invoiceNumber: string;
+  clientName: string;
+  projectName?: string | null;
+  issueDate: string;
+  dueDate: string;
+  currency: string;
+  lineItems: Array<{ description: string; quantity: number; unitPrice: number; amount: number }>;
+  subtotal: number;
+  ssclRate: number;
+  ssclAmount: number;
+  vatRate: number;
+  vatAmount: number;
+  totalAmount: number;
+  status: 'DRAFT' | 'SENT' | 'PAID' | 'OVERDUE';
+  notes: string;
+}
+
 export function FinanceView() {
   const { user, can } = useAuth();
   const [data, setData] = useState<FinancePayload | null>(null);
+  const [invoices, setInvoices] = useState<ClientInvoiceRow[]>([]);
   const [payrollRows, setPayrollRows] = useState<PayrollEmployeeRow[]>([]);
-  const [hourlyRate, setHourlyRate] = useState<number>(25);
+  const [hourlyRate, setHourlyRate] = useState<number>(1250);
   const [type, setType] = useState<'INCOME' | 'EXPENSE' | 'INVOICE' | 'PAYROLL'>('INCOME');
   const [category, setCategory] = useState('');
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
 
+  // Client Tax Invoice Builder state
+  const [invClient, setInvClient] = useState('');
+  const [invProject, setInvProject] = useState('');
+  const [invDesc, setInvDesc] = useState('Software Engineering & Cloud Delivery Milestone');
+  const [invAmount, setInvAmount] = useState('');
+  const [invApplySscl, setInvApplySscl] = useState(true);
+  const [invApplyVat, setInvApplyVat] = useState(true);
+
   const load = useCallback(async () => {
-    const [res, rep] = await Promise.all([
+    const [res, rep, invs] = await Promise.all([
       api<FinancePayload>('/finance'),
       api<{ timesheetSummary?: PayrollEmployeeRow[] }>('/reports/summary').catch(() => ({
         timesheetSummary: [],
       })),
+      api<ClientInvoiceRow[]>('/finance/invoices').catch(() => []),
     ]);
     setData(res);
     setPayrollRows(Array.isArray(rep?.timesheetSummary) ? rep.timesheetSummary : []);
+    setInvoices(Array.isArray(invs) ? invs : []);
   }, []);
 
   useEffect(() => {
@@ -398,6 +428,29 @@ export function FinanceView() {
     setCategory('');
     setAmount('');
     setDescription('');
+    await load();
+  }
+
+  async function onCreateInvoice(e: FormEvent) {
+    e.preventDefault();
+    const unitPrice = Number(invAmount);
+    if (!invClient.trim() || !Number.isFinite(unitPrice) || unitPrice <= 0) return;
+    await post('/finance/invoices', {
+      clientName: invClient.trim(),
+      projectName: invProject.trim() || null,
+      currency: 'LKR',
+      applySscl: invApplySscl,
+      applyVat: invApplyVat,
+      lineItems: [{ description: invDesc.trim() || 'IT Services', quantity: 1, unitPrice }],
+    });
+    setInvClient('');
+    setInvProject('');
+    setInvAmount('');
+    await load();
+  }
+
+  async function onMarkInvoiceStatus(id: string, status: ClientInvoiceRow['status']) {
+    await patch(`/finance/invoices/${id}/status`, { status });
     await load();
   }
 
@@ -440,11 +493,113 @@ export function FinanceView() {
       </header>
 
       <div className="grid gap-4 sm:grid-cols-4">
-        <StatCard label="Revenue / Invoices" value={`$${data.totalIncome.toLocaleString()}`} icon={<DollarSign className="h-5 w-5" />} />
-        <StatCard label="Expenses" value={`$${data.totalExpenses.toLocaleString()}`} icon={<DollarSign className="h-5 w-5" />} />
-        <StatCard label="Payroll" value={`$${data.totalPayroll.toLocaleString()}`} icon={<DollarSign className="h-5 w-5" />} />
-        <StatCard label="Net Profit" value={`$${data.netProfit.toLocaleString()}`} icon={<DollarSign className="h-5 w-5" />} />
+        <StatCard label="Revenue / Invoices" value={`LKR ${data.totalIncome.toLocaleString()}`} icon={<DollarSign className="h-5 w-5" />} />
+        <StatCard label="Expenses" value={`LKR ${data.totalExpenses.toLocaleString()}`} icon={<DollarSign className="h-5 w-5" />} />
+        <StatCard label="Payroll" value={`LKR ${data.totalPayroll.toLocaleString()}`} icon={<DollarSign className="h-5 w-5" />} />
+        <StatCard label="Net Profit" value={`LKR ${data.netProfit.toLocaleString()}`} icon={<DollarSign className="h-5 w-5" />} />
       </div>
+
+      {/* Sri Lanka Client Tax Invoice Builder (SSCL 2.5% + VAT 18%) */}
+      <Card>
+        <CardHeader
+          title="Client Tax Invoices (Sri Lanka SSCL 2.5% + VAT 18%)"
+          description="Generate numbered Yakunex tax invoices, download Branded Invoice PDFs, and auto-post settled payments to Ledger."
+          badge={<Badge tone="gold">{invoices.length} Invoice(s)</Badge>}
+        />
+        {can(PERMISSIONS.FINANCIALS_WRITE) && (
+          <form onSubmit={onCreateInvoice} className="space-y-3 border-b border-line p-5">
+            <div className="grid gap-3 md:grid-cols-4">
+              <Input placeholder="Client Company Name" required value={invClient} onChange={(e) => setInvClient(e.target.value)} />
+              <Input placeholder="Project Name (optional)" value={invProject} onChange={(e) => setInvProject(e.target.value)} />
+              <Input placeholder="Subtotal (LKR)" type="number" min="1" required value={invAmount} onChange={(e) => setInvAmount(e.target.value)} />
+              <Button type="submit"><Plus className="h-4 w-4" /> Issue Tax Invoice</Button>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <Input
+                placeholder="Line item description"
+                value={invDesc}
+                onChange={(e) => setInvDesc(e.target.value)}
+                className="flex-1 min-w-[220px]"
+              />
+              <div className="flex items-center gap-4 text-xs text-muted">
+                <label className="inline-flex cursor-pointer items-center gap-1.5">
+                  <input type="checkbox" checked={invApplySscl} onChange={(e) => setInvApplySscl(e.target.checked)} />
+                  <span>SSCL (2.5%)</span>
+                </label>
+                <label className="inline-flex cursor-pointer items-center gap-1.5">
+                  <input type="checkbox" checked={invApplyVat} onChange={(e) => setInvApplyVat(e.target.checked)} />
+                  <span>VAT (18%)</span>
+                </label>
+              </div>
+            </div>
+          </form>
+        )}
+        <div className="divide-y divide-line">
+          {invoices.length === 0 ? (
+            <p className="p-5 text-xs text-muted">No client tax invoices issued yet.</p>
+          ) : (
+            invoices.map((inv) => (
+              <div key={inv.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 text-sm">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-xs font-bold text-gold-strong dark:text-gold">{inv.invoiceNumber}</span>
+                    <span className="font-semibold text-ink">{inv.clientName}</span>
+                    <Badge tone={inv.status === 'PAID' ? 'success' : inv.status === 'OVERDUE' ? 'danger' : 'gold'}>
+                      {inv.status}
+                    </Badge>
+                  </div>
+                  <p className="mt-0.5 text-xs text-muted">
+                    {inv.projectName ? `${inv.projectName} · ` : ''}
+                    Subtotal LKR {inv.subtotal.toLocaleString()} + SSCL {inv.ssclRate}% + VAT {inv.vatRate}% · Due {inv.dueDate}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-sm font-bold text-ink">
+                    {inv.currency} {inv.totalAmount.toLocaleString()}
+                  </span>
+                  {can(PERMISSIONS.FINANCIALS_WRITE) && inv.status !== 'PAID' && (
+                    <Button size="sm" variant="primary" onClick={() => void onMarkInvoiceStatus(inv.id, 'PAID')}>
+                      <CheckCircle2 className="h-3.5 w-3.5" /> Mark Paid
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() =>
+                      exportBrandedPdf({
+                        title: `TAX INVOICE — ${inv.invoiceNumber}`,
+                        subtitle: `Bill To: ${inv.clientName}${inv.projectName ? ` · Project: ${inv.projectName}` : ''} · Due ${inv.dueDate}`,
+                        generatedByEmail: user?.email,
+                        generatedByName: user?.fullName,
+                        kpis: [
+                          { label: 'Invoice Status', value: inv.status },
+                          { label: 'Subtotal', value: `${inv.currency} ${inv.subtotal.toLocaleString()}` },
+                          { label: `Tax (SSCL ${inv.ssclRate}% + VAT ${inv.vatRate}%)`, value: `${inv.currency} ${(inv.ssclAmount + inv.vatAmount).toLocaleString()}` },
+                          { label: 'Grand Total', value: `${inv.currency} ${inv.totalAmount.toLocaleString()}` },
+                        ],
+                        columns: ['Description', 'Qty', 'Unit Price', 'Line Total'],
+                        rows: [
+                          ...inv.lineItems.map((li) => [
+                            li.description,
+                            String(li.quantity),
+                            `${inv.currency} ${li.unitPrice.toLocaleString()}`,
+                            `${inv.currency} ${li.amount.toLocaleString()}`,
+                          ]),
+                          ['SSCL Levy', `${inv.ssclRate}%`, '—', `${inv.currency} ${inv.ssclAmount.toLocaleString()}`],
+                          ['Value Added Tax (VAT)', `${inv.vatRate}%`, '—', `${inv.currency} ${inv.vatAmount.toLocaleString()}`],
+                          ['TOTAL PAYABLE', '—', '—', `${inv.currency} ${inv.totalAmount.toLocaleString()}`],
+                        ],
+                      })
+                    }
+                  >
+                    <Download className="h-3.5 w-3.5" /> Invoice PDF
+                  </Button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </Card>
 
       {can(PERMISSIONS.FINANCIALS_WRITE) && (
         <Card>
@@ -901,6 +1056,12 @@ interface EmployeeProfilePayload {
   role: string;
   title: string;
   status: string;
+  monthlyBasicSalaryLkr?: number;
+  fixedAllowancesLkr?: number;
+  epfNumber?: string;
+  bankName?: string;
+  bankBranch?: string;
+  bankAccountNo?: string;
   pendingRequests: Array<{
     id: string;
     field?: 'nicNumber' | 'phone';
@@ -935,6 +1096,12 @@ export function ProfileView() {
   const [phone, setPhone] = useState('');
   const [role, setRole] = useState('STAFF');
   const [title, setTitle] = useState('');
+  const [monthlyBasicSalaryLkr, setMonthlyBasicSalaryLkr] = useState('200000');
+  const [fixedAllowancesLkr, setFixedAllowancesLkr] = useState('0');
+  const [epfNumber, setEpfNumber] = useState('');
+  const [bankName, setBankName] = useState('');
+  const [bankBranch, setBankBranch] = useState('');
+  const [bankAccountNo, setBankAccountNo] = useState('');
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -954,6 +1121,12 @@ export function ProfileView() {
     setPhone(data.phone ?? '');
     setRole(data.role ?? 'STAFF');
     setTitle(data.title ?? '');
+    setMonthlyBasicSalaryLkr(String(data.monthlyBasicSalaryLkr ?? 200000));
+    setFixedAllowancesLkr(String(data.fixedAllowancesLkr ?? 0));
+    setEpfNumber(data.epfNumber ?? '');
+    setBankName(data.bankName ?? '');
+    setBankBranch(data.bankBranch ?? '');
+    setBankAccountNo(data.bankAccountNo ?? '');
   }, []);
 
   const load = useCallback(async () => {
@@ -1077,6 +1250,12 @@ export function ProfileView() {
         address,
         birthday,
         phone,
+        monthlyBasicSalaryLkr: Number(monthlyBasicSalaryLkr) || 0,
+        fixedAllowancesLkr: Number(fixedAllowancesLkr) || 0,
+        epfNumber,
+        bankName,
+        bankBranch,
+        bankAccountNo,
       };
       if (isSuperAdmin) {
         payload.role = role;
@@ -1221,6 +1400,34 @@ export function ProfileView() {
               <option value="INTERN">Intern / Trainee</option>
             </Select>
           </Field>
+
+          {(isViewingSelf || isHrOrSuperAdmin) && (
+            <>
+              <div className="md:col-span-2 mt-2 border-t border-line pt-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-gold-strong dark:text-gold">
+                  Sri Lanka Payroll, EPF &amp; Bank SLIPS Details
+                </p>
+              </div>
+              <Field label="Monthly Basic Salary (LKR)" htmlFor="pf-sal">
+                <Input id="pf-sal" type="number" min="0" disabled={!isHrOrSuperAdmin} value={monthlyBasicSalaryLkr} onChange={(e) => setMonthlyBasicSalaryLkr(e.target.value)} />
+              </Field>
+              <Field label="Fixed Monthly Allowances (LKR)" htmlFor="pf-allow">
+                <Input id="pf-allow" type="number" min="0" disabled={!isHrOrSuperAdmin} value={fixedAllowancesLkr} onChange={(e) => setFixedAllowancesLkr(e.target.value)} />
+              </Field>
+              <Field label="EPF / ETF Member Number" htmlFor="pf-epf">
+                <Input id="pf-epf" disabled={!isHrOrSuperAdmin} value={epfNumber} onChange={(e) => setEpfNumber(e.target.value)} placeholder="e.g. EPF-0042" />
+              </Field>
+              <Field label="Bank Name" htmlFor="pf-bank">
+                <Input id="pf-bank" disabled={!isHrOrSuperAdmin} value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="e.g. Commercial Bank / Sampath Bank" />
+              </Field>
+              <Field label="Bank Branch" htmlFor="pf-branch">
+                <Input id="pf-branch" disabled={!isHrOrSuperAdmin} value={bankBranch} onChange={(e) => setBankBranch(e.target.value)} placeholder="e.g. Colombo 03" />
+              </Field>
+              <Field label="Bank Account Number" htmlFor="pf-acc">
+                <Input id="pf-acc" disabled={!isHrOrSuperAdmin} value={bankAccountNo} onChange={(e) => setBankAccountNo(e.target.value)} placeholder="e.g. 8001234567" />
+              </Field>
+            </>
+          )}
 
           {isHrOrSuperAdmin && (
             <div className="flex justify-end md:col-span-2">

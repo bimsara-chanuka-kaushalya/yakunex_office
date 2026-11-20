@@ -52,6 +52,7 @@ import { Field, Input, Select } from '@/components/ui/field';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { api, del, liveGet, patch, post, put } from '@/lib/api';
+import { useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
@@ -1978,11 +1979,20 @@ export function ReportsView() {
   const [data, setData] = useState<ReportsData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    api<ReportsData>('/reports/summary')
-      .then(setData)
-      .finally(() => setLoading(false));
+  const load = useCallback(async () => {
+    try {
+      const res = await api<ReportsData>('/reports/summary');
+      setData(res);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useLiveSync(load);
 
   function exportCsv() {
     if (!data) return;
@@ -2318,11 +2328,20 @@ export function AuditLogsView() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
 
-  useEffect(() => {
-    api<AuditRow[]>('/audit-logs')
-      .then(setLogs)
-      .finally(() => setLoading(false));
+  const load = useCallback(async () => {
+    try {
+      const res = await api<AuditRow[]>('/audit-logs');
+      setLogs(res);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useLiveSync(load);
 
   const filtered = logs.filter((l) => {
     if (!search) return true;
@@ -2485,6 +2504,8 @@ export function SettingsView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useLiveSync(load);
 
   function useCurrentGpsForOffice() {
     if (typeof navigator === 'undefined' || !navigator.geolocation) return;

@@ -249,4 +249,33 @@ describe('WorkspaceService Enterprise Waves 1-5 Coverage', () => {
     expect(insights.persona).toBe('Intern & Trainee Workspace');
     expect(insights.cards.some((c) => c.label === 'Intern Leave Balance')).toBe(true);
   });
+
+  it('calculates Sri Lanka IRD APIT progressive tax & Client Tax Invoices (SSCL 2.5% + VAT 18%) auto-posting to Ledger', async () => {
+    const svc = makeService();
+    // IRD APIT monthly progressive slabs (LKR 150,000 relief)
+    expect(svc.computeSriLankaMonthlyApit(150_000)).toBe(0);
+    expect(svc.computeSriLankaMonthlyApit(233_333)).toBe(Math.round(83_333 * 0.06));
+    expect(svc.computeSriLankaMonthlyApit(400_000)).toBeGreaterThan(45_000);
+
+    // Client Tax Invoice with SSCL 2.5% + VAT 18%
+    const inv = await svc.createInvoice(adminActor, {
+      clientName: 'Sampath Digital Ventures',
+      projectName: 'Core Mobile Banking',
+      currency: 'LKR',
+      applySscl: true,
+      applyVat: true,
+      lineItems: [{ description: 'Sprint 14 Delivery', quantity: 1, unitPrice: 1_000_000 }],
+    });
+    expect(inv.invoiceNumber).toMatch(/^YNX-INV-\d{4}-\d{4}$/);
+    expect(inv.subtotal).toBe(1_000_000);
+    expect(inv.ssclAmount).toBe(25_000); // 2.5%
+    expect(inv.vatAmount).toBe(184_500); // 18% of 1,025,000
+    expect(inv.totalAmount).toBe(1_209_500);
+
+    // Marking PAID auto-posts INCOME entry to Finance Ledger
+    const beforeIncome = svc.getFinanceSummary().totalIncome;
+    await svc.updateInvoiceStatus(adminActor, inv.id, 'PAID');
+    const afterIncome = svc.getFinanceSummary().totalIncome;
+    expect(afterIncome - beforeIncome).toBe(1_209_500);
+  });
 });

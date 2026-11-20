@@ -796,6 +796,28 @@ export class WorkspaceController {
     return this.workspace.createFinanceEntry(actor, body);
   }
 
+  @Get('finance/invoices')
+  @RequirePermissions(PERMISSIONS.FINANCIALS_READ)
+  listInvoices() {
+    return this.workspace.listInvoices();
+  }
+
+  @Post('finance/invoices')
+  @RequirePermissions(PERMISSIONS.FINANCIALS_WRITE)
+  createInvoice(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.createInvoice(actor, body);
+  }
+
+  @Patch('finance/invoices/:id/status')
+  @RequirePermissions(PERMISSIONS.FINANCIALS_WRITE)
+  updateInvoiceStatus(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body() body: { status: 'DRAFT' | 'SENT' | 'PAID' | 'OVERDUE' },
+  ) {
+    return this.workspace.updateInvoiceStatus(actor, id, body.status);
+  }
+
   // ─── Assets ───────────────────────────────────────────────────────────────
   @Get('assets')
   @RequirePermissions(PERMISSIONS.USERS_READ)
@@ -950,6 +972,12 @@ export class WorkspaceController {
       phone?: string;
       role?: Role;
       title?: string;
+      monthlyBasicSalaryLkr?: number;
+      fixedAllowancesLkr?: number;
+      epfNumber?: string;
+      bankName?: string;
+      bankBranch?: string;
+      bankAccountNo?: string;
     },
   ) {
     return this.workspace.adminUpdateProfile(actor, userId, body);
