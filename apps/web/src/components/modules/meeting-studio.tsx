@@ -1397,6 +1397,24 @@ export function MeetingStudio({
         lkRoom
           .on(RoomEvent.TrackSubscribed, upsertRemoteTrack)
           .on(RoomEvent.TrackUnsubscribed, removeRemoteTrack)
+          .on(RoomEvent.TrackUnmuted, (pub, participant) => {
+            if (participant.identity && participant.identity !== currentUser.id && pub.track) {
+              upsertRemoteTrack(
+                pub.track as RemoteTrack,
+                pub as RemoteTrackPublication,
+                participant as RemoteParticipant,
+              );
+            }
+          })
+          .on(RoomEvent.TrackMuted, (pub, participant) => {
+            if (participant.identity && participant.identity !== currentUser.id && pub.track) {
+              upsertRemoteTrack(
+                pub.track as RemoteTrack,
+                pub as RemoteTrackPublication,
+                participant as RemoteParticipant,
+              );
+            }
+          })
           .on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
             const nextMap: Record<string, boolean> = {};
             for (const sp of speakers) {
@@ -3301,38 +3319,75 @@ export function MeetingStudio({
     [commitLocalStream, currentUser.id, renegotiatePeer, syncLocalTrackToPeer],
   );
 
+  const micBusyRef = useRef(false);
+  const camBusyRef = useRef(false);
+
   const toggleMic = async () => {
+    if (micBusyRef.current) return;
     const next = !micOn;
-    if (next) {
-      let track = localStreamRef.current?.getAudioTracks().find((t) => t.readyState === 'live');
-      if (!track) {
-        try {
-          const captured = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              deviceId: selectedMicId ? { exact: selectedMicId } : undefined,
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-            },
-          });
-          track = captured.getAudioTracks()[0];
-          if (track) {
-            await replaceOrAddLocalTrack('audio', track);
-            await refreshDevices();
+    if (next && !canHostControl && (room.suspendedActivities || room.allowUnmuteSelf === false)) {
+      showToast('Host has disabled unmuting yourself.');
+      return;
+    }
+    micBusyRef.current = true;
+    // Update ref & UI state BEFORE syncSfuLocalTracks so SFU never mutes the newly captured track!
+    micOnRef.current = next;
+    setMicOn(next);
+    setRoom((prev) => ({
+      ...prev,
+      participants: prev.participants.map((p) =>
+        p.userId === currentUser.id ? { ...p, micOn: next } : p,
+      ),
+    }));
+    try {
+      if (next) {
+        let track = localStreamRef.current?.getAudioTracks().find((t) => t.readyState === 'live');
+        if (!track) {
+          try {
+            let captured: MediaStream;
+            try {
+              captured = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                  deviceId: selectedMicId ? { exact: selectedMicId } : undefined,
+                  echoCancellation: true,
+                  noiseSuppression: true,
+                  autoGainControl: true,
+                },
+              });
+            } catch {
+              // Fallback to default microphone if saved deviceId is unavailable
+              captured = await navigator.mediaDevices.getUserMedia({ audio: true });
+            }
+            track = captured.getAudioTracks()[0];
+            if (track) {
+              track.enabled = true;
+              setSelectedMicId(track.getSettings().deviceId ?? '');
+              await replaceOrAddLocalTrack('audio', track);
+              await refreshDevices();
+            }
+          } catch {
+            micOnRef.current = false;
+            setMicOn(false);
+            setRoom((prev) => ({
+              ...prev,
+              participants: prev.participants.map((p) =>
+                p.userId === currentUser.id ? { ...p, micOn: false } : p,
+              ),
+            }));
+            showToast('Could not access microphone. Check browser permissions.');
+            return;
           }
-        } catch {
-          showToast('Could not access microphone. Check browser permissions.');
-          return;
-        }
-      } else {
-        track.enabled = true;
-        const base = localStreamRef.current;
-        if (base) {
-          const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
-          for (const [peerId, pc] of pcsRef.current.entries()) {
-            const canAdd = currentUser.id.localeCompare(peerId) < 0 || pc.remoteDescription !== null;
-            if (await syncLocalTrackToPeer(pc, 'audio', track, base, scrTrackIds, canAdd)) {
-              void renegotiatePeer(peerId);
+        } else {
+          track.enabled = true;
+          const base = localStreamRef.current;
+          if (base) {
+            commitLocalStream(base);
+            const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
+            for (const [peerId, pc] of pcsRef.current.entries()) {
+              const canAdd = currentUser.id.localeCompare(peerId) < 0 || pc.remoteDescription !== null;
+              if (await syncLocalTrackToPeer(pc, 'audio', track, base, scrTrackIds, canAdd)) {
+                void renegotiatePeer(peerId);
+              }
             }
           }
         }
@@ -3341,83 +3396,123 @@ export function MeetingStudio({
           const micPub = sfuRoomRef.current.localParticipant.getTrackPublication(Track.Source.Microphone);
           if (micPub?.isMuted) await micPub.unmute().catch(() => undefined);
         }
-      }
-    } else {
-      localStreamRef.current?.getAudioTracks().forEach((t) => {
-        t.enabled = false;
-      });
-      if (sfuRoomRef.current?.state === 'connected') {
-        const micPub = sfuRoomRef.current.localParticipant.getTrackPublication(Track.Source.Microphone);
-        if (micPub && !micPub.isMuted) await micPub.mute().catch(() => undefined);
-      }
-    }
-    micOnRef.current = next;
-    setMicOn(next);
-    try {
-      const updated = await mPatch<MeetingRow>('/participant', { micOn: next });
-      setRoom(updated);
-    } catch (err) {
-      if (next) {
+      } else {
         localStreamRef.current?.getAudioTracks().forEach((t) => {
           t.enabled = false;
         });
-        micOnRef.current = false;
-        setMicOn(false);
-        showToast(err instanceof Error ? err.message : 'Host has disabled unmuting yourself.');
+        if (sfuRoomRef.current?.state === 'connected') {
+          const micPub = sfuRoomRef.current.localParticipant.getTrackPublication(Track.Source.Microphone);
+          if (micPub && !micPub.isMuted) await micPub.mute().catch(() => undefined);
+        }
       }
+
+      try {
+        const updated = await mPatch<MeetingRow>('/participant', { micOn: next });
+        setRoom(updated);
+      } catch (err) {
+        if (next) {
+          localStreamRef.current?.getAudioTracks().forEach((t) => {
+            t.enabled = false;
+          });
+          if (sfuRoomRef.current?.state === 'connected') {
+            const micPub = sfuRoomRef.current.localParticipant.getTrackPublication(Track.Source.Microphone);
+            if (micPub && !micPub.isMuted) await micPub.mute().catch(() => undefined);
+          }
+          micOnRef.current = false;
+          setMicOn(false);
+          setRoom((prev) => ({
+            ...prev,
+            participants: prev.participants.map((p) =>
+              p.userId === currentUser.id ? { ...p, micOn: false } : p,
+            ),
+          }));
+          showToast(err instanceof Error ? err.message : 'Host has disabled unmuting yourself.');
+        }
+      }
+    } finally {
+      micBusyRef.current = false;
     }
   };
 
   const toggleCam = async () => {
+    if (camBusyRef.current) return;
     const next = !camOn;
     if (next && !canHostControl && (room.suspendedActivities || room.allowStartVideo === false)) {
       showToast('Host has disabled starting video.');
       return;
     }
-    if (next) {
-      let track = localStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live');
-      if (!track) {
-        try {
-          let captured: MediaStream;
+    camBusyRef.current = true;
+    // Update ref & UI state BEFORE syncSfuLocalTracks so SFU never mutes the newly captured camera!
+    camOnRef.current = next;
+    setCamOn(next);
+    setRoom((prev) => ({
+      ...prev,
+      participants: prev.participants.map((p) =>
+        p.userId === currentUser.id ? { ...p, camOn: next } : p,
+      ),
+    }));
+    try {
+      if (next) {
+        let track = localStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live');
+        if (!track) {
           try {
-            captured = await navigator.mediaDevices.getUserMedia({
-              video: {
-                deviceId: selectedCamId ? { exact: selectedCamId } : undefined,
-                width: { ideal: 1920 },
-                height: { ideal: 1080 },
-                frameRate: { ideal: 30 },
-              },
-            });
+            let captured: MediaStream;
+            const slowLink =
+              activeTierRef.current === '3g-ultra' || activeTierRef.current === 'low-signal';
+            try {
+              captured = await navigator.mediaDevices.getUserMedia({
+                video: {
+                  deviceId: selectedCamId ? { exact: selectedCamId } : undefined,
+                  width: { ideal: slowLink ? 640 : 1280 },
+                  height: { ideal: slowLink ? 360 : 720 },
+                  frameRate: { ideal: slowLink ? 15 : 24 },
+                },
+              });
+            } catch {
+              try {
+                captured = await navigator.mediaDevices.getUserMedia({
+                  video: {
+                    width: { ideal: 640 },
+                    height: { ideal: 360 },
+                    frameRate: { ideal: 15 },
+                  },
+                });
+              } catch {
+                // Final unconstrained fallback for any webcam
+                captured = await navigator.mediaDevices.getUserMedia({ video: true });
+              }
+            }
+            track = captured.getVideoTracks()[0];
+            if (track) {
+              track.contentHint = 'motion';
+              track.enabled = true;
+              setSelectedCamId(track.getSettings().deviceId ?? '');
+              await replaceOrAddLocalTrack('video', track);
+              await refreshDevices();
+            }
           } catch {
-            // Fallback to default camera device & 720p if exact deviceId/1080p was rejected
-            captured = await navigator.mediaDevices.getUserMedia({
-              video: {
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                frameRate: { ideal: 30 },
-              },
-            });
+            camOnRef.current = false;
+            setCamOn(false);
+            setRoom((prev) => ({
+              ...prev,
+              participants: prev.participants.map((p) =>
+                p.userId === currentUser.id ? { ...p, camOn: false } : p,
+              ),
+            }));
+            showToast('Could not access camera. Another app may be using it or permission is blocked.');
+            return;
           }
-          track = captured.getVideoTracks()[0];
-          if (track) {
-            track.contentHint = 'motion';
-            setSelectedCamId(track.getSettings().deviceId ?? '');
-            await replaceOrAddLocalTrack('video', track);
-            await refreshDevices();
-          }
-        } catch {
-          showToast('Could not access camera. Another app may be using it or permission is blocked.');
-          return;
-        }
-      } else {
-        track.enabled = true;
-        const base = localStreamRef.current;
-        if (base) {
-          const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
-          for (const [peerId, pc] of pcsRef.current.entries()) {
-            const canAdd = currentUser.id.localeCompare(peerId) < 0 || pc.remoteDescription !== null;
-            if (await syncLocalTrackToPeer(pc, 'video', track, base, scrTrackIds, canAdd)) {
-              void renegotiatePeer(peerId);
+        } else {
+          track.enabled = true;
+          const base = localStreamRef.current;
+          if (base) {
+            commitLocalStream(base);
+            const scrTrackIds = new Set(screenStreamRef.current?.getTracks().map((t) => t.id) ?? []);
+            for (const [peerId, pc] of pcsRef.current.entries()) {
+              const canAdd = currentUser.id.localeCompare(peerId) < 0 || pc.remoteDescription !== null;
+              if (await syncLocalTrackToPeer(pc, 'video', track, base, scrTrackIds, canAdd)) {
+                void renegotiatePeer(peerId);
+              }
             }
           }
         }
@@ -3426,30 +3521,44 @@ export function MeetingStudio({
           const camPub = sfuRoomRef.current.localParticipant.getTrackPublication(Track.Source.Camera);
           if (camPub?.isMuted) await camPub.unmute().catch(() => undefined);
         }
-      }
-    } else {
-      localStreamRef.current?.getVideoTracks().forEach((t) => {
-        t.enabled = false;
-      });
-      if (sfuRoomRef.current?.state === 'connected') {
-        const camPub = sfuRoomRef.current.localParticipant.getTrackPublication(Track.Source.Camera);
-        if (camPub && !camPub.isMuted) await camPub.mute().catch(() => undefined);
-      }
-    }
-    camOnRef.current = next;
-    setCamOn(next);
-    try {
-      const updated = await mPatch<MeetingRow>('/participant', { camOn: next });
-      setRoom(updated);
-    } catch (err) {
-      if (next) {
+      } else {
         localStreamRef.current?.getVideoTracks().forEach((t) => {
           t.enabled = false;
         });
-        camOnRef.current = false;
-        setCamOn(false);
-        showToast(err instanceof Error ? err.message : 'Host has disabled starting video.');
+        if (localStreamRef.current) {
+          setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+        }
+        if (sfuRoomRef.current?.state === 'connected') {
+          const camPub = sfuRoomRef.current.localParticipant.getTrackPublication(Track.Source.Camera);
+          if (camPub && !camPub.isMuted) await camPub.mute().catch(() => undefined);
+        }
       }
+
+      try {
+        const updated = await mPatch<MeetingRow>('/participant', { camOn: next });
+        setRoom(updated);
+      } catch (err) {
+        if (next) {
+          localStreamRef.current?.getVideoTracks().forEach((t) => {
+            t.enabled = false;
+          });
+          if (sfuRoomRef.current?.state === 'connected') {
+            const camPub = sfuRoomRef.current.localParticipant.getTrackPublication(Track.Source.Camera);
+            if (camPub && !camPub.isMuted) await camPub.mute().catch(() => undefined);
+          }
+          camOnRef.current = false;
+          setCamOn(false);
+          setRoom((prev) => ({
+            ...prev,
+            participants: prev.participants.map((p) =>
+              p.userId === currentUser.id ? { ...p, camOn: false } : p,
+            ),
+          }));
+          showToast(err instanceof Error ? err.message : 'Host has disabled starting video.');
+        }
+      }
+    } finally {
+      camBusyRef.current = false;
     }
   };
 
