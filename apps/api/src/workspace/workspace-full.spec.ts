@@ -188,7 +188,8 @@ describe('WorkspaceService Full-System Coverage (All 14 Modules)', () => {
     expect(onBreak.onBreak).toBe(true);
     const offBreak = svc.toggleBreak(staffActor);
     expect(offBreak.onBreak).toBe(false);
-    expect(offBreak.breakMinutes).toBe(15);
+    // Break minutes are the real break length (at least 1 minute), not a fixed 15.
+    expect(offBreak.breakMinutes).toBe(1);
 
     const clockedOut = svc.clockOut(staffActor);
     expect(clockedOut.clockOutAt).not.toBeNull();

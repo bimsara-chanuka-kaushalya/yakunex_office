@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import dynamic from 'next/dynamic';
 import {
   CalendarCheck,
   Check,
@@ -13,7 +12,6 @@ import {
   LogIn,
   LogOut,
   MapPin,
-  Navigation,
   Pause,
   Plane,
   Play,
@@ -24,11 +22,9 @@ import {
   Star,
 } from 'lucide-react';
 import { useAuth } from '@/components/providers';
+import { TeamLocationMap } from '@/components/ui/team-location-map';
+import { AttendanceCalendar } from '@/components/modules/attendance-calendar';
 
-const LiveLocationMap = dynamic(
-  () => import('@/components/ui/live-location-map').then((m) => m.LiveLocationMap),
-  { ssr: false },
-);
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -916,6 +912,9 @@ interface AttendanceRow {
   deviceType?: string | null;
   geofenceStatus?: 'INSIDE_OFFICE' | 'OUTSIDE_OFFICE' | 'REMOTE_APPROVED' | 'NO_GPS';
   distanceMeters?: number | null;
+  geofenceExitAt?: string | null;
+  geofenceBreaches?: Array<{ id: string; exitAt: string; returnAt: string | null; minutesOutside: number | null; unauthorized: boolean }>;
+  shortLeaveId?: string | null;
 }
 
 interface LiveBoardMember {
@@ -933,7 +932,23 @@ interface LiveBoardMember {
   distanceMeters?: number | null;
   lastLocationAt?: string | null;
   locationTrail?: Array<{ lat: number; lon: number; at: string }>;
+  tracked?: boolean;
+  outsideSince?: string | null;
+  unauthorizedToday?: number;
+  exitsToday?: number;
+  trackingLost?: boolean;
 }
+
+interface AttendanceRulesPayload {
+  roles: string[];
+  radiusMeters: number;
+  graceMinutes: number;
+  lateAfter: string;
+  reminderTimes: string[];
+}
+
+/** Server messages carry a machine prefix (e.g. "OUTSIDE_ZONE: …"); show only the sentence. */
+const cleanApiMessage = (msg: string) => msg.replace(/^[A-Z_]+:\s*/, '');
 
 interface SriLankaPayrollRow {
   userId: string;
@@ -972,12 +987,13 @@ export function AttendanceView() {
     latitude: number;
     longitude: number;
     radiusMeters: number;
+    trackedRadiusMeters?: number;
   }>({ latitude: 6.9271, longitude: 79.8612, radiusMeters: 250 });
+  const [rules, setRules] = useState<AttendanceRulesPayload | null>(null);
   const [employees, setEmployees] = useState<Array<{ id: string; fullName: string; companyId: string | null }>>([]);
   const [loading, setLoading] = useState(true);
   const [notes, setNotes] = useState('');
   const [workMode, setWorkMode] = useState<'OFFICE' | 'REMOTE' | 'FIELD'>('OFFICE');
-  const [gpsStatus, setGpsStatus] = useState<string>('GPS ready');
   const [error, setError] = useState<string | null>(null);
   const [kioskOpen, setKioskOpen] = useState(false);
   const [kioskUserId, setKioskUserId] = useState('');
@@ -991,7 +1007,8 @@ export function AttendanceView() {
           todayRecord: AttendanceRow | null;
           records: AttendanceRow[];
           liveBoard?: LiveBoardMember[];
-          officeGeofence?: { latitude: number; longitude: number; radiusMeters: number };
+          officeGeofence?: { latitude: number; longitude: number; radiusMeters: number; trackedRadiusMeters?: number };
+          rules?: AttendanceRulesPayload;
         }>('/attendance'),
         api<{ employees?: Array<{ id: string; fullName: string; companyId: string | null }> }>('/organization').catch(() => ({ employees: [] })),
         api<{ currency: string; rows: SriLankaPayrollRow[] }>('/workforce/sri-lanka-payroll').catch(() => ({ currency: 'LKR', rows: [] })),
@@ -1001,6 +1018,7 @@ export function AttendanceView() {
       setLiveBoard(Array.isArray(res.liveBoard) ? res.liveBoard : []);
       setPayrollRows(Array.isArray(payroll?.rows) ? payroll.rows : []);
       if (res.officeGeofence) setOfficeGeofence(res.officeGeofence);
+      if (res.rules) setRules(res.rules);
       const emps = Array.isArray(org?.employees) ? org.employees : [];
       setEmployees(emps);
       if (emps.length > 0) setKioskUserId((prev) => prev || emps[0].id);
@@ -1017,6 +1035,9 @@ export function AttendanceView() {
 
   // Real-time continuous GPS tracking while clocked in + 15s live board refresh
   const isClockedInActive = Boolean(todayRecord?.clockInAt && !todayRecord?.clockOutAt);
+  // Interns (and other roles under the attendance rules) are tracked app-wide by the
+  // AttendanceAssistant; this page only tracks everyone else, as before.
+  const iAmTracked = Boolean(user?.role && rules?.roles.includes(user.role));
   useEffect(() => {
     const refreshId = setInterval(() => {
       void api<{ liveBoard?: LiveBoardMember[] }>('/attendance')
@@ -1028,13 +1049,12 @@ export function AttendanceView() {
 
     let watchId: number | null = null;
     let lastSentAt = 0;
-    if (isClockedInActive && typeof navigator !== 'undefined' && navigator.geolocation) {
+    if (isClockedInActive && !iAmTracked && typeof navigator !== 'undefined' && navigator.geolocation) {
       watchId = navigator.geolocation.watchPosition(
         (pos) => {
           const lat = Number(pos.coords.latitude.toFixed(6));
           const lon = Number(pos.coords.longitude.toFixed(6));
           const acc = Math.round(pos.coords.accuracy);
-          setGpsStatus(`Live GPS (±${acc}m): ${lat.toFixed(4)}, ${lon.toFixed(4)}`);
           const now = Date.now();
           if (now - lastSentAt >= 15_000) {
             lastSentAt = now;
@@ -1057,18 +1077,16 @@ export function AttendanceView() {
         navigator.geolocation.clearWatch(watchId);
       }
     };
-  }, [isClockedInActive]);
+  }, [iAmTracked, isClockedInActive]);
 
   async function doClockIn() {
     setError(null);
-    setGpsStatus('Capturing GPS location…');
     try {
       const gps = await captureBrowserGps();
-      setGpsStatus(
-        gps
-          ? `GPS verified (±${gps.accuracyMeters}m): ${gps.latitude.toFixed(4)}, ${gps.longitude.toFixed(4)}`
-          : 'Location permission skipped — clocked in with workspace mode',
-      );
+      if (!gps && iAmTracked) {
+        setError('Turn on location for this site, then try again — you must be inside the office area to clock in.');
+        return;
+      }
       await post('/attendance/clock-in', {
         notes,
         workMode,
@@ -1085,7 +1103,7 @@ export function AttendanceView() {
       setNotes('');
       await load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not clock in.');
+      setError(err instanceof ApiError ? cleanApiMessage(err.message) : 'Could not clock in.');
     }
   }
 
@@ -1142,10 +1160,6 @@ export function AttendanceView() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-2 rounded-full bg-ink/[0.05] px-3 py-1.5 text-xs text-muted dark:bg-white/[0.08]">
-            <Navigation className="h-3.5 w-3.5 text-gold-strong dark:text-gold" />
-            <span>{gpsStatus}</span>
-          </div>
           {canKiosk && employees.length > 0 && (
             <Button variant="secondary" size="sm" onClick={() => setKioskOpen(true)}>
               Kiosk Mode
@@ -1212,6 +1226,7 @@ export function AttendanceView() {
               )}
               {todayRecord?.isLate && <Badge tone="danger">Late</Badge>}
               <span className="text-xs text-muted">Standard hours: 08:30 – 17:30 (Asia/Colombo)</span>
+              {todayRecord?.shortLeaveId && <Badge tone="warning">Short leave (late start)</Badge>}
             </div>
             <h3 className="mt-2 font-display text-xl font-semibold">
               Today&apos;s Attendance Status
@@ -1231,6 +1246,7 @@ export function AttendanceView() {
           <div className="flex flex-wrap items-center gap-2.5">
             {!isClockedIn ? (
               <>
+                {!iAmTracked && (
                 <div className="segmented" role="radiogroup" aria-label="Work mode">
                   {(['OFFICE', 'REMOTE', 'FIELD'] as const).map((m) => (
                     <button
@@ -1244,6 +1260,7 @@ export function AttendanceView() {
                     </button>
                   ))}
                 </div>
+                )}
                 <Input
                   placeholder="Shift note (optional)…"
                   value={notes}
@@ -1268,6 +1285,37 @@ export function AttendanceView() {
           </div>
         </div>
         {error && <p className="mt-3 text-xs text-danger">{error}</p>}
+        {iAmTracked && rules && (
+          <div className="mt-4 grid gap-3 rounded-2xl bg-ink/[0.03] p-4 text-[13px] dark:bg-white/[0.04] sm:grid-cols-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">Office area</p>
+              {isClockedIn ? (
+                todayRecord?.geofenceExitAt ? (
+                  <p className="mt-0.5 font-semibold text-danger">Outside{todayRecord.distanceMeters != null ? ` · ${todayRecord.distanceMeters} m away` : ''}</p>
+                ) : (
+                  <p className="mt-0.5 font-semibold text-success">Inside{todayRecord?.distanceMeters != null ? ` · ${todayRecord.distanceMeters} m from office` : ''}</p>
+                )
+              ) : (
+                <p className="mt-0.5 text-ink">Clock in inside {rules.radiusMeters} m of the office</p>
+              )}
+            </div>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">Today</p>
+              <p className="mt-0.5 text-ink">
+                {(todayRecord?.geofenceBreaches ?? []).length} exit(s) ·{' '}
+                <span className={(todayRecord?.geofenceBreaches ?? []).some((b) => b.unauthorized) ? 'font-semibold text-danger' : ''}>
+                  {(todayRecord?.geofenceBreaches ?? []).filter((b) => b.unauthorized).length} unauthorized
+                </span>
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">Rules</p>
+              <p className="mt-0.5 text-ink">
+                Back within {rules.graceMinutes} min · late after {rules.lateAfter} = short leave
+              </p>
+            </div>
+          </div>
+        )}
       </Card>
 
       {/* Yakunex Live Who's In & Interactive GPS Map */}
@@ -1278,11 +1326,11 @@ export function AttendanceView() {
           badge={<Badge dot tone="success">Live GPS</Badge>}
         />
         <div className="px-5 pb-4 sm:px-6">
-          <LiveLocationMap
+          <TeamLocationMap
             members={liveBoard}
             officeLat={officeGeofence.latitude}
             officeLon={officeGeofence.longitude}
-            officeRadiusMeters={officeGeofence.radiusMeters}
+            radiusMeters={officeGeofence.trackedRadiusMeters ?? officeGeofence.radiusMeters}
           />
         </div>
         {liveBoard.length === 0 ? (
@@ -1330,14 +1378,20 @@ export function AttendanceView() {
                     )}
                   </div>
                 </div>
-                <Badge tone={m.onBreak ? 'warning' : 'success'}>
-                  {m.onBreak ? 'Break' : 'In'}
-                </Badge>
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  <Badge tone={m.onBreak ? 'warning' : m.outsideSince ? 'danger' : 'success'}>
+                    {m.onBreak ? 'Break' : m.outsideSince ? 'Outside' : 'In'}
+                  </Badge>
+                  {(m.unauthorizedToday ?? 0) > 0 && <Badge tone="danger">{m.unauthorizedToday} unauthorized</Badge>}
+                  {m.trackingLost && <Badge tone="warning">Tracking stopped</Badge>}
+                </div>
               </div>
             ))}
           </div>
         )}
       </Card>
+
+      <AttendanceCalendar people={employees} />
 
       <Card>
         <CardHeader title="Team attendance log" description="Daily clock-in, GPS location, break and clock-out register." />
@@ -1656,7 +1710,7 @@ interface LeaveRow {
   id: string;
   userId: string;
   userName: string;
-  type: 'ANNUAL' | 'SICK' | 'UNPAID' | 'OTHER';
+  type: 'ANNUAL' | 'SICK' | 'UNPAID' | 'OTHER' | 'SHORT';
   startDate: string;
   endDate: string;
   days: number;
@@ -1677,6 +1731,7 @@ interface LeaveSummaryPayload {
     medical: { total: number; used: number; remaining: number };
   };
   holidays2026: Array<{ date: string; name: string; type: string }>;
+  shortLeavesThisMonth?: number;
 }
 
 export function LeaveView() {
@@ -1783,6 +1838,8 @@ export function LeaveView() {
         <div className="rounded-2xl border border-gold/40 bg-gold/10 px-4 py-3 text-xs text-ink">
           <strong className="text-gold-strong dark:text-gold">Intern Leave Policy (10 Days Max):</strong>{' '}
           Interns are entitled to a maximum of <strong>10 total leave days</strong> ({leaveSummary?.totalRemaining ?? 10} day(s) remaining).
+          {' '}Starting work after 08:30 is recorded as a <strong>short leave</strong>
+          {typeof leaveSummary?.shortLeavesThisMonth === 'number' ? ` (${leaveSummary.shortLeavesThisMonth} this month)` : ''}.
         </div>
       )}
 
@@ -1867,7 +1924,7 @@ export function LeaveView() {
                   <tr key={req.id} className="hover:bg-canvas/40">
                     <td className="px-5 py-3.5 font-medium">{req.userName}</td>
                     <td className="px-5 py-3.5">
-                      <Badge>{req.type}</Badge>
+                      <Badge tone={req.type === 'SHORT' ? 'warning' : 'neutral'}>{req.type === 'SHORT' ? 'Short leave' : req.type}</Badge>
                       <p className="mt-1 text-xs text-muted">
                         {req.startDate} → {req.endDate} ({req.days}d)
                       </p>

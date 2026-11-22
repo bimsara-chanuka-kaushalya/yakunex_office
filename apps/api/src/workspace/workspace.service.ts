@@ -22,6 +22,15 @@ import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../common/types';
 import { PrismaService } from '../prisma/prisma.service';
 import { deepClone, mergeSnapshots } from './workspace-state-merge';
+import {
+  colomboClock,
+  haversineMeters as geoDistance,
+  isWorkDay,
+  minutesBetween,
+  normalizeRules,
+  readZone,
+  type AttendanceRules,
+} from './attendance-rules';
 import { buildMyDay, formatStandup, type MyDayApproval, type MyDayPerson, type MyDayRole } from './my-day';
 import {
   ALL_PERMISSION_KEYS,
@@ -194,13 +203,32 @@ export interface AttendanceItem {
   distanceMeters?: number | null;
   lastLocationAt?: string | null;
   locationTrail?: Array<{ lat: number; lon: number; at: string }>;
+  /** Break start, so break minutes are the real length (not a fixed 15). */
+  breakStartedAt?: string | null;
+  /** Geofence: outside the zone since (open exit), and when HR was alerted for it. */
+  geofenceExitAt?: string | null;
+  geofenceAlertedAt?: string | null;
+  geofenceBreaches?: Array<{
+    id: string;
+    exitAt: string;
+    returnAt: string | null;
+    minutesOutside: number | null;
+    unauthorized: boolean;
+    distanceMeters: number | null;
+    latitude: number | null;
+    longitude: number | null;
+  }>;
+  /** Tracking-lost alert already sent for the current silence. */
+  trackingLostAlertedAt?: string | null;
+  /** Short leave created because work started after the late time. */
+  shortLeaveId?: string | null;
 }
 
 export interface LeaveRequestItem {
   id: string;
   userId: string;
   userName: string;
-  type: 'ANNUAL' | 'SICK' | 'UNPAID' | 'OTHER';
+  type: 'ANNUAL' | 'SICK' | 'UNPAID' | 'OTHER' | 'SHORT';
   startDate: string;
   endDate: string;
   days: number;
@@ -441,6 +469,8 @@ export interface OrganizationSettings {
   officeRadiusMeters?: number;
   /** Super Admin sidebar rules per role: module key → SHOWN | LOCKED (visible, can't open) | HIDDEN. */
   moduleAccess?: Record<string, Record<string, ModuleAccessState>>;
+  /** Geofence / late-start / reminder rules (see attendance-rules.ts). */
+  attendanceRules?: Partial<AttendanceRules>;
 }
 
 export type ModuleAccessState = 'SHOWN' | 'LOCKED' | 'HIDDEN';
@@ -915,6 +945,16 @@ export class WorkspaceService implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     await this.prisma.waitForReady?.();
     await this.hydrateFromSupabase();
+    if (!this.attendanceSweepTimer && process.env.NODE_ENV !== 'test') {
+      this.attendanceSweepTimer = setInterval(() => {
+        try {
+          this.sweepAttendanceRules();
+        } catch (err) {
+          this.logger.warn(`Attendance sweep: ${(err as Error).message}`);
+        }
+      }, 30_000);
+      this.attendanceSweepTimer.unref?.();
+    }
   }
 
   /**
@@ -2263,6 +2303,276 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   // ─── Attendance & Yakunex Live Location ────────────────────────────────────
+  // ─── Attendance rules: geofence, late start, reminders ────────────────────
+  private holidayDates = new Set(BUILTIN_HOLIDAYS.map((h) => h.date));
+  private attendanceSweepTimer: ReturnType<typeof setInterval> | null = null;
+
+  getAttendanceRules(): AttendanceRules {
+    return normalizeRules(this.settings.attendanceRules);
+  }
+
+  private rulesApply(role: string | undefined | null, rules = this.getAttendanceRules()): boolean {
+    return Boolean(role) && rules.roles.includes(String(role).toUpperCase());
+  }
+
+  private officePoint() {
+    return { lat: this.settings.officeLatitude ?? 6.9271, lon: this.settings.officeLongitude ?? 79.8612 };
+  }
+
+  private pushNotice(
+    organizationId: string | undefined,
+    n: { type: 'SYSTEM' | 'APPROVAL'; title: string; body: string; targetUserId: string; allowedRoles?: string[]; actionUrl?: string },
+  ) {
+    const item = {
+      id: `ntf_${randomUUID().slice(0, 8)}`,
+      type: n.type,
+      title: n.title.slice(0, 160),
+      body: n.body.slice(0, 500),
+      targetUserId: n.targetUserId,
+      ...(n.allowedRoles ? { allowedRoles: n.allowedRoles } : {}),
+      actionUrl: n.actionUrl ?? '/attendance',
+      readByIds: [] as string[],
+      authorName: 'Yakunex Attendance',
+      createdAt: new Date().toISOString(),
+    };
+    this.notifications.unshift(item);
+    this.notificationBus.emit('notification', { organizationId, notification: item });
+  }
+
+  /** What the signed-in person's attendance rules are today (used for reminders & live tracking). */
+  async getMyAttendanceRules(actor: AuthUser) {
+    const rules = this.getAttendanceRules();
+    const holidays = await this.getHolidayCalendar(actor.organizationId).catch(() => []);
+    for (const h of holidays) this.holidayDates.add(h.date);
+    const clock = colomboClock();
+    const today = new Date().toISOString().slice(0, 10);
+    const rec = this.attendance.find((a) => a.userId === actor.id && a.workDate === today);
+    const onLeave = this.leaveRequests.some(
+      (l) => l.userId === actor.id && l.status === 'APPROVED' && l.type !== 'SHORT' && l.startDate <= clock.date && l.endDate >= clock.date,
+    );
+    return {
+      appliesToMe: this.rulesApply(actor.role, rules),
+      rules,
+      office: { ...this.officePoint(), radiusMeters: rules.radiusMeters },
+      today: clock.date,
+      now: clock.time,
+      isWorkDay: isWorkDay(clock.date, rules, this.holidayDates),
+      onLeaveToday: onLeave,
+      clockedIn: Boolean(rec?.clockInAt && !rec.clockOutAt),
+      clockedOut: Boolean(rec?.clockOutAt),
+      onBreak: Boolean(rec?.onBreak),
+      outsideSince: rec?.geofenceExitAt ?? null,
+    };
+  }
+
+  async updateAttendanceRules(actor: AuthUser, body: Record<string, unknown>) {
+    if (actor.role !== Role.SUPER_ADMIN && actor.role !== Role.ADMIN) {
+      throw new ForbiddenException('Only HR (Admin) or a Super Admin can change attendance rules.');
+    }
+    const next = normalizeRules({ ...this.getAttendanceRules(), ...(body as Partial<AttendanceRules>) });
+    const officeLat = typeof body.officeLatitude === 'number' ? body.officeLatitude : undefined;
+    const officeLon = typeof body.officeLongitude === 'number' ? body.officeLongitude : undefined;
+    if ((officeLat !== undefined && Math.abs(officeLat) > 90) || (officeLon !== undefined && Math.abs(officeLon) > 180)) {
+      throw new BadRequestException('Office location is not a valid latitude/longitude.');
+    }
+    this.settings = {
+      ...this.settings,
+      attendanceRules: next,
+      ...(officeLat !== undefined ? { officeLatitude: officeLat } : {}),
+      ...(officeLon !== undefined ? { officeLongitude: officeLon } : {}),
+    };
+    this.persistState(actor.organizationId);
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'ATTENDANCE_RULES_UPDATED',
+      entityType: 'Organization',
+      entityId: actor.organizationId,
+      metadata: { ...next, officeLatitude: officeLat, officeLongitude: officeLon },
+    });
+    return { rules: next, office: { ...this.officePoint(), radiusMeters: next.radiusMeters } };
+  }
+
+  /**
+   * Updates the zone state of one clocked-in record from a fresh GPS fix. Returns what changed so
+   * the caller (and the person's app) can react: they left the zone, or came back.
+   */
+  private applyGeofenceReading(
+    record: AttendanceItem,
+    reading: { latitude: number; longitude: number; accuracyMeters: number | null },
+    rules: AttendanceRules,
+    organizationId: string | undefined,
+    now = new Date(),
+  ): { zone: 'INSIDE' | 'OUTSIDE' | 'UNCERTAIN'; event: 'LEFT' | 'RETURNED' | null; distanceMeters: number } {
+    const office = this.officePoint();
+    const distanceMeters = Math.round(geoDistance(reading.latitude, reading.longitude, office.lat, office.lon));
+    const zone = readZone(distanceMeters, reading.accuracyMeters, rules.radiusMeters);
+    record.distanceMeters = distanceMeters;
+    record.geofenceStatus = zone === 'OUTSIDE' ? 'OUTSIDE_OFFICE' : zone === 'INSIDE' ? 'INSIDE_OFFICE' : record.geofenceStatus;
+    const nowIso = now.toISOString();
+    // On a break people may step out; the zone rule only runs while working.
+    if (record.onBreak) return { zone, event: null, distanceMeters };
+
+    if (zone === 'OUTSIDE' && !record.geofenceExitAt) {
+      record.geofenceExitAt = nowIso;
+      record.geofenceAlertedAt = null;
+      record.geofenceBreaches = [
+        ...(record.geofenceBreaches ?? []),
+        {
+          id: `gfb_${randomUUID().slice(0, 8)}`,
+          exitAt: nowIso,
+          returnAt: null,
+          minutesOutside: null,
+          unauthorized: false,
+          distanceMeters,
+          latitude: reading.latitude,
+          longitude: reading.longitude,
+        },
+      ].slice(-50);
+      this.pushNotice(organizationId, {
+        type: 'SYSTEM',
+        title: '📍 You left the office area',
+        body: `You are about ${distanceMeters} m from the office (allowed ${rules.radiusMeters} m). Come back within ${rules.graceMinutes} minutes or it is recorded as an unauthorized absence and HR is told.`,
+        targetUserId: record.userId,
+      });
+      return { zone, event: 'LEFT', distanceMeters };
+    }
+    if (zone === 'INSIDE' && record.geofenceExitAt) {
+      const minutes = minutesBetween(record.geofenceExitAt, now);
+      const open = [...(record.geofenceBreaches ?? [])].reverse().find((b) => !b.returnAt);
+      if (open) {
+        open.returnAt = nowIso;
+        open.minutesOutside = minutes;
+      }
+      if (record.geofenceAlertedAt) {
+        this.pushNotice(organizationId, {
+          type: 'SYSTEM',
+          title: `✅ ${record.userName} is back in the office area`,
+          body: `Returned after ${minutes} min outside the ${rules.radiusMeters} m zone.`,
+          targetUserId: '*',
+          allowedRoles: ['SUPER_ADMIN', 'ADMIN'],
+        });
+      }
+      record.geofenceExitAt = null;
+      record.geofenceAlertedAt = null;
+      return { zone, event: 'RETURNED', distanceMeters };
+    }
+    return { zone, event: null, distanceMeters };
+  }
+
+  /**
+   * Runs every 30 s: escalates exits older than the grace time, and notices when a tracked
+   * person's location has gone silent (app closed, GPS off). Works even if their app stopped.
+   */
+  sweepAttendanceRules(now = new Date()): number {
+    const rules = this.getAttendanceRules();
+    const today = now.toISOString().slice(0, 10);
+    let changed = 0;
+    for (const rec of this.attendance) {
+      if (rec.workDate !== today || !rec.clockInAt || rec.clockOutAt) continue;
+      if (!this.rulesApply(rec.userRole, rules) || rec.workMode !== 'OFFICE') continue;
+
+      if (rec.geofenceExitAt && !rec.geofenceAlertedAt && !rec.onBreak && minutesBetween(rec.geofenceExitAt, now) >= rules.graceMinutes) {
+        rec.geofenceAlertedAt = now.toISOString();
+        const open = [...(rec.geofenceBreaches ?? [])].reverse().find((b) => !b.returnAt);
+        if (open) open.unauthorized = true;
+        const since = colomboClock(new Date(rec.geofenceExitAt)).time;
+        this.pushNotice(undefined, {
+          type: 'APPROVAL',
+          title: `🚨 Unauthorized absence: ${rec.userName}`,
+          body: `Left the office area at ${since} and has been outside for over ${rules.graceMinutes} minutes (last seen ~${rec.distanceMeters ?? '?'} m away).`,
+          targetUserId: '*',
+          allowedRoles: ['SUPER_ADMIN', 'ADMIN'],
+        });
+        this.pushNotice(undefined, {
+          type: 'SYSTEM',
+          title: '🚨 Recorded as an unauthorized absence',
+          body: `You have been outside the office area for over ${rules.graceMinutes} minutes. HR has been notified.`,
+          targetUserId: rec.userId,
+        });
+        void this.audit
+          .log({
+            organizationId: this.defaultOrgId ?? '',
+            actorId: rec.userId,
+            action: 'GEOFENCE_UNAUTHORIZED_ABSENCE',
+            entityType: 'Attendance',
+            entityId: rec.id,
+            metadata: { exitAt: rec.geofenceExitAt, distanceMeters: rec.distanceMeters },
+          })
+          .catch(() => undefined);
+        changed++;
+      }
+
+      const last = rec.lastLocationAt ?? rec.clockInAt;
+      if (!rec.onBreak && !rec.trackingLostAlertedAt && last && minutesBetween(last, now) >= rules.trackingLostMinutes) {
+        rec.trackingLostAlertedAt = now.toISOString();
+        this.pushNotice(undefined, {
+          type: 'APPROVAL',
+          title: `📵 Location tracking stopped: ${rec.userName}`,
+          body: `No location from ${rec.userName} for ${minutesBetween(last, now)} minutes while clocked in (app closed or location turned off).`,
+          targetUserId: '*',
+          allowedRoles: ['SUPER_ADMIN', 'ADMIN'],
+        });
+        changed++;
+      }
+    }
+    if (changed) this.persistState();
+    return changed;
+  }
+
+  /** Month view of one person's attendance for the calendar (present, late, short leave, leave…). */
+  async getAttendanceCalendar(actor: AuthUser, query: { userId?: string; month?: string }) {
+    const userId = query.userId && this.isManagerOrAdmin(actor) ? String(query.userId) : actor.id;
+    const month = /^\d{4}-\d{2}$/.test(String(query.month ?? '')) ? String(query.month) : colomboClock().date.slice(0, 7);
+    const rules = this.getAttendanceRules();
+    const holidays = await this.getHolidayCalendar(actor.organizationId).catch(() => []);
+    const holidayMap = new Map(holidays.map((h) => [h.date, h.name]));
+    const [y, m] = month.split('-').map(Number);
+    const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const today = colomboClock().date;
+    const days = [] as Array<Record<string, unknown>>;
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = `${month}-${String(d).padStart(2, '0')}`;
+      const rec = this.attendance.find((a) => a.userId === userId && a.workDate === date);
+      const leave = this.leaveRequests.find(
+        (l) => l.userId === userId && l.status === 'APPROVED' && l.startDate <= date && l.endDate >= date,
+      );
+      const breaches = rec?.geofenceBreaches ?? [];
+      let status: string;
+      if (rec?.clockInAt) status = leave?.type === 'SHORT' ? 'SHORT_LEAVE' : rec.isLate ? 'LATE' : 'PRESENT';
+      else if (leave && leave.type !== 'SHORT') status = 'LEAVE';
+      else if (holidayMap.has(date)) status = 'HOLIDAY';
+      else if (!rules.workDays.includes(new Date(`${date}T00:00:00Z`).getUTCDay())) status = 'WEEKEND';
+      else if (date > today) status = 'UPCOMING';
+      else if (date === today) status = 'TODAY';
+      else status = 'ABSENT';
+      days.push({
+        date,
+        status,
+        clockInAt: rec?.clockInAt ?? null,
+        clockOutAt: rec?.clockOutAt ?? null,
+        holiday: holidayMap.get(date) ?? null,
+        leaveType: leave?.type ?? null,
+        exits: breaches.length,
+        unauthorized: breaches.filter((b) => b.unauthorized).length,
+      });
+    }
+    const count = (s: string) => days.filter((x) => x.status === s).length;
+    return {
+      userId,
+      month,
+      days,
+      totals: {
+        present: count('PRESENT') + count('LATE') + count('SHORT_LEAVE'),
+        late: count('LATE') + count('SHORT_LEAVE'),
+        shortLeaves: count('SHORT_LEAVE'),
+        absent: count('ABSENT'),
+        leave: count('LEAVE'),
+        unauthorized: days.reduce((n, x) => n + Number(x.unauthorized), 0),
+      },
+    };
+  }
+
   listAttendance(actor: AuthUser) {
     const today = new Date().toISOString().slice(0, 10);
     const myToday =
@@ -2289,6 +2599,11 @@ export class WorkspaceService implements OnModuleInit {
         distanceMeters: a.distanceMeters ?? null,
         lastLocationAt: a.lastLocationAt ?? a.clockInAt ?? null,
         locationTrail: a.locationTrail ?? [],
+        tracked: this.rulesApply(a.userRole) && (a.workMode ?? 'OFFICE') === 'OFFICE',
+        outsideSince: a.geofenceExitAt ?? null,
+        unauthorizedToday: (a.geofenceBreaches ?? []).filter((b) => b.unauthorized).length,
+        exitsToday: (a.geofenceBreaches ?? []).length,
+        trackingLost: Boolean(a.trackingLostAlertedAt),
       }));
     return {
       todayRecord: myToday,
@@ -2298,7 +2613,9 @@ export class WorkspaceService implements OnModuleInit {
         latitude: this.settings.officeLatitude ?? 6.9271,
         longitude: this.settings.officeLongitude ?? 79.8612,
         radiusMeters: this.settings.officeRadiusMeters ?? 250,
+        trackedRadiusMeters: this.getAttendanceRules().radiusMeters,
       },
+      rules: this.getAttendanceRules(),
     };
   }
 
@@ -2308,12 +2625,30 @@ export class WorkspaceService implements OnModuleInit {
     if (record && record.clockInAt && !record.clockOutAt) {
       throw new BadRequestException('You are already clocked in for today.');
     }
+    const rules = this.getAttendanceRules();
+    const tracked = this.rulesApply(actor.role, rules);
     const workModeRaw = String(body.workMode ?? 'OFFICE').toUpperCase();
-    const workMode: AttendanceItem['workMode'] =
-      workModeRaw === 'REMOTE' || workModeRaw === 'FIELD' ? workModeRaw : 'OFFICE';
+    // Tracked roles (interns) work from the office zone only.
+    const workMode: AttendanceItem['workMode'] = tracked
+      ? 'OFFICE'
+      : workModeRaw === 'REMOTE' || workModeRaw === 'FIELD'
+        ? workModeRaw
+        : 'OFFICE';
     const latitude = typeof body.latitude === 'number' ? body.latitude : null;
     const longitude = typeof body.longitude === 'number' ? body.longitude : null;
     const accuracyMeters = typeof body.accuracyMeters === 'number' ? body.accuracyMeters : null;
+    if (tracked) {
+      if (latitude === null || longitude === null) {
+        throw new BadRequestException('LOCATION_REQUIRED: Turn on location for this site to clock in.');
+      }
+      const office = this.officePoint();
+      const dist = Math.round(geoDistance(latitude, longitude, office.lat, office.lon));
+      if (readZone(dist, accuracyMeters, rules.radiusMeters) === 'OUTSIDE') {
+        throw new BadRequestException(
+          `OUTSIDE_ZONE: You are about ${dist} m from the office. Clock in when you are inside the ${rules.radiusMeters} m office area.`,
+        );
+      }
+    }
     const locationLabel = body.locationLabel
       ? String(body.locationLabel).trim()
       : latitude !== null && longitude !== null
@@ -2336,14 +2671,12 @@ export class WorkspaceService implements OnModuleInit {
       geofenceStatus = distanceMeters <= radius ? 'INSIDE_OFFICE' : 'OUTSIDE_OFFICE';
     }
 
-    // Check Colombo local time against workDayStart (08:30 default)
-    const nowColombo = new Date().toLocaleTimeString('en-GB', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-      timeZone: 'Asia/Colombo',
-    });
-    const isLate = nowColombo > (this.settings.workDayStart || '08:30');
+    // Check Colombo local time against the late time (rules for tracked roles, else workDayStart)
+    const clock = colomboClock();
+    const nowColombo = clock.time;
+    const lateAfter = tracked ? rules.lateAfter : this.settings.workDayStart || '08:30';
+    const workDayToday = isWorkDay(clock.date, rules, this.holidayDates);
+    const isLate = nowColombo > lateAfter && (!tracked || workDayToday);
 
     if (!record) {
       record = {
@@ -2418,6 +2751,42 @@ export class WorkspaceService implements OnModuleInit {
       },
     }).catch((err: Error) => this.logger.warn(`Supabase Attendance sync: ${err.message}`));
 
+    // Late start on a work day → automatic short leave (tracked roles), once per day.
+    if (tracked && isLate && workDayToday && !record.shortLeaveId) {
+      const sl: LeaveRequestItem = {
+        id: `lv_${randomUUID().slice(0, 8)}`,
+        userId: actor.id,
+        userName: actor.fullName,
+        type: 'SHORT',
+        startDate: clock.date,
+        endDate: clock.date,
+        days: 0,
+        reason: `Started work at ${nowColombo} (after ${rules.lateAfter}) — recorded automatically.`,
+        status: 'APPROVED',
+        approverName: 'Automatic (late start)',
+        decisionNote: null,
+        createdAt: new Date().toISOString(),
+      };
+      this.leaveRequests.unshift(sl);
+      record.shortLeaveId = sl.id;
+      this.pushNotice(actor.organizationId, {
+        type: 'SYSTEM',
+        title: '⏰ Short leave recorded',
+        body: `You started work at ${nowColombo}, after ${rules.lateAfter}. A short leave has been recorded for today.`,
+        targetUserId: actor.id,
+        actionUrl: '/leave',
+      });
+      this.pushNotice(actor.organizationId, {
+        type: 'SYSTEM',
+        title: `⏰ Late start: ${actor.fullName}`,
+        body: `Clocked in at ${nowColombo} (after ${rules.lateAfter}). Short leave recorded automatically.`,
+        targetUserId: '*',
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN'],
+        actionUrl: '/leave',
+      });
+      this.persistState(actor.organizationId);
+    }
+
     return record;
   }
 
@@ -2429,9 +2798,14 @@ export class WorkspaceService implements OnModuleInit {
     if (!record) throw new BadRequestException('Clock in first before starting a break.');
     if (record.onBreak) {
       record.onBreak = false;
-      record.breakMinutes += 15;
+      record.breakMinutes += record.breakStartedAt ? Math.max(1, minutesBetween(record.breakStartedAt, new Date())) : 15;
+      record.breakStartedAt = null;
+      // Back to work: location must come in again before tracking-lost is judged.
+      record.lastLocationAt = new Date().toISOString();
+      record.trackingLostAlertedAt = null;
     } else {
       record.onBreak = true;
+      record.breakStartedAt = new Date().toISOString();
     }
     this.persistState(actor.organizationId);
     return record;
@@ -2445,6 +2819,14 @@ export class WorkspaceService implements OnModuleInit {
     if (!record) throw new BadRequestException('No active clock-in record found.');
     record.onBreak = false;
     record.clockOutAt = new Date().toISOString();
+    if (record.geofenceExitAt) {
+      const open = [...(record.geofenceBreaches ?? [])].reverse().find((b) => !b.returnAt);
+      if (open) {
+        open.returnAt = record.clockOutAt;
+        open.minutesOutside = minutesBetween(record.geofenceExitAt, new Date());
+      }
+      record.geofenceExitAt = null;
+    }
     this.persistState(actor.organizationId);
 
     void this.prisma.attendance?.updateMany?.({
@@ -7299,7 +7681,15 @@ export class WorkspaceService implements OnModuleInit {
 
     let distanceMeters: number | null = null;
     let geofenceStatus: AttendanceItem['geofenceStatus'] = 'NO_GPS';
-    if (record.workMode === 'REMOTE') {
+    const rules = this.getAttendanceRules();
+    const tracked = this.rulesApply(actor.role, rules) && record.workMode === 'OFFICE';
+    let zoneResult: ReturnType<WorkspaceService['applyGeofenceReading']> | null = null;
+    if (tracked) {
+      zoneResult = this.applyGeofenceReading(record, { latitude, longitude, accuracyMeters }, rules, actor.organizationId);
+      distanceMeters = zoneResult.distanceMeters;
+      geofenceStatus = record.geofenceStatus ?? 'NO_GPS';
+      record.trackingLostAlertedAt = null;
+    } else if (record.workMode === 'REMOTE') {
       geofenceStatus = 'REMOTE_APPROVED';
     } else {
       const officeLat = this.settings.officeLatitude ?? 6.9271;
@@ -7331,6 +7721,13 @@ export class WorkspaceService implements OnModuleInit {
       geofenceStatus,
       distanceMeters,
       lastLocationAt: record.lastLocationAt,
+      tracked,
+      zone: zoneResult?.zone ?? null,
+      event: zoneResult?.event ?? null,
+      outsideSince: record.geofenceExitAt ?? null,
+      unauthorized: Boolean(record.geofenceAlertedAt),
+      graceMinutes: rules.graceMinutes,
+      radiusMeters: rules.radiusMeters,
     };
   }
 
@@ -7372,7 +7769,9 @@ export class WorkspaceService implements OnModuleInit {
     const annualUsed = usedByType('ANNUAL');
     const casualUsed = usedByType('CASUAL');
     const medicalUsed = usedByType('SICK') + usedByType('MEDICAL');
-    const totalUsed = myApproved.reduce((sum, l) => sum + (Number(l.days) || 1), 0);
+    const totalUsed = myApproved.filter((l) => l.type !== 'SHORT').reduce((sum, l) => sum + (Number(l.days) || 1), 0);
+    const month = colomboClock().date.slice(0, 7);
+    const shortLeavesThisMonth = myApproved.filter((l) => l.type === 'SHORT' && l.startDate.startsWith(month)).length;
 
     const teamUpcoming = this.leaveRequests
       .filter((lr) => lr.status === 'APPROVED' || lr.status === 'PENDING')
@@ -7391,6 +7790,7 @@ export class WorkspaceService implements OnModuleInit {
         },
         holidays2026,
         teamCalendar: teamUpcoming,
+        shortLeavesThisMonth,
       };
     }
 
@@ -7406,6 +7806,7 @@ export class WorkspaceService implements OnModuleInit {
       },
       holidays2026,
       teamCalendar: teamUpcoming,
+      shortLeavesThisMonth,
     };
   }
 

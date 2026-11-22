@@ -204,6 +204,25 @@ export class WorkspaceController {
     return this.workspace.listAttendance(actor);
   }
 
+  @Get('attendance/my-rules')
+  getMyAttendanceRules(@CurrentUser() actor: AuthUser) {
+    return this.workspace.getMyAttendanceRules(actor);
+  }
+
+  @Put('attendance/rules')
+  updateAttendanceRules(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.updateAttendanceRules(actor, body ?? {});
+  }
+
+  @Get('attendance/calendar')
+  getAttendanceCalendar(
+    @CurrentUser() actor: AuthUser,
+    @Query('userId') userId?: string,
+    @Query('month') month?: string,
+  ) {
+    return this.workspace.getAttendanceCalendar(actor, { userId, month });
+  }
+
   @Post('attendance/clock-in')
   clockIn(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
     return this.workspace.clockIn(actor, body);

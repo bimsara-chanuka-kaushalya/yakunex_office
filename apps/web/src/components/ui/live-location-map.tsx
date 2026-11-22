@@ -20,6 +20,10 @@ export interface LiveMapMember {
   onBreak: boolean;
 }
 
+function escapeHtml(v: string) {
+  return v.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c);
+}
+
 interface LiveLocationMapProps {
   members: LiveMapMember[];
   officeLat?: number;
@@ -41,7 +45,7 @@ export function LiveLocationMap({
     if (!containerRef.current || mapRef.current) return;
     const map = L.map(containerRef.current, {
       center: [officeLat, officeLon],
-      zoom: 14,
+      zoom: 17,
       zoomControl: true,
     });
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -73,7 +77,7 @@ export function LiveLocationMap({
       fillOpacity: 0.12,
       weight: 2,
     })
-      .bindPopup(`<strong>Yakunex HQ Geofence</strong><br/>Radius: ${officeRadiusMeters}m`)
+      .bindPopup(`<strong>Office zone</strong><br/>Radius: ${officeRadiusMeters} m`)
       .addTo(group);
 
     const bounds: L.LatLngTuple[] = [[officeLat, officeLon]];
@@ -120,16 +124,16 @@ export function LiveLocationMap({
           opacity: 0.75,
           dashArray: '6, 6',
         })
-          .bindPopup(`${m.userName} — Daily Route (${m.locationTrail.length} GPS points)`)
+          .bindPopup(`${escapeHtml(m.userName)} — Daily Route (${m.locationTrail.length} GPS points)`)
           .addTo(group);
       }
 
       L.marker([m.latitude, m.longitude], { icon })
         .bindPopup(
           `<div style="min-width:160px;font-size:12px;">
-            <strong>${m.userName}</strong><br/>
+            <strong>${escapeHtml(m.userName)}</strong><br/>
             <span>${m.workMode}${m.onBreak ? ' · On Break' : ' · Active'}</span><br/>
-            <span>${m.locationLabel ?? `${m.latitude.toFixed(4)}, ${m.longitude.toFixed(4)}`}</span><br/>
+            <span>${escapeHtml(m.locationLabel ?? `${m.latitude.toFixed(4)}, ${m.longitude.toFixed(4)}`)}</span><br/>
             ${m.accuracyMeters != null ? `<span>Accuracy: ±${m.accuracyMeters}m</span><br/>` : ''}
             <span>Last GPS ping: ${lastPing}</span>
           </div>`,
@@ -138,9 +142,9 @@ export function LiveLocationMap({
     }
 
     if (bounds.length > 1) {
-      map.fitBounds(bounds, { padding: [36, 36], maxZoom: 16 });
+      map.fitBounds(bounds, { padding: [36, 36], maxZoom: 18 });
     } else {
-      map.setView([officeLat, officeLon], 14);
+      map.setView([officeLat, officeLon], 17);
     }
   }, [members, officeLat, officeLon, officeRadiusMeters]);
 
