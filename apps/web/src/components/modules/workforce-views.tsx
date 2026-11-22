@@ -38,7 +38,7 @@ import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { api, ApiError, patch, post } from '@/lib/api';
-import { useLiveSync } from '@/lib/use-live-sync';
+import { isSilentRefresh, useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
 import { PERMISSIONS } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
@@ -171,7 +171,7 @@ export function TimeTrackerView() {
   const [submittingWeek, setSubmittingWeek] = useState(false);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!isSilentRefresh()) setLoading(true);
     try {
       const [res, prjs, tsks] = await Promise.all([
         api<{ activeTimer: TimeEntry | null; entries: TimeEntry[]; summary?: TimeSummary }>('/time-entries'),
@@ -984,7 +984,7 @@ export function AttendanceView() {
   const [kioskAction, setKioskAction] = useState<'CLOCK_IN' | 'BREAK' | 'CLOCK_OUT'>('CLOCK_IN');
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!isSilentRefresh()) setLoading(true);
     try {
       const [res, org, payroll] = await Promise.all([
         api<{
@@ -1696,7 +1696,7 @@ export function LeaveView() {
   const [reason, setReason] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!isSilentRefresh()) setLoading(true);
     try {
       const [reqs, summary] = await Promise.all([
         api<LeaveRow[]>('/leave'),
@@ -2035,7 +2035,7 @@ export function InternsView() {
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!isSilentRefresh()) setLoading(true);
     try {
       setInterns(await api<InternRow[]>('/interns'));
     } finally {

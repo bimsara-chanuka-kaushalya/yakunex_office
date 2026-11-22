@@ -82,6 +82,8 @@ export function MeetingAlertListener() {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let fallbackTimer: ReturnType<typeof setInterval> | null = null;
     let bc: BroadcastChannel | null = null;
+    let streamLive = false;
+    let lastPullAt = 0;
 
     // Request notification permission early on first user gesture
     const askPerm = () => {
@@ -106,7 +108,11 @@ export function MeetingAlertListener() {
       try {
         es?.close();
         es = new EventSource('/api/notifications/stream', { withCredentials: true });
+        es.onopen = () => {
+          streamLive = true;
+        };
         es.onmessage = (evt) => {
+          streamLive = true;
           try {
             const payload = JSON.parse(evt.data) as {
               kind?: 'snapshot' | 'new' | 'ping';
@@ -122,6 +128,7 @@ export function MeetingAlertListener() {
           }
         };
         es.onerror = () => {
+          streamLive = false;
           es?.close();
           es = null;
           if (!closed && !reconnectTimer) {
@@ -140,9 +147,13 @@ export function MeetingAlertListener() {
     void pullFresh(true);
     connectSse();
 
-    // Fast 2-second uncached backup poll (guarantees instant delivery even when serverless SSE closes)
+    // Backup poll: every 2s only while the push stream is down (e.g. a serverless SSE cut-off);
+    // while it is up, a light 30s safety check is enough and the screen stays quiet.
     fallbackTimer = setInterval(() => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      const now = Date.now();
+      if (streamLive && now - lastPullAt < 30_000) return;
+      lastPullAt = now;
       void pullFresh(false);
     }, 2000);
 

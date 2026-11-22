@@ -991,13 +991,16 @@ export function NotificationsView() {
     setRows(res);
   }, []);
 
+  useLiveSync(load);
+
   useEffect(() => {
     void load();
+    // Push events (below) and the shared live sync deliver changes; this is only a safety net.
     const id = setInterval(() => {
       if (typeof document !== 'undefined' && !document.hidden) {
         void load();
       }
-    }, 2_500);
+    }, 30_000);
     const onInstant = () => void load();
     if (typeof window !== 'undefined') {
       window.addEventListener('yakunex:notifications-updated', onInstant);

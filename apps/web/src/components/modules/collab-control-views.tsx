@@ -53,7 +53,7 @@ import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { api, del, liveGet, patch, post, put } from '@/lib/api';
-import { useLiveSync } from '@/lib/use-live-sync';
+import { isSilentRefresh, useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
 import { APP_VERSION } from '@/lib/version';
@@ -1075,7 +1075,7 @@ export function MeetingsView() {
   };
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!isSilentRefresh()) setLoading(true);
     try {
       const [list, pol] = await Promise.all([
         liveGet<MeetingRow[]>('/meetings'),

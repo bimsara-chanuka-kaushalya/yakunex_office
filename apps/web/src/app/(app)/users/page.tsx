@@ -15,7 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/ui/empty-state';
 import { api, ApiError, del, patch, post, put } from '@/lib/api';
 import { exportBrandedPdf } from '@/lib/pdf-export';
-import { useLiveSync } from '@/lib/use-live-sync';
+import { isSilentRefresh, useLiveSync } from '@/lib/use-live-sync';
 import { PERMISSIONS, ROLE_LABELS, type Role } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
 
@@ -155,7 +155,7 @@ export default function UsersPage() {
   }, [search]);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!isSilentRefresh()) setLoading(true);
     setLoadError(null);
     const params = new URLSearchParams({ page: String(page), pageSize: '20' });
     if (debouncedSearch) params.set('search', debouncedSearch);

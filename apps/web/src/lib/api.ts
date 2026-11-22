@@ -91,6 +91,7 @@ function getCacheTtlMs(): number {
 export function clearApiCache(): void {
   getCache.clear();
   inflightGets.clear();
+  liveInflight?.clear();
 }
 
 const TRANSIENT_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -271,12 +272,35 @@ export async function api<T>(path: string, init: RequestInit = {}, allowRetry = 
   return executeRequest<T>(path, init, allowRetry);
 }
 
+const liveInflight = new Map<string, { promise: Promise<unknown>; at: number; done: boolean }>();
+/** Several widgets ask for the same live data at the same moment (e.g. /notifications from the sidebar
+ * badge, meeting alerts and the bell). Calls within this window share one request. */
+const LIVE_SHARE_MS = 1_000;
+
 /** Real-time GET request that bypasses the in-memory GET cache (used for live meeting rooms & WebRTC signaling). */
 export function liveGet<T>(path: string): Promise<T> {
-  return executeRequest<T>(path, { method: 'GET' }, true, {
+  const now = Date.now();
+  const shared = liveInflight.get(path);
+  // Meeting signalling must never get a reused answer; it only shares a request that is still running.
+  const reuseFinished = !path.startsWith('/meetings') && !path.startsWith('/public/meetings');
+  if (shared && (!shared.done || (reuseFinished && now - shared.at < LIVE_SHARE_MS))) {
+    return shared.promise as Promise<T>;
+  }
+  const promise = executeRequest<T>(path, { method: 'GET' }, true, {
     timeoutMs: 8_500,
     maxRetries: 1,
   });
+  const entry = { promise: promise as Promise<unknown>, at: now, done: false };
+  liveInflight.set(path, entry);
+  promise.then(
+    () => {
+      entry.done = true;
+    },
+    () => {
+      if (liveInflight.get(path) === entry) liveInflight.delete(path);
+    },
+  );
+  return promise;
 }
 
 async function executeRequest<T>(

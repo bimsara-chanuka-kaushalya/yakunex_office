@@ -38,7 +38,7 @@ import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { api, del, patch, post } from '@/lib/api';
-import { useLiveSync } from '@/lib/use-live-sync';
+import { isSilentRefresh, useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
 import { PERMISSIONS } from '@/lib/permissions';
 import { cn } from '@/lib/cn';
@@ -102,7 +102,7 @@ export function ProjectsView() {
   const [description, setDescription] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!isSilentRefresh()) setLoading(true);
     try {
       setProjects(await api<ProjectRow[]>('/projects'));
     } finally {
@@ -541,7 +541,7 @@ export function TasksView() {
   const [dueDate, setDueDate] = useState('2026-11-30');
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!isSilentRefresh()) setLoading(true);
     try {
       const [t, p] = await Promise.all([api<TaskRow[]>('/tasks'), api<ProjectRow[]>('/projects')]);
       setTasks(t);
@@ -1408,7 +1408,7 @@ export function SprintsView() {
   const [endDate, setEndDate] = useState('2026-11-29');
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!isSilentRefresh()) setLoading(true);
     try {
       setSprints(await api<SprintRow[]>('/sprints'));
     } finally {
@@ -1709,7 +1709,7 @@ export function ClientsView() {
   const [notes, setNotes] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!isSilentRefresh()) setLoading(true);
     try {
       setClients(await api<ClientRow[]>('/clients'));
     } finally {
@@ -1922,7 +1922,7 @@ export function BugsView() {
   const [actualResult, setActualResult] = useState('');
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!isSilentRefresh()) setLoading(true);
     try {
       setBugs(await api<BugRow[]>('/bugs'));
     } finally {
@@ -2160,7 +2160,7 @@ export function DocumentsView() {
   const [sizeBytes, setSizeBytes] = useState<number>(524288);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!isSilentRefresh()) setLoading(true);
     try {
       setDocs(await api<DocumentRow[]>('/documents'));
     } finally {

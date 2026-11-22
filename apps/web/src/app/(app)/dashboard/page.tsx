@@ -22,7 +22,7 @@ import { Button } from '@/components/ui/button';
 import { RoleDistributionChart } from '@/components/dashboard/role-chart';
 import { MyDay } from '@/components/dashboard/my-day/my-day';
 import { api, ApiError } from '@/lib/api';
-import { useLiveSync } from '@/lib/use-live-sync';
+import { isSilentRefresh, useLiveSync } from '@/lib/use-live-sync';
 import { ALL_NAV_ITEMS, isModuleLockedForRole, isNavItemVisibleForRole } from '@/lib/nav';
 import { LockedModuleNotice } from '@/components/ui/locked-module';
 import { PERMISSIONS, ROLE_LABELS, type Role } from '@/lib/permissions';
@@ -177,7 +177,9 @@ export default function DashboardPage() {
       setLoading(false);
       return;
     }
-    setLoading(true);
+    // Live refreshes keep the current dashboard on screen; only the first load shows a skeleton.
+    const silent = isSilentRefresh();
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const [attRes, insightsRes, profRes] = await Promise.all([
@@ -192,7 +194,7 @@ export default function DashboardPage() {
       if (insightsRes) setRoleInsights(insightsRes);
       if (profRes?.firstName) setProfileInitialsName(profRes.firstName);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not load your dashboard.');
+      if (!silent) setError(err instanceof ApiError ? err.message : 'Could not load your dashboard.');
     } finally {
       setLoading(false);
     }
