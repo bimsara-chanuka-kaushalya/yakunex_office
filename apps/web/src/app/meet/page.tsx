@@ -13,7 +13,7 @@ import {
   type MeetingAccessPolicy,
 } from '@/components/modules/meeting/meeting-types';
 import { useAuth } from '@/components/providers';
-import { api, liveGet, post } from '@/lib/api';
+import { ApiError, api, liveGet, post } from '@/lib/api';
 
 interface PublicMeetingMeta {
   id: string;
@@ -344,8 +344,17 @@ function StandaloneMeetContent() {
         } else if (fresh.waitingRoomMessage !== waitingSession.room.waitingRoomMessage) {
           setWaitingSession((prev) => (prev ? { ...prev, room: fresh! } : null));
         }
-      } catch {
-        // retry on next tick
+      } catch (err) {
+        if (!active) return;
+        // 403 = no longer in the waiting room (declined/removed): stop waiting instead of retrying forever.
+        const forbidden =
+          (err instanceof ApiError && err.status === 403) ||
+          (err instanceof Error && /not a participant/i.test(err.message));
+        if (forbidden) {
+          setWaitingSession(null);
+          setError('Host declined or removed your waiting room request.');
+        }
+        // Anything else (network blip on 3G): retry on the next tick.
       }
     }, 2000);
     return () => {

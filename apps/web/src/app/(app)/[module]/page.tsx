@@ -29,7 +29,7 @@ const AttendanceView = dynamic(() => import('@/components/modules/workforce-view
 const LeaveView = dynamic(() => import('@/components/modules/workforce-views').then((m) => m.LeaveView), { loading: ViewLoader });
 const InternsView = dynamic(() => import('@/components/modules/workforce-views').then((m) => m.InternsView), { loading: ViewLoader });
 
-const ChatView = dynamic(() => import('@/components/modules/collab-control-views').then((m) => m.ChatView), { loading: ViewLoader });
+const ChatView = dynamic(() => import('@/components/modules/chat/chat-view').then((m) => m.ChatView), { loading: ViewLoader });
 const MeetingsView = dynamic(() => import('@/components/modules/collab-control-views').then((m) => m.MeetingsView), { loading: ViewLoader });
 const ReportsView = dynamic(() => import('@/components/modules/collab-control-views').then((m) => m.ReportsView), { loading: ViewLoader });
 const AuditLogsView = dynamic(() => import('@/components/modules/collab-control-views').then((m) => m.AuditLogsView), { loading: ViewLoader });

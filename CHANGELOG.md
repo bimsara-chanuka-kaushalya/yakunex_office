@@ -7,6 +7,14 @@ All notable changes to **Yakunex Hub** follow Semantic Versioning (`vMAJOR.MINOR
 
 ---
 
+## [v1.2.0] - 2026-11-22
+### Added
+- **WhatsApp-Grade Team Chat Rewrite**: Per-user unread counts (`chatReads` + `POST /api/chat/channels/:id/read`), `lastMessage` previews, `ALL / UNREAD / DIRECT / GROUPS` filters, mobile split-screen view, optimistic message sending with retry, auto-linkified URLs, and peer DM names/avatars.
+- **Real-Time Meeting Push Stream ("Doorbell" SSE) & 3G ETag Optimization**: `GET /api/meetings/:id/stream` and guest push streams wake calls instantly while `?etag=...` returns compact `{ unchanged: true }` responses on 3G.
+- **Super Admin Meeting Deletion & Cleanup**: `DELETE /api/meetings/:id` and `DELETE /api/meetings/ended` with audit logging, final non-restartable ended meetings, and instant 403 waiting-room stop.
+
+---
+
 ## [v1.1.1] - 2026-11-22
 ### Performance & UX
 - **Silent, Instant Live-Sync**: Replaced per-component SSE connections with a single shared `/api/workspace/live-stream` connection per tab and `isSilentRefresh()` background updates so views never flash loading skeletons during live refreshes.

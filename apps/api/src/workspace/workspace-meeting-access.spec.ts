@@ -94,8 +94,29 @@ describe('WorkspaceService meeting access control', () => {
     await expect(svc.joinMeetingRoom(outsider, mtg.id, {})).rejects.toThrow(/ended/);
     await expect(svc.updateParticipantState(outsider, mtg.id, { micOn: false })).rejects.toThrow(ForbiddenException);
 
-    const restarted = await svc.joinMeetingRoom(host, mtg.id, {});
-    expect(restarted.status).toBe('LIVE');
+    // An ended meeting is final, for the host too.
+    await expect(svc.joinMeetingRoom(host, mtg.id, {})).rejects.toThrow(/ended/);
+    await expect(svc.updateMeeting(mtg.id, { status: 'LIVE' }, 'org_test', host)).rejects.toThrow(/cannot be restarted/);
+  });
+
+  it('lets only a Super Admin delete meetings, and never a meeting people are in', async () => {
+    const svc = makeService();
+    const admin = user('usr_admin', Role.SUPER_ADMIN, 'Admin Director', 'YNX-DIR-0009');
+    const live = await liveMeeting(svc);
+    const ended = await liveMeeting(svc, { title: 'Old sync' });
+    await svc.updateMeeting(ended.id, { status: 'COMPLETED' }, 'org_test', host);
+
+    await expect(svc.deleteMeeting(host, ended.id)).rejects.toThrow(ForbiddenException);
+    await expect(svc.deleteMeeting(manager, ended.id)).rejects.toThrow(ForbiddenException);
+    await expect(svc.deleteMeeting(admin, live.id)).rejects.toThrow(/live right now/);
+
+    await expect(svc.deleteMeeting(admin, ended.id)).resolves.toEqual({ deleted: 1 });
+    const left = await svc.listMeetings('org_test');
+    expect(left.map((m) => m.id)).toEqual([live.id]);
+
+    await svc.updateMeeting(live.id, { status: 'CANCELLED' }, 'org_test', host);
+    await expect(svc.deleteEndedMeetings(admin, {})).resolves.toEqual({ deleted: 1 });
+    expect(await svc.listMeetings('org_test')).toEqual([]);
   });
 
   it('validates poll options and breakout rooms', async () => {
@@ -109,6 +130,45 @@ describe('WorkspaceService meeting access control', () => {
       ForbiddenException,
     );
     await expect(svc.manageBreakoutRooms(twin, mtg.id, { action: 'join-room', roomId: 'nope' })).rejects.toThrow();
+  });
+
+  it('rings the live doorbell for chat and signals, and only for members', async () => {
+    const svc = makeService();
+    const mtg = await liveMeeting(svc);
+    await svc.joinMeetingRoom(twin, mtg.id, {});
+    const events: string[] = [];
+    const off = svc.onMeetingActivity(mtg.id, (kind) => events.push(kind));
+    await svc.sendMeetingSignal(host, mtg.id, { type: 'offer', toUserId: twin.id, payload: {} });
+    await svc.postMeetingChat(host, mtg.id, { body: 'hello' });
+    await new Promise((r) => setTimeout(r, 200)); // room events are coalesced (80ms)
+    off();
+    expect(events).toContain('signal');
+    expect(events).toContain('room');
+
+    await expect(svc.requireMeetingStreamAccess(twin, mtg.id)).resolves.toBeUndefined();
+    await expect(svc.requireMeetingStreamAccess(outsider, mtg.id)).rejects.toThrow(ForbiddenException);
+  });
+
+  it('shows room details and meeting chat only to people in the meeting', async () => {
+    const svc = makeService();
+    const mtg = await liveMeeting(svc);
+    await svc.joinMeetingRoom(twin, mtg.id, {});
+    await svc.postMeetingChat(host, mtg.id, { body: 'team only' });
+
+    await expect(svc.getMeetingRoomFor(twin, mtg.id)).resolves.toMatchObject({ id: mtg.id });
+    await expect(svc.getMeetingRoomFor(manager, mtg.id)).resolves.toMatchObject({ id: mtg.id }); // can control
+    await expect(svc.getMeetingRoomFor(outsider, mtg.id)).rejects.toThrow(ForbiddenException);
+
+    const outsiderList = await svc.listMeetings('org_test', outsider);
+    const seen = outsiderList.find((m) => m.id === mtg.id);
+    if (seen) expect(seen.chatMessages).toEqual([]);
+    const memberList = await svc.listMeetings('org_test', twin);
+    expect(memberList.find((m) => m.id === mtg.id)?.chatMessages.some((c) => c.body === 'team only')).toBe(true);
+
+    // Past attendees still read the ended room (to see it ended); strangers still cannot.
+    await svc.updateMeeting(mtg.id, { status: 'COMPLETED' }, 'org_test', host);
+    await expect(svc.getMeetingRoomFor(twin, mtg.id)).resolves.toMatchObject({ status: 'COMPLETED' });
+    await expect(svc.getMeetingRoomFor(outsider, mtg.id)).rejects.toThrow(ForbiddenException);
   });
 
   it('shows guests by the name they typed', async () => {

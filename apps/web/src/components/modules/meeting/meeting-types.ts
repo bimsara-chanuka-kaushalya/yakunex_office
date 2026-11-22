@@ -195,3 +195,119 @@ export async function guestApiFetch<T>(
   }
   return body as T;
 }
+
+/**
+ * A sleep that can be cut short. Poll loops `await waker.sleep(ms)`; a push event calls `wake()`
+ * so the loop fetches immediately. A wake that arrives while the loop is busy fetching is kept,
+ * so the next sleep returns at once and no change is missed.
+ */
+export function createWaker() {
+  let resolveSleep: (() => void) | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let pending = false;
+  return {
+    sleep(ms: number): Promise<void> {
+      if (pending) {
+        pending = false;
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        const done = () => {
+          if (timer) clearTimeout(timer);
+          timer = null;
+          resolveSleep = null;
+          resolve();
+        };
+        resolveSleep = done;
+        timer = setTimeout(done, ms);
+      });
+    },
+    wake(): void {
+      if (resolveSleep) resolveSleep();
+      else pending = true;
+    },
+  };
+}
+
+/**
+ * Opens the meeting push stream ("doorbell") over fetch, so a guest token can travel in a header
+ * instead of the URL. Calls `onEvent` with 'signal' | 'room', and `onHealth(true|false)` as the
+ * stream connects or drops. Reconnects with back-off until the returned `close()` is called.
+ */
+export function openMeetingPushStream(opts: {
+  path: string;
+  guestToken?: string | null;
+  onEvent: (kind: 'signal' | 'room') => void;
+  onHealth: (healthy: boolean) => void;
+}): () => void {
+  let closed = false;
+  let controller: AbortController | null = null;
+  let retryMs = 1500;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const scheduleRetry = (ms: number) => {
+    if (closed) return;
+    retryTimer = setTimeout(connect, ms);
+  };
+
+  async function connect() {
+    if (closed) return;
+    controller = new AbortController();
+    try {
+      const res = await fetch(`/api${opts.path}`, {
+        credentials: 'include',
+        cache: 'no-store',
+        signal: controller.signal,
+        headers: {
+          Accept: 'text/event-stream',
+          ...(opts.guestToken ? { 'x-meeting-guest-token': opts.guestToken } : {}),
+        },
+      });
+      if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let denied = false;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx = buffer.indexOf('\n');
+        while (idx >= 0) {
+          const line = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 1);
+          idx = buffer.indexOf('\n');
+          if (!line.startsWith('data:')) continue;
+          try {
+            const evt = JSON.parse(line.slice(5).trim()) as { kind?: string };
+            if (evt.kind === 'ready') {
+              retryMs = 1500;
+              opts.onHealth(true);
+            } else if (evt.kind === 'signal' || evt.kind === 'room') {
+              opts.onEvent(evt.kind);
+            } else if (evt.kind === 'denied') {
+              denied = true;
+            }
+          } catch {
+            // keep-alive or partial line
+          }
+        }
+      }
+      opts.onHealth(false);
+      // Ended cleanly (server restart, proxy cut, or access denied): try again later.
+      scheduleRetry(denied ? 20_000 : retryMs);
+    } catch {
+      opts.onHealth(false);
+      if (closed) return;
+      scheduleRetry(retryMs);
+      retryMs = Math.min(10_000, retryMs * 2);
+    }
+  }
+
+  void connect();
+  return () => {
+    closed = true;
+    if (retryTimer) clearTimeout(retryTimer);
+    controller?.abort();
+  };
+}

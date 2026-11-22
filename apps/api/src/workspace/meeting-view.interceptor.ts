@@ -1,4 +1,5 @@
 import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { map, type Observable } from 'rxjs';
 import type { AuthUser } from '../common/types';
 import { WorkspaceService } from './workspace.service';
@@ -24,7 +25,12 @@ export class MeetingViewInterceptor implements NestInterceptor {
   constructor(private readonly workspace: WorkspaceService) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const req = context.switchToHttp().getRequest<{ user?: AuthUser; headers: Record<string, unknown> }>();
+    const req = context
+      .switchToHttp()
+      .getRequest<{ user?: AuthUser; headers: Record<string, unknown>; query?: Record<string, unknown> }>();
+    // Room polls send the etag they already have; an unchanged room is answered with a few bytes
+    // instead of the whole meeting (chat, attachments…), which matters a lot on 3G.
+    const clientEtag = typeof req.query?.etag === 'string' ? req.query.etag : null;
     let viewer: AuthUser | { id: string } | null = req.user ?? null;
     if (!viewer) {
       const token = req.headers?.['x-meeting-guest-token'];
@@ -39,7 +45,12 @@ export class MeetingViewInterceptor implements NestInterceptor {
 
     return next.handle().pipe(
       map((body: unknown) => {
-        if (isMeeting(body)) return this.workspace.viewMeetingFor(body, viewer);
+        if (isMeeting(body)) {
+          const view = this.workspace.viewMeetingFor(body, viewer);
+          if (clientEtag === null) return view;
+          const etag = createHash('sha1').update(JSON.stringify(view)).digest('base64url').slice(0, 20);
+          return clientEtag === etag ? { unchanged: true, etag } : { ...view, etag };
+        }
         if (Array.isArray(body) && body.length > 0 && body.every(isMeeting)) {
           return body.map((m) => this.workspace.viewMeetingFor(m, viewer));
         }

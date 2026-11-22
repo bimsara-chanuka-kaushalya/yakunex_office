@@ -701,6 +701,8 @@ export class WorkspaceService implements OnModuleInit {
   ];
 
   private messages: ChatMessageItem[] = [];
+  /** Last time each user read each chat channel: userId → channelId → ISO time (unread counts). */
+  private chatReads: Record<string, Record<string, string>> = {};
   private meetings: MeetingItem[] = [];
 
   private departments: Array<{
@@ -797,6 +799,8 @@ export class WorkspaceService implements OnModuleInit {
 
   private readonly notificationBus = new EventEmitter();
   private readonly workspaceBus = new EventEmitter();
+  /** In-process "doorbell" for live meeting streams: 'signal' (meetingId) and 'room' (any state change). */
+  private readonly meetingBus = new EventEmitter().setMaxListeners(0);
   private workspaceVersion = Date.now();
 
   private notifications: Array<{
@@ -1032,6 +1036,7 @@ export class WorkspaceService implements OnModuleInit {
     'performanceReviews',
     'notifications',
     'userProfiles',
+    'chatReads',
     'settings',
   ] as const;
 
@@ -1056,7 +1061,7 @@ export class WorkspaceService implements OnModuleInit {
         }
         continue;
       }
-      if (key === 'reportingManagers' || key === 'userProfiles') {
+      if (key === 'reportingManagers' || key === 'userProfiles' || key === 'chatReads') {
         if (value && typeof value === 'object' && !Array.isArray(value)) self[key] = value;
         continue;
       }
@@ -1182,7 +1187,10 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   private persistState(organizationId?: string): void {
-    if (!this.prisma.systemSetting?.upsert) return;
+    if (!this.prisma.systemSetting?.upsert) {
+      this.meetingBus.emit('room');
+      return;
+    }
     void this.persistStateNow(organizationId);
   }
 
@@ -1191,6 +1199,8 @@ export class WorkspaceService implements OnModuleInit {
    * includes every change made before it starts, so later callers share it.
    */
   private persistStateNow(organizationId?: string): Promise<void> {
+    // Ring the meeting doorbell before the (slower) database write so open calls refresh at once.
+    this.meetingBus.emit('room');
     if (this.persistTimer) {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
@@ -2675,7 +2685,60 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   listChatChannels(actor?: AuthUser) {
-    return this.channels.filter((ch) => this.canAccessChannel(actor, ch));
+    const visible = this.channels.filter((ch) => this.canAccessChannel(actor, ch));
+    if (!actor) return visible;
+    // One pass over messages: latest message + unread count per channel for this user.
+    const reads = this.chatReads[actor.id] ?? {};
+    const latest = new Map<string, ChatMessageItem>();
+    const unread = new Map<string, number>();
+    for (const m of this.messages) {
+      if (m.deleted) continue;
+      const prev = latest.get(m.channelId);
+      if (!prev || m.createdAt > prev.createdAt) latest.set(m.channelId, m);
+      const readAt = reads[m.channelId];
+      if (m.senderId !== actor.id && (!readAt || m.createdAt > readAt)) {
+        unread.set(m.channelId, (unread.get(m.channelId) ?? 0) + 1);
+      }
+    }
+    const users = this.prisma.getCachedUsers?.(actor.organizationId) ?? [];
+    return visible.map((ch) => {
+      const last = latest.get(ch.id);
+      // A DM is stored with the starter's view of the name ("DM: <other person>"); show each side
+      // the person they are talking to instead.
+      const peerId = ch.type === 'DIRECT' ? ch.memberIds?.find((id) => id !== actor.id) ?? null : null;
+      const peer = peerId ? users.find((u) => u.id === peerId) : undefined;
+      return {
+        ...ch,
+        displayName: peer ? peer.fullName : ch.type === 'DIRECT' ? ch.name.replace(/^DM:\s*/, '') : ch.name,
+        peerUserId: peerId,
+        peerAvatarUrl: peerId ? this.avatarOf(peerId, null) : null,
+        lastMessage: last
+          ? {
+              body: last.attachmentName && !last.body ? `📎 ${last.attachmentName}` : last.body.slice(0, 140),
+              senderId: last.senderId,
+              senderName: last.senderName,
+              createdAt: last.createdAt,
+            }
+          : null,
+        unreadCount: unread.get(ch.id) ?? 0,
+      };
+    });
+  }
+
+  /** Marks a channel read up to now for this user (only writes when something was unread). */
+  markChatChannelRead(actor: AuthUser, channelId: string) {
+    const ch = this.channels.find((c) => c.id === channelId);
+    if (!ch) throw new NotFoundException('Channel not found.');
+    if (!this.canAccessChannel(actor, ch)) throw new ForbiddenException('You do not have permission to view this channel.');
+    const reads = (this.chatReads[actor.id] ??= {});
+    const prev = reads[channelId];
+    const hasNewer = this.messages.some(
+      (m) => m.channelId === channelId && !m.deleted && m.senderId !== actor.id && (!prev || m.createdAt > prev),
+    );
+    if (!hasNewer && prev) return { channelId, readAt: prev };
+    reads[channelId] = new Date().toISOString();
+    this.persistState(actor.organizationId);
+    return { channelId, readAt: reads[channelId] };
   }
 
   listChatMessages(channelId: string, actor?: AuthUser) {
@@ -2958,6 +3021,7 @@ export class WorkspaceService implements OnModuleInit {
     ];
     cached.seq = lastSeq;
     this.meetingSignals.set(meetingId, cached);
+    this.meetingBus.emit('signal', meetingId);
 
     try {
       const orgId = await this.resolveOrgId(organizationId);
@@ -3147,7 +3211,22 @@ export class WorkspaceService implements OnModuleInit {
   async listMeetings(organizationId?: string, actor?: AuthUser) {
     await this.syncMeetingsFromDb(organizationId);
     if (!actor) return this.meetings;
-    return this.meetings.filter((m) => this.canActorSeeMeeting(m, actor));
+    return this.meetings
+      .filter((m) => this.canActorSeeMeeting(m, actor))
+      .map((m) =>
+        // The list only needs the card; the conversation belongs to the people in the meeting
+        // (and dropping it keeps the list small — chat can hold attachments).
+        this.isMeetingMember(m, actor, true) ? m : { ...m, chatMessages: [] },
+      );
+  }
+
+  /**
+   * Room details (chat, polls, notes, participants) for someone in the meeting: participants,
+   * hosts/managers, the waiting room, and past attendees of an ended meeting (so they still see
+   * that it ended). Everyone else is refused.
+   */
+  async getMeetingRoomFor(actor: AuthUser, id: string) {
+    return this.requireMeetingMember(actor, id, { allowWaiting: true });
   }
 
   async getMeetingRoom(id: string, organizationId?: string) {
@@ -3555,6 +3634,73 @@ export class WorkspaceService implements OnModuleInit {
     return created;
   }
 
+  // ─── Meeting deletion (Super Admin) ───────────────────────────────────────
+  private purgeMeetingData(organizationId: string, ids: string[]): void {
+    if (!ids.length) return;
+    const gone = new Set(ids);
+    this.meetings = this.meetings.filter((m) => !gone.has(m.id));
+    this.notifications = this.notifications.filter((n) => !n.meetingId || !gone.has(n.meetingId));
+    for (const id of ids) this.meetingSignals.delete(id);
+    void (async () => {
+      try {
+        await this.prisma.meetingAttendee?.deleteMany?.({ where: { meetingId: { in: ids } } });
+        await this.prisma.meetingNote?.deleteMany?.({ where: { meetingId: { in: ids } } });
+        await this.prisma.meeting?.deleteMany?.({ where: { id: { in: ids } } });
+        for (const id of ids) {
+          await this.prisma.systemSetting?.deleteMany?.({ where: { key: { startsWith: `msig:${id}:` } } });
+        }
+      } catch (err) {
+        this.logger.warn(`Meeting delete cleanup: ${(err as Error).message}`);
+      }
+    })();
+    this.persistState(organizationId);
+  }
+
+  async deleteMeeting(actor: AuthUser, id: string) {
+    if (actor.role !== Role.SUPER_ADMIN) throw new ForbiddenException('Only a Super Admin can delete meetings.');
+    await this.syncMeetingsFromDb(actor.organizationId, true);
+    const mtg = this.meetings.find((m) => m.id === id);
+    if (!mtg) throw new NotFoundException('Meeting not found.');
+    if (mtg.status === 'LIVE' && mtg.participants.length > 0) {
+      throw new BadRequestException('This meeting is live right now. End it first, then delete it.');
+    }
+    this.purgeMeetingData(actor.organizationId, [id]);
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'MEETING_DELETED',
+      entityType: 'Meeting',
+      entityId: id,
+      metadata: { title: mtg.title, roomCode: mtg.roomCode, status: mtg.status },
+    });
+    return { deleted: 1 };
+  }
+
+  /** Deletes every ended/cancelled meeting (optionally only those older than `olderThanDays`). */
+  async deleteEndedMeetings(actor: AuthUser, body: Record<string, unknown>) {
+    if (actor.role !== Role.SUPER_ADMIN) throw new ForbiddenException('Only a Super Admin can delete meetings.');
+    await this.syncMeetingsFromDb(actor.organizationId, true);
+    const days = Math.max(0, Number(body?.olderThanDays) || 0);
+    const cutoff = Date.now() - days * 86_400_000;
+    const ids = this.meetings
+      .filter(
+        (m) =>
+          (m.status === 'COMPLETED' || m.status === 'CANCELLED') &&
+          (days === 0 || Date.parse(m.endsAt || m.startsAt) <= cutoff),
+      )
+      .map((m) => m.id);
+    this.purgeMeetingData(actor.organizationId, ids);
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'MEETINGS_BULK_DELETED',
+      entityType: 'Meeting',
+      entityId: null,
+      metadata: { count: ids.length, olderThanDays: days },
+    });
+    return { deleted: ids.length };
+  }
+
   async updateMeeting(
     id: string,
     body: Record<string, unknown>,
@@ -3579,9 +3725,16 @@ export class WorkspaceService implements OnModuleInit {
     }
     if (body.status) {
       const nextStatus = pickEnum(body.status, MEETING_STATUSES, 'meeting status', mtg.status);
+      if ((mtg.status === 'COMPLETED' || mtg.status === 'CANCELLED') && nextStatus !== mtg.status) {
+        throw new BadRequestException(
+          'MEETING_ENDED: An ended or cancelled meeting cannot be restarted. Start a new meeting instead.',
+        );
+      }
       mtg.status = nextStatus;
       if (mtg.status === 'COMPLETED' || mtg.status === 'CANCELLED') {
         const nowIso = new Date().toISOString();
+        // Ended early: record when it really ended (history, "ended N days ago", cleanup).
+        if (!mtg.endsAt || Date.parse(mtg.endsAt) > Date.now()) mtg.endsAt = nowIso;
         for (const p of mtg.participants) {
           this.recordAttendanceLeave(mtg, p.userId, nowIso);
         }
@@ -3725,13 +3878,13 @@ export class WorkspaceService implements OnModuleInit {
       if (mtg.status === 'CANCELLED') {
         throw new ForbiddenException('This meeting was cancelled.');
       }
-      // A late reconnect from an attendee must not revive a meeting the host ended
-      // (and broadcast a fresh "meeting started" notification to everyone).
-      if (mtg.status === 'COMPLETED' && (isGuest || !(isHostOrManager || this.canControlMeeting(mtg, actor)))) {
-        throw new ForbiddenException('MEETING_ENDED: This meeting has ended.');
+      // An ended meeting is final: nobody (host included) can start it again. Reviving it would
+      // also broadcast a fresh "meeting started" alert to everyone. Schedule a new meeting instead.
+      if (mtg.status === 'COMPLETED') {
+        throw new ForbiddenException('MEETING_ENDED: This meeting has ended. Start a new meeting instead.');
       }
 
-      const wasNotLive = mtg.status === 'SCHEDULED' || mtg.status === 'COMPLETED';
+      const wasNotLive = mtg.status === 'SCHEDULED';
       if (wasNotLive) {
         mtg.status = 'LIVE';
       }
@@ -4797,7 +4950,8 @@ export class WorkspaceService implements OnModuleInit {
   async getGuestMeetingRoom(token: string, id: string) {
     const g = this.verifyGuestToken(token);
     if (g.meetingId !== id) throw new ForbiddenException('Token does not match meeting room.');
-    return this.getMeetingRoom(id, g.organizationId);
+    // Same rule as employees: a declined or removed guest keeps the token but loses the room.
+    return this.requireMeetingMember(this.createGuestActor(token), id, { allowWaiting: true });
   }
 
   async getGuestSfuToken(token: string, id: string) {
@@ -4826,6 +4980,44 @@ export class WorkspaceService implements OnModuleInit {
     const g = this.verifyGuestToken(token);
     if (g.meetingId !== id) throw new ForbiddenException('Token does not match meeting room.');
     return this.sendMeetingSignal(this.createGuestActor(token), id, body);
+  }
+
+  // ─── Live meeting stream (push "doorbell") ────────────────────────────────
+  /** Same access as polling signals: participants, hosts and people in the waiting room. */
+  async requireMeetingStreamAccess(actor: AuthUser, id: string): Promise<void> {
+    await this.requireMeetingMember(actor, id, { allowWaiting: true });
+  }
+
+  async requireGuestMeetingStreamAccess(token: string, id: string): Promise<void> {
+    const g = this.verifyGuestToken(token);
+    if (g.meetingId !== id) throw new ForbiddenException('Token does not match meeting room.');
+    await this.requireMeetingMember(this.createGuestActor(token), id, { allowWaiting: true });
+  }
+
+  /**
+   * Calls `listener('signal')` when a signal for this meeting is stored and `listener('room')` when
+   * workspace state changes (coalesced to one event per 80ms). Clients then fetch right away instead
+   * of waiting for their next poll.
+   */
+  onMeetingActivity(meetingId: string, listener: (kind: 'signal' | 'room') => void): () => void {
+    let roomTimer: ReturnType<typeof setTimeout> | null = null;
+    const onSignal = (id: string) => {
+      if (id === meetingId) listener('signal');
+    };
+    const onRoom = () => {
+      if (roomTimer) return;
+      roomTimer = setTimeout(() => {
+        roomTimer = null;
+        listener('room');
+      }, 80);
+    };
+    this.meetingBus.on('signal', onSignal);
+    this.meetingBus.on('room', onRoom);
+    return () => {
+      if (roomTimer) clearTimeout(roomTimer);
+      this.meetingBus.off('signal', onSignal);
+      this.meetingBus.off('room', onRoom);
+    };
   }
 
   async guestPollSignals(token: string, id: string, after: number) {

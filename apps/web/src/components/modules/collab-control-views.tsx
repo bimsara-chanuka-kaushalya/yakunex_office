@@ -1,36 +1,25 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, useMemo } from 'react';
 import {
   Calendar,
   BarChart3,
   Check,
-  CheckCheck,
-  CheckSquare,
   Clock,
   Copy,
   Download,
-  Edit2,
   FileDown,
   FolderKanban,
   Globe,
-  Hash,
   KeyRound,
   Lock,
-  MessageSquarePlus,
-  MessagesSquare,
-  Paperclip,
-  Pin,
   Plus,
   Repeat,
-  Reply,
   Search,
-  Send,
   Shield,
   Trash2,
   Users,
   Video,
-  X,
 } from 'lucide-react';
 import {
   MeetingStudio,
@@ -44,7 +33,6 @@ import {
 } from '@/components/modules/meeting/calendar-export';
 import type { MeetingAccessPolicy } from '@/components/modules/meeting/meeting-types';
 import { useAuth, useLang } from '@/components/providers';
-import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, StatCard } from '@/components/ui/card';
@@ -53,944 +41,12 @@ import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { api, del, liveGet, patch, post, put } from '@/lib/api';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { isSilentRefresh, useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
 import { APP_VERSION } from '@/lib/version';
 import { cn } from '@/lib/cn';
-
-// ─── 1. TEAM CHAT PAGE (/chat) ───────────────────────────────────────────────
-
-interface ChatChannel {
-  id: string;
-  name: string;
-  type: 'PROJECT' | 'DEPARTMENT' | 'GROUP' | 'DIRECT' | 'MANAGEMENT' | 'ANNOUNCEMENT';
-  category?: string;
-  privacy?: 'PUBLIC' | 'ROLE_RESTRICTED' | 'CONFIDENTIAL' | 'DIRECT';
-  department?: string | null;
-  description: string;
-  projectName: string | null;
-}
-
-interface ChatMessage {
-  id: string;
-  channelId: string;
-  senderId: string;
-  senderName: string;
-  senderRole: string;
-  senderAvatarUrl?: string | null;
-  body: string;
-  createdAt: string;
-  replyToId?: string | null;
-  replyPreview?: string | null;
-  pinned?: boolean;
-  editedAt?: string | null;
-  deleted?: boolean;
-  reactions?: Record<string, string[]>;
-  linkedTaskId?: string | null;
-  linkedMeetingCode?: string | null;
-  attachmentUrl?: string | null;
-  attachmentName?: string | null;
-}
-
-interface OrgMember {
-  id: string;
-  name: string;
-  email: string;
-  role: string;
-  title?: string;
-  department?: string;
-  avatarUrl?: string | null;
-}
-
-const CHANNEL_CATEGORIES: Array<{ key: string; label: string }> = [
-  { key: 'ANNOUNCEMENTS', label: 'Announcements & General' },
-  { key: 'MANAGEMENT', label: 'Management' },
-  { key: 'DEPARTMENTS', label: 'Departments' },
-  { key: 'TECHNICAL', label: 'Technical & Projects' },
-  { key: 'PRIVATE', label: 'Private & Confidential' },
-  { key: 'DIRECT', label: 'Direct Messages' },
-];
-
-function normalizeChannelCategory(ch: ChatChannel): string {
-  if (ch.type === 'DIRECT' || ch.category === 'DIRECT') return 'DIRECT';
-  if (ch.category === 'ANNOUNCEMENTS' || ch.type === 'ANNOUNCEMENT') return 'ANNOUNCEMENTS';
-  if (ch.category === 'MANAGEMENT' || ch.type === 'MANAGEMENT') return 'MANAGEMENT';
-  if (ch.category === 'DEPARTMENTS' || ch.category === 'DEPARTMENT' || ch.type === 'DEPARTMENT') {
-    return ch.privacy === 'CONFIDENTIAL' && ch.category === 'PRIVATE' ? 'PRIVATE' : 'DEPARTMENTS';
-  }
-  if (ch.category === 'PRIVATE' || ch.category === 'CONFIDENTIAL' || ch.privacy === 'CONFIDENTIAL') {
-    return 'PRIVATE';
-  }
-  return 'TECHNICAL';
-}
-
-const QUICK_REACTIONS = ['👍', '❤️', '🎉'];
-
-export function ChatView() {
-  const { user } = useAuth();
-  const { lang } = useLang();
-  const toast = useToast();
-  const [channels, setChannels] = useState<ChatChannel[]>([]);
-  // `/chat?channel=<id>` (e.g. from My Day "Ask mentor") opens that conversation directly.
-  const [activeId, setActiveId] = useState<string>(
-    () => (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('channel')) || 'ch_general',
-  );
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [members, setMembers] = useState<OrgMember[]>([]);
-  const [text, setText] = useState('');
-  const [channelSearch, setChannelSearch] = useState('');
-  const [msgSearch, setMsgSearch] = useState('');
-  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
-  const [editingMsg, setEditingMsg] = useState<ChatMessage | null>(null);
-  const [editText, setEditText] = useState('');
-  const [banner, setBanner] = useState<string | null>(null);
-  const [pendingAttachment, setPendingAttachment] = useState<{ name: string; dataUrl: string } | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  const [modalOpen, setModalOpen] = useState(false);
-  const [newChannelName, setNewChannelName] = useState('');
-  const [newChannelDesc, setNewChannelDesc] = useState('');
-  const [newChannelType, setNewChannelType] = useState<ChatChannel['type']>('GROUP');
-  const [newChannelCategory, setNewChannelCategory] = useState('TECHNICAL');
-  const [newChannelPrivacy, setNewChannelPrivacy] = useState<'PUBLIC' | 'ROLE_RESTRICTED' | 'CONFIDENTIAL'>('PUBLIC');
-  const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
-
-  const [dmModalOpen, setDmModalOpen] = useState(false);
-  const [dmSearch, setDmSearch] = useState('');
-
-  const loadChannels = useCallback(async () => {
-    try {
-      const chs = await api<ChatChannel[]>('/chat/channels');
-      const safe = Array.isArray(chs) ? chs : [];
-      setChannels(safe);
-      if (safe.length > 0) {
-        setActiveId((prev) => (safe.some((c) => c.id === prev) ? prev : safe[0].id));
-      }
-    } catch {
-      setChannels([]);
-    }
-  }, []);
-
-  const loadMessages = useCallback(async (channelId: string) => {
-    try {
-      const msgs = await api<ChatMessage[]>(`/chat/channels/${channelId}/messages`);
-      setMessages(Array.isArray(msgs) ? msgs : []);
-    } catch {
-      setMessages([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadChannels();
-    api<{
-      employees?: Array<{
-        id: string;
-        fullName?: string;
-        name?: string;
-        email: string;
-        role: string;
-        title?: string | null;
-        avatarUrl?: string | null;
-        department?: { id: string; name: string } | string | null;
-      }>;
-    }>('/organization')
-      .then((res) => {
-        const raw = Array.isArray(res?.employees) ? res.employees : [];
-        setMembers(
-          raw.map((u) => ({
-            id: u.id,
-            name: u.fullName || u.name || u.email,
-            email: u.email,
-            role: u.role,
-            title: u.title ?? undefined,
-            avatarUrl: u.avatarUrl ?? null,
-            department:
-              typeof u.department === 'object' && u.department
-                ? u.department.name
-                : typeof u.department === 'string'
-                  ? u.department
-                  : undefined,
-          })),
-        );
-      })
-      .catch(() => setMembers([]));
-  }, [loadChannels]);
-
-  useEffect(() => {
-    if (activeId) {
-      setReplyTo(null);
-      setEditingMsg(null);
-      void loadMessages(activeId);
-    }
-  }, [activeId, loadMessages]);
-
-  function onPickAttachment(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    if (file.size > 3 * 1024 * 1024) {
-      setBanner('Attachment must be under 3 MB.');
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setPendingAttachment({ name: file.name, dataUrl: reader.result });
-      }
-    };
-    reader.readAsDataURL(file);
-  }
-
-  async function onSend(e: FormEvent) {
-    e.preventDefault();
-    if (!text.trim() && !pendingAttachment) return;
-    try {
-      await post(`/chat/channels/${activeId}/messages`, {
-        body: text.trim() || `Attachment: ${pendingAttachment?.name ?? 'File'}`,
-        replyToId: replyTo?.id,
-        attachmentUrl: pendingAttachment?.dataUrl,
-        attachmentName: pendingAttachment?.name,
-      });
-      setText('');
-      setReplyTo(null);
-      setPendingAttachment(null);
-      await loadMessages(activeId);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Unable to send message.');
-    }
-  }
-
-  async function onCreateChannel(e: FormEvent) {
-    e.preventDefault();
-    try {
-      const created = await post<ChatChannel>('/chat/channels', {
-        name: newChannelName,
-        description: newChannelDesc,
-        type: newChannelType,
-        category: newChannelCategory,
-        privacy: newChannelPrivacy,
-        memberIds: selectedMemberIds,
-      });
-      setModalOpen(false);
-      setNewChannelName('');
-      setNewChannelDesc('');
-      setSelectedMemberIds([]);
-      toast.success(`Group #${created.name} created.`);
-      await loadChannels();
-      setActiveId(created.id);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Unable to create group.');
-    }
-  }
-
-  async function onStartDm(member: OrgMember) {
-    try {
-      const ch = await post<ChatChannel>('/chat/direct', {
-        targetUserId: member.id,
-        targetUserName: member.name,
-      });
-      setDmModalOpen(false);
-      setDmSearch('');
-      await loadChannels();
-      setActiveId(ch.id);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Unable to start direct message.');
-    }
-  }
-
-  async function onSaveEdit(e: FormEvent) {
-    e.preventDefault();
-    if (!editingMsg || !editText.trim()) return;
-    try {
-      await patch(`/chat/messages/${editingMsg.id}`, { body: editText });
-      setEditingMsg(null);
-      setEditText('');
-      await loadMessages(activeId);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Unable to edit message.');
-    }
-  }
-
-  async function onDeleteMessage(msgId: string) {
-    try {
-      await del(`/chat/messages/${msgId}`);
-      await loadMessages(activeId);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Unable to delete message.');
-    }
-  }
-
-  async function onReact(msgId: string, emoji: string) {
-    try {
-      await post(`/chat/messages/${msgId}/react`, { emoji });
-      await loadMessages(activeId);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Unable to add reaction.');
-    }
-  }
-
-  async function onTogglePin(msgId: string) {
-    try {
-      await patch(`/chat/messages/${msgId}/pin`, {});
-      await loadMessages(activeId);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Unable to update pin state.');
-    }
-  }
-
-  async function onConvertToTask(msg: ChatMessage) {
-    try {
-      await post(`/chat/messages/${msg.id}/to-task`, {});
-      setBanner(`Task created from message by ${msg.senderName}.`);
-      toast.success('Task created from chat message.');
-      await loadMessages(activeId);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Unable to convert message to task.');
-    }
-  }
-
-  async function onStartChannelMeeting() {
-    if (!activeChannel) return;
-    try {
-      const mt = await post<MeetingRow>(`/chat/channels/${activeChannel.id}/meeting`, {
-        title: `${activeChannel.name} Sync`,
-        agenda: `Channel huddle for #${activeChannel.name}`,
-      });
-      setBanner(`Meeting started (${mt.roomCode}) — open Meetings to join.`);
-      toast.success(`Meeting started (${mt.roomCode}).`);
-      await loadMessages(activeId);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Unable to start channel meeting.');
-    }
-  }
-
-  function toggleMemberSelection(id: string) {
-    setSelectedMemberIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-    );
-  }
-
-  const activeChannel = channels.find((c) => c.id === activeId);
-  const filteredChannels = channelSearch.trim()
-    ? channels.filter((c) => c.name.toLowerCase().includes(channelSearch.toLowerCase()))
-    : channels;
-
-  const pinnedMessages = messages.filter((m) => m.pinned && !m.deleted);
-  const visibleMessages = msgSearch.trim()
-    ? messages.filter(
-        (m) =>
-          m.body.toLowerCase().includes(msgSearch.toLowerCase()) ||
-          m.senderName.toLowerCase().includes(msgSearch.toLowerCase()),
-      )
-    : messages;
-
-  return (
-    <div className="space-y-4">
-      {banner && (
-        <div className="flex items-center justify-between rounded-2xl bg-gold/15 px-4 py-2.5 text-xs font-medium text-ink shadow-2xs">
-          <span>{banner}</span>
-          <button type="button" onClick={() => setBanner(null)} className="text-muted hover:text-ink">
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      )}
-
-      {/* WhatsApp + Apple HIG Split Shell */}
-      <Card className="grid h-[calc(100dvh-10.5rem)] min-h-[600px] overflow-hidden md:grid-cols-[310px_1fr]">
-        {/* Left Pane: WhatsApp Chats List + macOS Source List */}
-        <aside className="flex min-h-0 flex-col border-b border-line/70 bg-sidebar/70 md:border-b-0 md:border-r">
-          <div className="flex items-center justify-between px-4 pb-2 pt-4">
-            <h2 className="font-display text-[22px] font-bold tracking-tight text-ink">Chats</h2>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => setDmModalOpen(true)}
-                title="Direct message"
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-ink/[0.06] text-ink transition hover:bg-ink/[0.11] dark:bg-white/[0.1] dark:hover:bg-white/[0.16]"
-              >
-                <MessageSquarePlus className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setModalOpen(true)}
-                title="Create group"
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-gold text-gold-ink shadow-2xs transition hover:brightness-105"
-              >
-                <Plus className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-
-          <div className="px-3 pb-3 pt-1">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
-              <input
-                type="text"
-                placeholder="Search chats or channels…"
-                value={channelSearch}
-                onChange={(e) => setChannelSearch(e.target.value)}
-                className="h-9 w-full rounded-full bg-ink/[0.06] pl-8 pr-3 text-[13px] text-ink placeholder:text-muted/70 focus:bg-surface focus:outline-none focus:ring-2 focus:ring-gold/30 dark:bg-white/[0.08] dark:focus:bg-raised"
-              />
-            </div>
-          </div>
-
-          <div className="flex-1 space-y-4 overflow-y-auto px-2 pb-4">
-            {CHANNEL_CATEGORIES.map((cat) => {
-              const items = filteredChannels.filter((c) => normalizeChannelCategory(c) === cat.key);
-              if (items.length === 0) return null;
-              return (
-                <div key={cat.key}>
-                  <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted/80">
-                    {cat.label} · {items.length}
-                  </p>
-                  <ul className="space-y-0.5">
-                    {items.map((ch) => {
-                      const isActive = ch.id === activeId;
-                      return (
-                        <li key={ch.id}>
-                          <button
-                            type="button"
-                            onClick={() => setActiveId(ch.id)}
-                            className={cn(
-                              'flex w-full items-center gap-3 rounded-[14px] px-2.5 py-2 text-left transition-all duration-150 ease-spring',
-                              isActive
-                                ? 'bg-gold/15 text-ink shadow-2xs dark:bg-gold/20'
-                                : 'text-ink hover:bg-ink/[0.05] dark:hover:bg-white/[0.06]',
-                            )}
-                          >
-                            <span
-                              className={cn(
-                                'flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
-                                isActive
-                                  ? 'bg-gold text-gold-ink'
-                                  : 'bg-ink/[0.06] text-muted dark:bg-white/[0.1]',
-                              )}
-                            >
-                              {ch.privacy === 'CONFIDENTIAL' ? (
-                                <Lock className="h-4 w-4" />
-                              ) : ch.type === 'DIRECT' ? (
-                                <Users className="h-4 w-4" />
-                              ) : (
-                                <Hash className="h-4 w-4" />
-                              )}
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center justify-between gap-1.5">
-                                <span className="truncate text-[13.5px] font-semibold">{ch.name}</span>
-                                {ch.privacy === 'CONFIDENTIAL' && (
-                                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-gold" title="Confidential" />
-                                )}
-                              </div>
-                              <p className="truncate text-[11.5px] text-muted">{ch.description}</p>
-                            </div>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              );
-            })}
-          </div>
-        </aside>
-
-        {/* Right Pane: WhatsApp Wallpaper Canvas + Apple Frosted Header & Composer */}
-        <div className="flex min-h-0 flex-col bg-[#efeae2]/75 dark:bg-[#0b141a]">
-          {/* Frosted Chat Header */}
-          <div className="material flex flex-wrap items-center justify-between gap-3 border-b border-line/70 px-5 py-3">
-            <div className="flex min-w-0 items-center gap-3">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gold/15 text-gold-strong dark:text-gold">
-                {activeChannel?.privacy === 'CONFIDENTIAL' ? (
-                  <Lock className="h-4 w-4" />
-                ) : activeChannel?.type === 'DIRECT' ? (
-                  <Users className="h-4 w-4" />
-                ) : (
-                  <Hash className="h-4 w-4" />
-                )}
-              </span>
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="truncate text-[15px] font-semibold text-ink">
-                    {activeChannel?.name ?? 'general'}
-                  </h3>
-                  {activeChannel?.privacy && activeChannel.privacy !== 'PUBLIC' && (
-                    <Badge tone="gold">{activeChannel.privacy}</Badge>
-                  )}
-                  {activeChannel?.projectName && (
-                    <Badge tone="neutral">{activeChannel.projectName}</Badge>
-                  )}
-                </div>
-                <p className="truncate text-xs text-muted">{activeChannel?.description}</p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <div className="relative w-40 sm:w-48">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
-                <input
-                  type="text"
-                  placeholder="Search messages…"
-                  value={msgSearch}
-                  onChange={(e) => setMsgSearch(e.target.value)}
-                  className="h-8 w-full rounded-full bg-ink/[0.06] pl-8 pr-3 text-xs text-ink placeholder:text-muted/70 focus:bg-surface focus:outline-none focus:ring-2 focus:ring-gold/30 dark:bg-white/[0.1] dark:focus:bg-raised"
-                />
-              </div>
-              {user?.role !== 'INTERN' && (
-                <Button size="sm" variant="secondary" onClick={onStartChannelMeeting}>
-                  <Video className="h-3.5 w-3.5" /> Meet
-                </Button>
-              )}
-            </div>
-          </div>
-
-          {pinnedMessages.length > 0 && (
-            <div className="material border-b border-line/60 px-5 py-2 text-xs">
-              <div className="flex items-center gap-1.5 font-semibold text-gold-strong dark:text-gold">
-                <Pin className="h-3.5 w-3.5 shrink-0" />
-                <span>Pinned ({pinnedMessages.length}):</span>
-                <span className="truncate font-normal text-ink">{pinnedMessages[0].body}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Messages Feed */}
-          <div
-            className="flex-1 space-y-3 overflow-y-auto px-4 py-5 sm:px-6"
-            style={{
-              backgroundImage:
-                'radial-gradient(rgb(120 120 128 / 0.12) 1px, transparent 1px)',
-              backgroundSize: '20px 20px',
-            }}
-          >
-            {visibleMessages.length === 0 ? (
-              <div className="flex h-full min-h-[240px] flex-col items-center justify-center text-center">
-                <div className="material rounded-2xl px-6 py-5 shadow-card">
-                  <MessagesSquare className="mx-auto mb-2 h-8 w-8 text-gold" />
-                  <p className="text-sm font-semibold text-ink">
-                    {msgSearch.trim()
-                      ? 'No matching messages found'
-                      : `No messages in #${activeChannel?.name ?? 'channel'} yet`}
-                  </p>
-                  <p className="mt-1 text-xs text-muted">
-                    Send a message below to start the conversation.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              visibleMessages.map((msg) => {
-                const isOwn = user?.id === msg.senderId;
-                const avatarSrc = isOwn ? (msg.senderAvatarUrl ?? user?.avatarUrl) : msg.senderAvatarUrl;
-                return (
-                  <div
-                    key={msg.id}
-                    className={cn(
-                      'group flex items-end gap-2',
-                      isOwn ? 'justify-end' : 'justify-start',
-                    )}
-                  >
-                    {!isOwn && (
-                      <Avatar
-                        src={avatarSrc}
-                        name={msg.senderName}
-                        size="sm"
-                        className="mb-1"
-                      />
-                    )}
-
-                    <div
-                      className={cn(
-                        'relative max-w-[82%] rounded-[18px] px-3.5 py-2 shadow-2xs sm:max-w-[70%]',
-                        isOwn
-                          ? 'rounded-tr-[4px] bg-[#d9fdd3] text-[#111b21] dark:bg-[#005c4b] dark:text-[#e9edef]'
-                          : 'rounded-tl-[4px] bg-surface text-ink',
-                      )}
-                    >
-                      {/* Floating Hover Quick-Actions Pill */}
-                      {!msg.deleted && (
-                        <div
-                          className={cn(
-                            'material-thick absolute -top-7 z-10 flex items-center gap-0.5 rounded-full px-1.5 py-0.5 shadow-card opacity-0 transition-opacity group-hover:opacity-100',
-                            isOwn ? 'right-0' : 'left-0',
-                          )}
-                        >
-                          {QUICK_REACTIONS.map((emoji) => (
-                            <button
-                              key={emoji}
-                              type="button"
-                              onClick={() => onReact(msg.id, emoji)}
-                              className="rounded-full px-1.5 py-0.5 text-xs hover:bg-ink/[0.08]"
-                              title={`React ${emoji}`}
-                            >
-                              {emoji}
-                            </button>
-                          ))}
-                          <button
-                            type="button"
-                            onClick={() => setReplyTo(msg)}
-                            className="rounded-full p-1 text-muted hover:bg-ink/[0.08] hover:text-ink"
-                            title="Reply"
-                          >
-                            <Reply className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onTogglePin(msg.id)}
-                            className="rounded-full p-1 text-muted hover:bg-ink/[0.08] hover:text-ink"
-                            title={msg.pinned ? 'Unpin' : 'Pin'}
-                          >
-                            <Pin className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onConvertToTask(msg)}
-                            className="rounded-full p-1 text-muted hover:bg-ink/[0.08] hover:text-ink"
-                            title="Convert to Task"
-                          >
-                            <CheckSquare className="h-3.5 w-3.5" />
-                          </button>
-                          {isOwn && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEditingMsg(msg);
-                                  setEditText(msg.body);
-                                }}
-                                className="rounded-full p-1 text-muted hover:bg-ink/[0.08] hover:text-ink"
-                                title="Edit"
-                              >
-                                <Edit2 className="h-3.5 w-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => onDeleteMessage(msg.id)}
-                                className="rounded-full p-1 text-muted hover:bg-ink/[0.08] hover:text-danger"
-                                title="Delete"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      )}
-
-                      {!isOwn && (
-                        <div className="mb-0.5 flex flex-wrap items-center gap-1.5">
-                          <span className="text-[12px] font-semibold text-gold-strong dark:text-gold">
-                            {msg.senderName}
-                          </span>
-                          <span className="text-[10px] font-medium text-muted">
-                            {ROLE_LABELS[msg.senderRole as Role]?.[lang] ?? msg.senderRole}
-                          </span>
-                        </div>
-                      )}
-
-                      {msg.replyPreview && (
-                        <div className="mb-1.5 rounded-lg border-l-3 border-gold bg-black/[0.05] px-2.5 py-1 text-[11.5px] opacity-85 dark:bg-white/[0.08]">
-                          {msg.replyPreview}
-                        </div>
-                      )}
-
-                      {editingMsg?.id === msg.id ? (
-                        <form onSubmit={onSaveEdit} className="mt-1 flex gap-2">
-                          <Input
-                            value={editText}
-                            onChange={(e) => setEditText(e.target.value)}
-                            autoFocus
-                          />
-                          <Button size="sm" type="submit">Save</Button>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            type="button"
-                            onClick={() => setEditingMsg(null)}
-                          >
-                            Cancel
-                          </Button>
-                        </form>
-                      ) : (
-                        <>
-                          {msg.attachmentUrl && !msg.deleted && (
-                            <div className="mb-1.5">
-                              {msg.attachmentUrl.startsWith('data:image/') ? (
-                                <a
-                                  href={msg.attachmentUrl}
-                                  download={msg.attachmentName || 'image.png'}
-                                  className="block overflow-hidden rounded-xl border border-black/10 dark:border-white/10"
-                                >
-                                  <img
-                                    src={msg.attachmentUrl}
-                                    alt={msg.attachmentName || 'Attachment'}
-                                    className="max-h-56 w-auto rounded-xl object-cover"
-                                  />
-                                </a>
-                              ) : (
-                                <a
-                                  href={msg.attachmentUrl}
-                                  download={msg.attachmentName || 'attachment'}
-                                  className="inline-flex items-center gap-2 rounded-xl border border-black/10 bg-black/[0.04] px-3 py-1.5 text-xs font-medium hover:bg-black/[0.08] dark:border-white/10 dark:bg-white/[0.08]"
-                                >
-                                  <Download className="h-3.5 w-3.5 text-gold" />
-                                  <span className="max-w-[200px] truncate">
-                                    {msg.attachmentName || 'Download attachment'}
-                                  </span>
-                                </a>
-                              )}
-                            </div>
-                          )}
-                          <p className={cn('text-[14px] leading-snug', msg.deleted && 'italic opacity-60')}>
-                            {msg.body}
-                          </p>
-                        </>
-                      )}
-
-                      <div className="mt-1 flex flex-wrap items-center justify-end gap-1.5 text-[10px] opacity-70">
-                        {msg.pinned && <Pin className="h-2.5 w-2.5 text-gold-strong dark:text-gold" />}
-                        {msg.linkedTaskId && <span className="font-semibold text-success">Task</span>}
-                        {msg.linkedMeetingCode && <span className="font-semibold">Meet {msg.linkedMeetingCode}</span>}
-                        {msg.editedAt && <span>edited</span>}
-                        <span>
-                          {new Date(msg.createdAt).toLocaleTimeString('en-LK', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            timeZone: 'Asia/Colombo',
-                          })}
-                        </span>
-                        {isOwn && !msg.deleted && (
-                          <CheckCheck className="h-3.5 w-3.5 text-info" />
-                        )}
-                      </div>
-
-                      {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                        <div className="mt-1.5 flex flex-wrap gap-1">
-                          {Object.entries(msg.reactions).map(([emoji, users]) =>
-                            Array.isArray(users) && users.length > 0 ? (
-                              <button
-                                key={emoji}
-                                type="button"
-                                onClick={() => onReact(msg.id, emoji)}
-                                className="inline-flex items-center gap-1 rounded-full bg-surface/90 px-2 py-0.5 text-[11px] shadow-2xs ring-1 ring-line/50 hover:ring-gold dark:bg-raised"
-                              >
-                                <span>{emoji}</span>
-                                <span className="font-mono text-[10px] text-muted">{users.length}</span>
-                              </button>
-                            ) : null,
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {isOwn && (
-                      <Avatar
-                        src={avatarSrc}
-                        name={msg.senderName}
-                        size="sm"
-                        className="mb-1"
-                      />
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          {replyTo && (
-            <div className="material flex items-center justify-between border-t border-line/60 px-4 py-2 text-xs">
-              <span className="truncate text-muted">
-                Replying to <strong className="text-ink">{replyTo.senderName}</strong>: {replyTo.body}
-              </span>
-              <button type="button" onClick={() => setReplyTo(null)} className="text-muted hover:text-ink">
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
-
-          {pendingAttachment && (
-            <div className="material flex items-center justify-between border-t border-line/60 px-4 py-2 text-xs">
-              <div className="flex items-center gap-2 truncate">
-                <Paperclip className="h-3.5 w-3.5 shrink-0 text-gold" />
-                <span className="truncate font-medium text-ink">{pendingAttachment.name}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setPendingAttachment(null)}
-                className="text-muted hover:text-ink"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
-
-          {/* Frosted WhatsApp + Apple Composer Bar */}
-          <form onSubmit={onSend} className="material flex items-center gap-2.5 border-t border-line/70 px-4 py-3">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv"
-              className="hidden"
-              onChange={onPickAttachment}
-            />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              aria-label="Attach image or file"
-              title="Attach image or file"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-surface text-muted ring-1 ring-line/60 transition hover:text-ink dark:bg-raised"
-            >
-              <Paperclip className="h-4 w-4" />
-            </button>
-            <input
-              type="text"
-              placeholder={`Message #${activeChannel?.name ?? 'channel'}…`}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              className="h-10 flex-1 rounded-full bg-surface px-4 text-[14px] text-ink shadow-2xs ring-1 ring-line/60 placeholder:text-muted/70 focus:outline-none focus:ring-2 focus:ring-gold/50 dark:bg-raised"
-            />
-            <button
-              type="submit"
-              aria-label="Send message"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gold text-gold-ink shadow-xs transition-transform duration-150 ease-spring hover:brightness-105 active:scale-95"
-            >
-              <Send className="h-4 w-4" />
-            </button>
-          </form>
-        </div>
-      </Card>
-
-      <Modal open={modalOpen} title="Create organization or private group" onClose={() => setModalOpen(false)}>
-        <form onSubmit={onCreateChannel} className="space-y-4">
-          <Field label="Group Name" htmlFor="ch-name">
-            <Input
-              id="ch-name"
-              required
-              value={newChannelName}
-              onChange={(e) => setNewChannelName(e.target.value)}
-              placeholder="e.g. prj-lankamed-portal"
-            />
-          </Field>
-          <Field label="Group Description" htmlFor="ch-desc">
-            <Input
-              id="ch-desc"
-              required
-              value={newChannelDesc}
-              onChange={(e) => setNewChannelDesc(e.target.value)}
-            />
-          </Field>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="Group Type" htmlFor="ch-type">
-              <Select
-                id="ch-type"
-                value={newChannelType}
-                onChange={(e) => setNewChannelType(e.target.value as ChatChannel['type'])}
-              >
-                <option value="GROUP">Private / Team Group</option>
-                <option value="PROJECT">Project Group</option>
-                <option value="DEPARTMENT">Department Group</option>
-                <option value="MANAGEMENT">Management Group</option>
-                <option value="ANNOUNCEMENT">Announcement Group</option>
-              </Select>
-            </Field>
-            <Field label="Sidebar Category" htmlFor="ch-cat">
-              <Select
-                id="ch-cat"
-                value={newChannelCategory}
-                onChange={(e) => setNewChannelCategory(e.target.value)}
-              >
-                <option value="ANNOUNCEMENTS">Announcements</option>
-                <option value="MANAGEMENT">Management</option>
-                <option value="DEPARTMENT">Departments</option>
-                <option value="TECHNICAL">Technical &amp; Projects</option>
-                <option value="CONFIDENTIAL">Private &amp; Confidential</option>
-              </Select>
-            </Field>
-            <Field label="Group Privacy" htmlFor="ch-priv">
-              <Select
-                id="ch-priv"
-                value={newChannelPrivacy}
-                onChange={(e) =>
-                  setNewChannelPrivacy(e.target.value as 'PUBLIC' | 'ROLE_RESTRICTED' | 'CONFIDENTIAL')
-                }
-              >
-                <option value="PUBLIC">Public (All Employees)</option>
-                <option value="ROLE_RESTRICTED">Role / Member Restricted</option>
-                <option value="CONFIDENTIAL">Confidential (Invite Only)</option>
-              </Select>
-            </Field>
-          </div>
-          {members.length > 0 && (
-            <div>
-              <p className="mb-1.5 text-xs font-medium text-muted">
-                Select Members ({selectedMemberIds.length} selected)
-              </p>
-              <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-line p-2">
-                {members.map((m) => (
-                  <label
-                    key={m.id}
-                    className="flex cursor-pointer items-center justify-between rounded-lg px-2 py-1 text-xs hover:bg-surface"
-                  >
-                    <span className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={selectedMemberIds.includes(m.id)}
-                        onChange={() => toggleMemberSelection(m.id)}
-                      />
-                      <span className="font-medium text-ink">{m.name}</span>
-                    </span>
-                    <span className="text-muted">{m.title ?? m.role}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-          <div className="flex justify-end gap-2">
-            <Button variant="secondary" type="button" onClick={() => setModalOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit">Create group</Button>
-          </div>
-        </form>
-      </Modal>
-
-      <Modal open={dmModalOpen} title="Start direct message" onClose={() => setDmModalOpen(false)}>
-        <div className="space-y-3">
-          <Input
-            placeholder="Search employee by name, role, or department…"
-            value={dmSearch}
-            onChange={(e) => setDmSearch(e.target.value)}
-          />
-          <div className="max-h-64 space-y-1 overflow-y-auto">
-            {members
-              .filter(
-                (m) =>
-                  m.id !== user?.id &&
-                  (`${m.name} ${m.title ?? ''} ${m.department ?? ''}`)
-                    .toLowerCase()
-                    .includes(dmSearch.toLowerCase()),
-              )
-              .map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => onStartDm(m)}
-                  className="flex w-full items-center justify-between rounded-xl border border-line px-3 py-2 text-left text-sm hover:border-gold hover:bg-surface"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Avatar src={m.avatarUrl} name={m.name} size="md" />
-                    <div>
-                      <p className="font-medium text-ink">{m.name}</p>
-                      <p className="text-xs text-muted">{m.title ?? m.role}</p>
-                    </div>
-                  </div>
-                  <Badge tone="neutral">{m.department ?? m.role}</Badge>
-                </button>
-              ))}
-          </div>
-        </div>
-      </Modal>
-    </div>
-  );
-}
 
 // ─── 2. MEETINGS PAGE (/meetings) — ZOOM-GRADE WEBRTC STUDIO ───────────────
 
@@ -1322,6 +378,38 @@ export function MeetingsView() {
     }
   };
 
+  const isSuperAdmin = user?.role === 'SUPER_ADMIN';
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const endedCount = meetings.filter((m) => m.status === 'COMPLETED' || m.status === 'CANCELLED').length;
+  const sortedMeetings = useMemo(() => {
+    const rank = (m: MeetingRow) => (m.status === 'LIVE' ? 0 : m.status === 'SCHEDULED' ? 1 : 2);
+    return [...meetings].sort((a, b) => {
+      const r = rank(a) - rank(b);
+      if (r) return r;
+      // Upcoming: soonest first. History: most recent first.
+      return rank(a) === 2 ? b.startsAt.localeCompare(a.startsAt) : a.startsAt.localeCompare(b.startsAt);
+    });
+  }, [meetings]);
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      const res =
+        deleteTarget.id === 'ENDED'
+          ? await del<{ deleted: number }>('/meetings/ended')
+          : await del<{ deleted: number }>(`/meetings/${deleteTarget.id}`);
+      toast.success(res.deleted === 1 ? 'Meeting deleted.' : `${res.deleted} meetings deleted.`);
+      setDeleteTarget(null);
+      await load();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not delete.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const markCompleted = async (id: string) => {
     try {
       await patch(`/meetings/${id}`, { status: 'COMPLETED' });
@@ -1549,8 +637,19 @@ export function MeetingsView() {
           )}
         </Card>
       ) : (
+        <>
+        {isSuperAdmin && endedCount > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line bg-surface px-4 py-2.5 text-[13px]">
+            <span className="text-muted">
+              {endedCount} ended or cancelled meeting(s) in history. Ended meetings cannot be started again.
+            </span>
+            <Button variant="ghost" size="sm" className="!text-danger hover:!bg-danger/10" onClick={() => setDeleteTarget({ id: 'ENDED', title: '' })}>
+              <Trash2 className="h-3.5 w-3.5" /> Clear ended meetings
+            </Button>
+          </div>
+        )}
         <div className="grid gap-4 lg:grid-cols-2">
-          {meetings.map((mtg) => {
+          {sortedMeetings.map((mtg) => {
             const inCallCount = mtg.participants?.length ?? 0;
             const isLive = mtg.status === 'LIVE';
             const canEndThis =
@@ -1562,8 +661,9 @@ export function MeetingsView() {
                 user?.role === 'ADMIN' ||
                 user?.role === 'PROJECT_MANAGER');
             const isEnded = mtg.status === 'COMPLETED' || mtg.status === 'CANCELLED';
-            // Only hosts / managers can reopen an ended meeting (the API rejects everyone else).
-            const canJoin = !isEnded || (mtg.status === 'COMPLETED' && canEndThis);
+            // An ended meeting is final for everyone (the API rejects it too): start a new one instead.
+            const canJoin = !isEnded;
+            const canDelete = isSuperAdmin && !(isLive && inCallCount > 0);
 
             return (
               <Card key={mtg.id} className="flex flex-col justify-between p-5">
@@ -1673,7 +773,7 @@ export function MeetingsView() {
                         )}
                       >
                         <Video className="h-3.5 w-3.5" />
-                        {mtg.status === 'COMPLETED' ? 'Reopen & Join' : 'Join Meeting'}
+                        Join Meeting
                       </a>
                     )}
                     <Button
@@ -1703,21 +803,46 @@ export function MeetingsView() {
                       </Button>
                     )}
                   </div>
-                  {canEndThis && mtg.status !== 'COMPLETED' && mtg.status !== 'CANCELLED' && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => void markCompleted(mtg.id)}
-                    >
-                      End / Complete
-                    </Button>
-                  )}
+                  <div className="flex items-center gap-1">
+                    {canEndThis && !isEnded && (
+                      <Button variant="ghost" size="sm" onClick={() => void markCompleted(mtg.id)}>
+                        End / Complete
+                      </Button>
+                    )}
+                    {canDelete && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        title="Delete this meeting permanently"
+                        onClick={() => setDeleteTarget({ id: mtg.id, title: mtg.title })}
+                        className="!text-danger hover:!bg-danger/10"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Delete
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </Card>
             );
           })}
         </div>
+        </>
       )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title={deleteTarget?.id === 'ENDED' ? 'Clear all ended meetings?' : 'Delete this meeting?'}
+        description={
+          deleteTarget?.id === 'ENDED'
+            ? `This permanently deletes ${endedCount} ended or cancelled meeting(s), with their chat, attendance and notes. This cannot be undone.`
+            : `"${deleteTarget?.title ?? ''}" will be deleted permanently, with its chat, attendance and notes. This cannot be undone.`
+        }
+        confirmLabel="Delete permanently"
+        tone="danger"
+        busy={deleting}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={confirmDelete}
+      />
 
       <Modal
         open={modalMode !== 'closed'}

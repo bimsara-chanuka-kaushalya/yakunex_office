@@ -78,6 +78,8 @@ import { playAlertChime, playSpeakerTestTone, showDesktopNotification } from '@/
 import { cn } from '@/lib/cn';
 import {
   guestApiFetch,
+  createWaker,
+  openMeetingPushStream,
   type AudioProfileSettings,
   type BreakoutRoomItem,
   type MeetingAccessPolicy,
@@ -930,6 +932,11 @@ export function MeetingStudio({
   const activeTierRef = useRef<QualityTier>(detectInitialQualityTier());
   const speakingRef = useRef<Record<string, boolean>>({});
   const roomSigRef = useRef<string>('');
+  const roomEtagRef = useRef<string>('');
+  // Push "doorbell": the server says when something changed, the loops below fetch at once.
+  const roomWakerRef = useRef(createWaker());
+  const signalWakerRef = useRef(createWaker());
+  const pushHealthyRef = useRef(false);
   const iceBatchRef = useRef<
     Map<string, { timer: ReturnType<typeof setTimeout> | null; candidates: RTCIceCandidateInit[] }>
   >(new Map());
@@ -2200,6 +2207,31 @@ export function MeetingStudio({
     }
   }, [closePeer, currentUser.id, getOrCreatePeer, renegotiatePeer, room.participants, sendSignal]);
 
+  // Live push stream: wakes the room / signal loops the moment something changes on the server.
+  useEffect(() => {
+    const close = openMeetingPushStream({
+      path: guestToken ? `/meetings/public/${room.id}/stream` : `/meetings/${room.id}/stream`,
+      guestToken,
+      onEvent: (kind) => {
+        if (kind === 'signal') signalWakerRef.current.wake();
+        else roomWakerRef.current.wake();
+      },
+      onHealth: (healthy) => {
+        const wasHealthy = pushHealthyRef.current;
+        pushHealthyRef.current = healthy;
+        // Catch up on anything that happened while the stream was down.
+        if (healthy && !wasHealthy) {
+          roomWakerRef.current.wake();
+          signalWakerRef.current.wake();
+        }
+      },
+    });
+    return () => {
+      pushHealthyRef.current = false;
+      close();
+    };
+  }, [guestToken, room.id]);
+
   // Poll meeting room state sequentially (zero overlapping polls on 3G; skip React updates when identical)
   useEffect(() => {
     let cancelled = false;
@@ -2210,12 +2242,18 @@ export function MeetingStudio({
           continue;
         }
         try {
-          const fresh = await mGet<MeetingRow>('/room');
+          const res = await mGet<MeetingRow & { etag?: string; unchanged?: boolean }>(
+            `/room?etag=${encodeURIComponent(roomEtagRef.current)}`,
+          );
           if (cancelled) break;
+          if (res.etag) roomEtagRef.current = res.etag;
+          if (res.unchanged) throw new Error('unchanged');
+          const { etag: _etag, unchanged: _unchanged, ...fresh } = res;
           const sig = JSON.stringify([
             fresh.status,
             fresh.notes,
             (fresh.chatMessages ?? []).length,
+            (fresh.chatMessages ?? []).at(-1)?.id ?? '',
             (fresh.participants ?? []).map((p) => [
               p.userId,
               p.fullName,
@@ -2234,12 +2272,13 @@ export function MeetingStudio({
             onMeetingUpdated?.(fresh);
           }
         } catch {
-          // Retry on next tick
+          // Unchanged, or a transient error: try again on the next tick.
         }
         if (cancelled) break;
         const slowLink =
           activeTierRef.current === '3g-ultra' || activeTierRef.current === 'low-signal';
-        await new Promise((r) => setTimeout(r, slowLink ? 2400 : 1600));
+        // With the push stream up, changes arrive the moment they happen; the timer is only a safety net.
+        await roomWakerRef.current.sleep(pushHealthyRef.current ? 8000 : slowLink ? 2400 : 1600);
       }
     };
     void runRoomLoop();
@@ -2804,8 +2843,10 @@ export function MeetingStudio({
           ? 1200
           : hasPendingPeers || Boolean(screenStreamRef.current)
             ? 250
-            : 600;
-        await new Promise((r) => setTimeout(r, cadenceMs));
+            : pushHealthyRef.current
+              ? 5000
+              : 600;
+        await signalWakerRef.current.sleep(cadenceMs);
       }
     };
 

@@ -290,6 +290,12 @@ export class WorkspaceController {
     return this.workspace.createChatChannel(actor, body);
   }
 
+  @Post('chat/channels/:id/read')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  markChatChannelRead(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.markChatChannelRead(actor, id);
+  }
+
   @Post('chat/direct')
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   startDirectChat(
@@ -418,6 +424,53 @@ export class WorkspaceController {
     return this.workspace.joinPublicMeetingAsGuest(code, body);
   }
 
+  // ─── Live meeting push stream ("doorbell": tells the call to fetch now) ────
+  @Sse('meetings/public/:id/stream')
+  @Public()
+  @SkipThrottle()
+  streamGuestMeeting(
+    @Headers('x-meeting-guest-token') guestToken: string,
+    @Param('id') id: string,
+  ): Observable<MessageEvent> {
+    return this.meetingStream(id, () => this.workspace.requireGuestMeetingStreamAccess(guestToken, id));
+  }
+
+  @Sse('meetings/:id/stream')
+  @SkipThrottle()
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  streamMeeting(@CurrentUser() actor: AuthUser, @Param('id') id: string): Observable<MessageEvent> {
+    return this.meetingStream(id, () => this.workspace.requireMeetingStreamAccess(actor, id));
+  }
+
+  private meetingStream(id: string, checkAccess: () => Promise<void>): Observable<MessageEvent> {
+    return new Observable<MessageEvent>((subscriber) => {
+      let closed = false;
+      let unsub: () => void = () => undefined;
+      let ping: ReturnType<typeof setInterval> | null = null;
+      checkAccess()
+        .then(() => {
+          if (closed) return;
+          subscriber.next({ data: { kind: 'ready' } });
+          unsub = this.workspace.onMeetingActivity(id, (kind) => {
+            if (!closed) subscriber.next({ data: { kind } });
+          });
+          ping = setInterval(() => {
+            if (!closed) subscriber.next({ data: { kind: 'ping' } });
+          }, 15_000);
+        })
+        .catch((err: Error) => {
+          if (closed) return;
+          subscriber.next({ data: { kind: 'denied', message: err.message } });
+          subscriber.complete();
+        });
+      return () => {
+        closed = true;
+        unsub();
+        if (ping) clearInterval(ping);
+      };
+    });
+  }
+
   @Get('meetings/public/:id/room')
   @Public()
   @SkipThrottle()
@@ -513,7 +566,7 @@ export class WorkspaceController {
   @SkipThrottle()
   @RequirePermissions(PERMISSIONS.CHAT_USE)
   getMeetingRoom(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
-    return this.workspace.getMeetingRoom(id, actor.organizationId);
+    return this.workspace.getMeetingRoomFor(actor, id);
   }
 
   @Post('meetings')
@@ -1019,6 +1072,17 @@ export class WorkspaceController {
   @Post('my-day/approvals/bulk')
   bulkDecideApprovals(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
     return this.workspace.bulkDecideApprovals(actor, body ?? {});
+  }
+
+  // ─── Meeting deletion (Super Admin only; checked in the service) ──────────
+  @Delete('meetings/ended')
+  deleteEndedMeetings(@CurrentUser() actor: AuthUser, @Query('olderThanDays') olderThanDays?: string) {
+    return this.workspace.deleteEndedMeetings(actor, { olderThanDays });
+  }
+
+  @Delete('meetings/:id')
+  deleteMeeting(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.deleteMeeting(actor, id);
   }
 
   @Get('dashboard/role-insights')
