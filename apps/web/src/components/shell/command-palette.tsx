@@ -80,7 +80,7 @@ export function CommandPalette() {
         { id: 'leave', label: 'Request leave', hint: 'Leave', icon: ArrowRight, keywords: 'leave holiday sick vacation', run: () => router.push('/leave') },
       );
     }
-    if (can(PERMISSIONS.CHAT_USE)) {
+    if (user?.role !== 'INTERN' && can(PERMISSIONS.CHAT_USE)) {
       actions.push({ id: 'meet', label: 'Start an instant meeting', hint: 'Meetings', icon: Video, keywords: 'meet call video huddle', run: () => router.push('/meet?instant=1') });
     }
     const modules: Command[] = ALL_NAV_ITEMS.filter((item) => isNavItemVisibleForRole(item, user?.role, can)).map((item) => ({
