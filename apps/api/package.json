@@ -1,6 +1,6 @@
 {
   "name": "@yakunex-hub/api",
-  "version": "1.3.1",
+  "version": "1.4.1",
   "private": true,
   "description": "Yakunex Hub API (NestJS + Prisma + PostgreSQL)",
   "scripts": {

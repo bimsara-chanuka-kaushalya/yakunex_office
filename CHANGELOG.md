@@ -7,6 +7,13 @@ All notable changes to **Yakunex Hub** follow Semantic Versioning (`vMAJOR.MINOR
 
 ---
 
+## [v1.4.1] - 2026-11-22
+### Added
+- **Jibble-Style Intern Geofence & Live Attendance Rules**: Office GPS zone check (`50m` default radius with GPS accuracy hysteresis), 5-minute outside-zone grace window before unauthorized absence + HR/Super Admin alert, automatic late short-leave recording after `08:30`, work-day clock-in reminders (`08:15` & `08:30`), and tracking-lost alerts.
+- **Team Live Location Map & Attendance Calendar**: Interactive live team location map (`team-location-map.tsx`), monthly attendance calendar (`attendance-calendar.tsx`), floating attendance assistant (`attendance-assistant.tsx`), and Super Admin attendance rules settings (`attendance-rules-settings.tsx`).
+
+---
+
 ## [v1.3.1] - 2026-11-22
 ### Fixed
 - **Profile Access & Approval Governance**: Restricted profile data editing to Super Admin, Admin, and HR (`HR` / `Admin` edits route to Super Admin approval in Approval Center; Super Admin edits apply immediately).
