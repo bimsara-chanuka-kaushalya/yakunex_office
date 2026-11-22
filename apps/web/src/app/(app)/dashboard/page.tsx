@@ -20,6 +20,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { RoleDistributionChart } from '@/components/dashboard/role-chart';
+import { MyDay } from '@/components/dashboard/my-day/my-day';
 import { api, ApiError } from '@/lib/api';
 import { useLiveSync } from '@/lib/use-live-sync';
 import { ALL_NAV_ITEMS, isModuleLockedForRole, isNavItemVisibleForRole } from '@/lib/nav';
@@ -293,6 +294,8 @@ export default function DashboardPage() {
           </div>
         </div>
 
+        <MyDay />
+
         {/* Role-Tailored Intelligence Strip */}
         {roleInsights && roleInsights.cards.length > 0 && (
           <section aria-label="Role Intelligence" className="space-y-2.5">
@@ -551,6 +554,8 @@ export default function DashboardPage() {
           </Link>
         </div>
       </header>
+
+      <MyDay />
 
       <section aria-label="My summary" className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4 sm:gap-4">
         <StatCard

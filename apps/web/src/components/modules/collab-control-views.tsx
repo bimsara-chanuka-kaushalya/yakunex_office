@@ -132,7 +132,10 @@ export function ChatView() {
   const { lang } = useLang();
   const toast = useToast();
   const [channels, setChannels] = useState<ChatChannel[]>([]);
-  const [activeId, setActiveId] = useState<string>('ch_general');
+  // `/chat?channel=<id>` (e.g. from My Day "Ask mentor") opens that conversation directly.
+  const [activeId, setActiveId] = useState<string>(
+    () => (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('channel')) || 'ch_general',
+  );
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [members, setMembers] = useState<OrgMember[]>([]);
   const [text, setText] = useState('');

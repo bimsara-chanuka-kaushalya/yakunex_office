@@ -993,6 +993,34 @@ export class WorkspaceController {
     return this.workspace.adminUpdateProfile(actor, userId, body);
   }
 
+  // ─── My Day ───────────────────────────────────────────────────────────────
+  @Get('my-day')
+  getMyDay(@CurrentUser() actor: AuthUser) {
+    return this.workspace.getMyDay(actor);
+  }
+
+  @Post('my-day/tasks/:id/block')
+  @RequirePermissions(PERMISSIONS.TASKS_READ)
+  blockMyTask(@CurrentUser() actor: AuthUser, @Param('id') id: string, @Body() body: { reason?: string }) {
+    return this.workspace.blockMyTask(actor, id, body?.reason);
+  }
+
+  @Post('my-day/standup')
+  @RequirePermissions(PERMISSIONS.CHAT_USE)
+  postStandup(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.postStandup(actor, body ?? {});
+  }
+
+  @Post('my-day/reflection')
+  submitReflection(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.submitInternReflection(actor, body ?? {});
+  }
+
+  @Post('my-day/approvals/bulk')
+  bulkDecideApprovals(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.bulkDecideApprovals(actor, body ?? {});
+  }
+
   @Get('dashboard/role-insights')
   getRoleInsights(@CurrentUser() actor: AuthUser) {
     return this.workspace.getRoleInsights(actor);

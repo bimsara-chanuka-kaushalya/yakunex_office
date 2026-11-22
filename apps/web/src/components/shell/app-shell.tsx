@@ -8,6 +8,7 @@ import { Sidebar } from './sidebar';
 import { Topbar } from './topbar';
 import { ForcePasswordChange } from './force-password-change';
 import { MeetingAlertListener } from './meeting-alert-listener';
+import { CommandPalette } from './command-palette';
 import { Skeleton } from '@/components/ui/skeleton';
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -85,6 +86,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       </div>
 
       <MeetingAlertListener />
+      <CommandPalette />
       {user.mustChangePassword && <ForcePasswordChange />}
     </div>
   );

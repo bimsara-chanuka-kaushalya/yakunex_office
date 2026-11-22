@@ -22,6 +22,7 @@ import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../common/types';
 import { PrismaService } from '../prisma/prisma.service';
 import { deepClone, mergeSnapshots } from './workspace-state-merge';
+import { buildMyDay, formatStandup, type MyDayApproval, type MyDayPerson, type MyDayRole } from './my-day';
 import {
   ALL_PERMISSION_KEYS,
   DEFAULT_ROLE_PERMISSIONS,
@@ -235,6 +236,15 @@ export interface InternItem {
     strengths: string;
     improvements: string;
     feedback: string;
+    createdAt: string;
+  }>;
+  /** Daily reflections written from the intern's My Day screen; read by the mentor. */
+  reflections?: Array<{
+    id: string;
+    date: string;
+    learned: string;
+    challenge: string;
+    nextStep: string;
     createdAt: string;
   }>;
 }
@@ -1761,6 +1771,15 @@ export class WorkspaceService implements OnModuleInit {
     if (body.actualHours !== undefined) task.actualHours = Number(body.actualHours) || 0;
     if (body.prUrl !== undefined) task.prUrl = body.prUrl ? String(body.prUrl) : null;
     if (body.branchName !== undefined) task.branchName = body.branchName ? String(body.branchName) : null;
+    if (body.sprintId !== undefined) {
+      const sprint = body.sprintId ? this.sprints.find((s) => s.id === String(body.sprintId)) : null;
+      if (body.sprintId && !sprint) throw new BadRequestException('Sprint not found.');
+      if (sprint && sprint.projectId && sprint.projectId !== task.projectId) {
+        throw new BadRequestException('That sprint belongs to a different project.');
+      }
+      task.sprintId = sprint?.id ?? null;
+      task.sprintName = sprint?.name ?? null;
+    }
     if (Array.isArray(body.blockedByIds)) task.blockedByIds = body.blockedByIds.map(String);
     if (Array.isArray(body.labels)) task.labels = body.labels.map(String);
     if (Array.isArray(body.subtasks)) task.subtasks = body.subtasks as TaskItem['subtasks'];
@@ -6182,6 +6201,223 @@ export class WorkspaceService implements OnModuleInit {
       Math.sin(dLat / 2) * Math.sin(dLat / 2) +
       Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
     return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  // ─── My Day (role-based daily workspace) ──────────────────────────────────
+  private async listPeopleForMyDay(organizationId: string): Promise<MyDayPerson[]> {
+    let users = this.prisma.getCachedUsers?.(organizationId) ?? [];
+    if (users.length === 0 && this.prisma.user?.findMany) {
+      users = await this.prisma.user
+        .findMany({ where: { organizationId, deletedAt: null } })
+        .catch(() => []);
+    }
+    return users.map((u) => ({
+      id: u.id,
+      fullName: u.fullName,
+      email: u.email,
+      companyId: u.companyId,
+      role: u.role,
+      status: u.status,
+      createdAt: (u.createdAt instanceof Date ? u.createdAt : new Date(u.createdAt)).toISOString(),
+      birthday: this.userProfiles[u.id]?.birthday,
+    }));
+  }
+
+  async getMyDay(actor: AuthUser) {
+    await this.syncSnapshotFromSupabase(actor.organizationId);
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    const role = actor.role as MyDayRole;
+    const isManager = this.isManagerOrAdmin(actor);
+    // Intern profiles are created on first read; make sure a new intern sees their plan.
+    if (role === Role.INTERN) await this.listInterns(actor);
+    const people = isManager ? await this.listPeopleForMyDay(actor.organizationId) : [];
+    const meetings = await this.listMeetings(actor.organizationId, actor).catch(() => [] as MeetingItem[]);
+    const leaveSummary = await this.getLeaveSummaryAndHolidays(actor).catch(() => null);
+    const approvals = isManager ? (this.listApprovals(actor) as MyDayApproval[]) : [];
+    const unread = this.notifications.filter(
+      (n) => this.isNotificationVisibleToActor(n, actor) && !n.readByIds.includes(actor.id),
+    ).length;
+
+    let sensitiveAudit: Array<{ id: string; action: string; entityType: string; createdAt: string; actorName: string | null }> = [];
+    if (role === Role.SUPER_ADMIN && this.prisma.auditLog?.findMany) {
+      const rows = await this.prisma.auditLog
+        .findMany({
+          where: {
+            organizationId: actor.organizationId,
+            createdAt: { gte: new Date(now.getTime() - 86_400_000) },
+            action: {
+              in: [
+                'USER_ROLE_CHANGED',
+                'USER_STATUS_CHANGED',
+                'USER_PERMISSIONS_CHANGED',
+                'USER_DELETED',
+                'ROLE_PERMISSIONS_UPDATED',
+                'ACCOUNT_LOCKED',
+                'REFRESH_TOKEN_REUSE_DETECTED',
+                'LOGIN_FAILED',
+              ],
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+          select: { id: true, action: true, entityType: true, createdAt: true, actor: { select: { fullName: true } } },
+        })
+        .catch(() => []);
+      sensitiveAudit = rows.map((r) => ({
+        id: r.id,
+        action: r.action,
+        entityType: r.entityType,
+        createdAt: r.createdAt.toISOString(),
+        actorName: r.actor?.fullName ?? null,
+      }));
+    }
+
+    const day = buildMyDay({
+      viewer: { id: actor.id, fullName: actor.fullName, email: actor.email, role },
+      now,
+      today,
+      workDayStart: this.settings.workDayStart || '08:30',
+      tasks: this.tasks,
+      projects: this.projects,
+      sprints: this.sprints,
+      bugs: this.bugs,
+      timeEntries: isManager ? this.timeEntries : this.timeEntries.filter((te) => te.userId === actor.id),
+      attendance: isManager ? this.attendance : this.attendance.filter((a) => a.userId === actor.id),
+      leaveRequests: isManager ? this.leaveRequests : this.leaveRequests.filter((l) => l.userId === actor.id),
+      interns: role === Role.INTERN || isManager ? this.interns : [],
+      meetings,
+      approvals,
+      people,
+      unreadNotifications: unread,
+      leaveEntitlements: (leaveSummary as { entitlements?: Record<string, { total: number; used: number; remaining: number }> } | null)
+        ?.entitlements,
+      finance: role === Role.SUPER_ADMIN ? { entries: this.financeEntries, invoices: this.clientInvoices } : undefined,
+      assets: role === Role.ADMIN || role === Role.SUPER_ADMIN ? this.assets : undefined,
+      sensitiveAudit,
+    });
+    if (!day.intern) return day;
+    // Training plans store the mentor by name; resolve the account so "Ask mentor" can open a DM.
+    const mentorName = day.intern.mentorName.trim().toLowerCase();
+    const mentor = (this.prisma.getCachedUsers?.(actor.organizationId) ?? []).find(
+      (u) => u.fullName.trim().toLowerCase() === mentorName,
+    );
+    return { ...day, intern: { ...day.intern, mentorUserId: mentor?.id ?? null } };
+  }
+
+  /** Marks one of my tasks BLOCKED with a reason and tells managers straight away. */
+  async blockMyTask(actor: AuthUser, taskId: string, reasonRaw: unknown) {
+    const reason = String(reasonRaw ?? '').trim().slice(0, 500);
+    if (reason.length < 3) throw new BadRequestException('Tell your manager what is blocking you.');
+    const task = this.tasks.find((t) => t.id === taskId);
+    if (!task) throw new NotFoundException('Task not found.');
+    const mine = task.assigneeEmail
+      ? task.assigneeEmail.toLowerCase() === actor.email.toLowerCase()
+      : task.assigneeName?.trim().toLowerCase() === actor.fullName.trim().toLowerCase();
+    if (!mine && !this.isManagerOrAdmin(actor)) {
+      throw new ForbiddenException('You can only flag your own tasks as blocked.');
+    }
+    task.status = 'BLOCKED';
+    task.comments = [
+      ...(task.comments ?? []),
+      { id: `cmt_${randomUUID().slice(0, 8)}`, authorName: actor.fullName, body: `🚧 Blocked: ${reason}`, createdAt: new Date().toISOString() },
+    ];
+    const alert = {
+      id: `ntf_${randomUUID().slice(0, 8)}`,
+      type: 'TASK' as const,
+      title: `🚧 Blocked: ${task.code} ${task.title}`.slice(0, 160),
+      body: `${actor.fullName}: ${reason}`,
+      targetUserId: '*',
+      allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER'],
+      actionUrl: '/tasks',
+      readByIds: [actor.id],
+      authorName: actor.fullName,
+      createdAt: new Date().toISOString(),
+    };
+    this.notifications.unshift(alert);
+    this.notificationBus.emit('notification', { organizationId: actor.organizationId, notification: alert });
+    this.recalculateProjectProgress(task.projectId);
+    this.persistState(actor.organizationId);
+    void this.prisma.task?.updateMany?.({ where: { id: task.id }, data: { status: TaskStatus.BLOCKED } }).catch(() => undefined);
+    return task;
+  }
+
+  /** Posts the (possibly edited) standup to #general, or another channel the user can post in. */
+  async postStandup(actor: AuthUser, body: Record<string, unknown>) {
+    const clean = (v: unknown) =>
+      (Array.isArray(v) ? v : [])
+        .map((x) => String(x ?? '').trim().slice(0, 200))
+        .filter(Boolean)
+        .slice(0, 10);
+    const draft = { yesterday: clean(body.yesterday), today: clean(body.today), blockers: clean(body.blockers) };
+    if (!draft.yesterday.length && !draft.today.length && !draft.blockers.length) {
+      throw new BadRequestException('Your standup is empty.');
+    }
+    const channelId = typeof body.channelId === 'string' && body.channelId ? body.channelId : 'ch_general';
+    return this.postChatMessage(actor, channelId, { body: formatStandup(actor.fullName, draft) });
+  }
+
+  async submitInternReflection(actor: AuthUser, body: Record<string, unknown>) {
+    if (actor.role !== Role.INTERN) throw new ForbiddenException('Daily reflections are for interns.');
+    await this.listInterns(actor);
+    const intern = this.interns.find(
+      (i) => i.userId === actor.id || i.email.toLowerCase() === actor.email.toLowerCase(),
+    );
+    if (!intern) throw new NotFoundException('No internship profile is linked to your account yet.');
+    const text = (v: unknown) => String(v ?? '').trim().slice(0, 1000);
+    const entry = {
+      id: `rfl_${randomUUID().slice(0, 8)}`,
+      date: new Date().toISOString().slice(0, 10),
+      learned: text(body.learned),
+      challenge: text(body.challenge),
+      nextStep: text(body.nextStep),
+      createdAt: new Date().toISOString(),
+    };
+    if (!entry.learned) throw new BadRequestException('Write what you learned today.');
+    const rest = (intern.reflections ?? []).filter((r) => r.date !== entry.date);
+    intern.reflections = [entry, ...rest].slice(0, 120);
+    const alert = {
+      id: `ntf_${randomUUID().slice(0, 8)}`,
+      type: 'SYSTEM' as const,
+      title: `📝 ${actor.fullName} wrote today's reflection`,
+      body: entry.learned.slice(0, 200),
+      targetUserId: '*',
+      allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER'],
+      actionUrl: '/interns',
+      readByIds: [actor.id],
+      authorName: actor.fullName,
+      createdAt: entry.createdAt,
+    };
+    this.notifications.unshift(alert);
+    this.notificationBus.emit('notification', { organizationId: actor.organizationId, notification: alert });
+    this.persistState(actor.organizationId);
+    return entry;
+  }
+
+  /** Approves or rejects many inbox items at once; reports each item's result. */
+  async bulkDecideApprovals(actor: AuthUser, body: Record<string, unknown>) {
+    if (!this.isManagerOrAdmin(actor)) throw new ForbiddenException('Only managers or admins can decide approvals.');
+    const status = pickEnum(body.status, ['APPROVED', 'REJECTED'] as const, 'decision');
+    if (!status) throw new BadRequestException('Decision is required.');
+    const items = (Array.isArray(body.items) ? body.items : []).slice(0, 100) as Array<{ id?: unknown; source?: unknown }>;
+    if (!items.length) throw new BadRequestException('Pick at least one request.');
+    const results: Array<{ id: string; ok: boolean; error?: string }> = [];
+    for (const it of items) {
+      const id = String(it.id ?? '');
+      try {
+        const general = this.approvals.find((a) => a.id === id);
+        const leave = general ? undefined : this.leaveRequests.find((l) => l.id === id);
+        if (!general && !leave) throw new NotFoundException('Request not found.');
+        const requesterId = general ? general.requestedById : leave!.userId;
+        if (requesterId === actor.id) throw new ForbiddenException('You cannot decide your own request.');
+        if ((general ?? leave)!.status !== 'PENDING') throw new BadRequestException('Already decided.');
+        await this.decideApproval(actor, id, { status, source: leave ? 'LEAVE' : undefined });
+        results.push({ id, ok: true });
+      } catch (err) {
+        results.push({ id, ok: false, error: err instanceof Error ? err.message : 'Failed' });
+      }
+    }
+    return { status, results, decided: results.filter((r) => r.ok).length };
   }
 
   getRoleInsights(actor: AuthUser) {
