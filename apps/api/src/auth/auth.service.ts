@@ -43,6 +43,7 @@ export function toAuthUser(user: User): AuthUser {
     status: user.status,
     organizationId: user.organizationId,
     mustChangePassword: user.mustChangePassword,
+    avatarUrl: user.avatarUrl ?? null,
   };
 }
 

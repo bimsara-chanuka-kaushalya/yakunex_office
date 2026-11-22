@@ -42,6 +42,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { api, del, liveGet, patch, post, put } from '@/lib/api';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { DataManager, InternSidebarAccess } from '@/components/modules/admin/super-admin-tools';
 import { isSilentRefresh, useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
@@ -1664,6 +1665,7 @@ const ROLES_ORDER: Role[] = ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER', 'STAFF',
 
 export function SettingsView() {
   const { lang } = useLang();
+  const { isSuperAdminReal } = useAuth();
   const toast = useToast();
   const [data, setData] = useState<SettingsPayload | null>(null);
   const [name, setName] = useState('');
@@ -1966,6 +1968,13 @@ export function SettingsView() {
           </table>
         </div>
       </Card>
+
+      {isSuperAdminReal && (
+        <>
+          <InternSidebarAccess internPermissions={data?.roleMatrix?.INTERN ?? []} />
+          <DataManager />
+        </>
+      )}
     </div>
   );
 }

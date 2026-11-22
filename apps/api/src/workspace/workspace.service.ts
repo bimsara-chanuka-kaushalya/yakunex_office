@@ -439,7 +439,43 @@ export interface OrganizationSettings {
   officeLatitude?: number;
   officeLongitude?: number;
   officeRadiusMeters?: number;
+  /** Super Admin sidebar rules per role: module key → SHOWN | LOCKED (visible, can't open) | HIDDEN. */
+  moduleAccess?: Record<string, Record<string, ModuleAccessState>>;
 }
+
+export type ModuleAccessState = 'SHOWN' | 'LOCKED' | 'HIDDEN';
+const MODULE_ACCESS_STATES: readonly ModuleAccessState[] = ['SHOWN', 'LOCKED', 'HIDDEN'];
+/** Roles whose sidebar the Super Admin can shape (others follow their permissions). */
+const MODULE_ACCESS_ROLES = ['INTERN'] as const;
+/** Always reachable: people must be able to see their own profile. */
+const MODULE_ACCESS_FIXED = new Set(['profile']);
+
+/** Collections the Super Admin Data Manager can browse and delete (all live in the workspace snapshot). */
+const DATA_COLLECTIONS = [
+  { key: 'projects', label: 'Projects', db: 'project' },
+  { key: 'tasks', label: 'Tasks', db: 'task' },
+  { key: 'sprints', label: 'Sprints', db: 'sprint' },
+  { key: 'bugs', label: 'Bugs', db: 'bug' },
+  { key: 'clients', label: 'Clients', db: 'client' },
+  { key: 'documents', label: 'Documents', db: 'document' },
+  { key: 'meetings', label: 'Meetings', db: null },
+  { key: 'channels', label: 'Chat groups', db: 'chatChannel' },
+  { key: 'messages', label: 'Chat messages', db: 'message' },
+  { key: 'timeEntries', label: 'Time entries', db: 'timeEntry' },
+  { key: 'attendance', label: 'Attendance', db: 'attendance' },
+  { key: 'leaveRequests', label: 'Leave requests', db: 'leaveRequest' },
+  { key: 'approvals', label: 'Approvals', db: 'approval' },
+  { key: 'financeEntries', label: 'Finance entries', db: null },
+  { key: 'clientInvoices', label: 'Invoices', db: null },
+  { key: 'assets', label: 'Assets', db: null },
+  { key: 'performanceReviews', label: 'Performance reviews', db: null },
+  { key: 'interns', label: 'Intern profiles', db: 'internProfile' },
+  { key: 'notifications', label: 'Notifications', db: 'notification' },
+  { key: 'departments', label: 'Departments', db: null },
+] as const;
+type DataCollectionKey = (typeof DATA_COLLECTIONS)[number]['key'];
+/** System chat channels other features post into (standups, announcements). */
+const PROTECTED_CHANNELS = new Set(['ch_general', 'ch_announcements']);
 
 export interface IceServerEntry {
   urls: string | string[];
@@ -3633,6 +3669,181 @@ export class WorkspaceService implements OnModuleInit {
     }).catch((err: Error) => this.logger.warn(`Supabase Meeting sync: ${err.message}`));
 
     return created;
+  }
+
+  // ─── Super Admin: module access (sidebar hide / lock per role) ─────────────
+  getModuleAccess() {
+    return this.settings.moduleAccess ?? {};
+  }
+
+  async updateModuleAccess(actor: AuthUser, roleRaw: string, body: Record<string, unknown>) {
+    if (actor.role !== Role.SUPER_ADMIN) throw new ForbiddenException('Only a Super Admin can change sidebar access.');
+    const role = String(roleRaw ?? '').toUpperCase();
+    if (!(MODULE_ACCESS_ROLES as readonly string[]).includes(role)) {
+      throw new BadRequestException(`Sidebar access can be set for: ${MODULE_ACCESS_ROLES.join(', ')}.`);
+    }
+    const raw = body?.access;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new BadRequestException('access must be an object.');
+    const next: Record<string, ModuleAccessState> = {};
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+      if (!/^[a-z][a-z-]{1,39}$/.test(key)) throw new BadRequestException(`Unknown module "${key}".`);
+      if (MODULE_ACCESS_FIXED.has(key)) continue;
+      const state = String(value ?? '').toUpperCase() as ModuleAccessState;
+      if (!MODULE_ACCESS_STATES.includes(state)) throw new BadRequestException(`Invalid state for ${key}: ${String(value)}.`);
+      next[key] = state;
+    }
+    this.settings = { ...this.settings, moduleAccess: { ...(this.settings.moduleAccess ?? {}), [role]: next } };
+    this.persistState(actor.organizationId);
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'MODULE_ACCESS_UPDATED',
+      entityType: 'Organization',
+      entityId: actor.organizationId,
+      metadata: { role, access: next },
+    });
+    return this.getModuleAccess();
+  }
+
+  // ─── Super Admin: Data Manager (browse & delete any workspace data) ───────
+  private requireSuperAdmin(actor: AuthUser) {
+    if (actor.role !== Role.SUPER_ADMIN) throw new ForbiddenException('Only a Super Admin can manage data.');
+  }
+
+  private dataCollection(key: string) {
+    const col = DATA_COLLECTIONS.find((c) => c.key === key);
+    if (!col) throw new NotFoundException(`Unknown data type "${key}".`);
+    return col;
+  }
+
+  private dataRows(key: DataCollectionKey): Array<Record<string, unknown>> {
+    return (this as unknown as Record<string, Array<Record<string, unknown>>>)[key] ?? [];
+  }
+
+  /** A readable one-line summary of any record, for the Data Manager list. */
+  private describeRecord(key: DataCollectionKey, r: Record<string, unknown>) {
+    const str = (v: unknown) => (v === undefined || v === null ? '' : String(v));
+    const pick = (...ks: string[]) => ks.map((k) => str(r[k])).filter(Boolean);
+    const lines: Record<DataCollectionKey, () => [string, string]> = {
+      projects: () => [`${str(r.code)} ${str(r.name)}`.trim(), pick('clientName', 'status').join(' · ')],
+      tasks: () => [`${str(r.code)} ${str(r.title)}`.trim(), pick('projectName', 'assigneeName', 'status').join(' · ')],
+      sprints: () => [str(r.name), pick('projectName', 'status').join(' · ')],
+      bugs: () => [`${str(r.code)} ${str(r.title)}`.trim(), pick('projectName', 'severity', 'status').join(' · ')],
+      clients: () => [str(r.name), pick('contactName', 'contactEmail').join(' · ')],
+      documents: () => [str(r.title), pick('projectName', 'folder', 'uploadedByName').join(' · ')],
+      meetings: () => [str(r.title), pick('roomCode', 'status', 'organizerName').join(' · ')],
+      channels: () => [str(r.name), pick('type', 'description').join(' · ')],
+      messages: () => [str(r.body).slice(0, 120) || str(r.attachmentName), pick('senderName', 'channelId').join(' · ')],
+      timeEntries: () => [str(r.taskTitle) || 'Time entry', `${str(r.userName)} · ${str(r.durationMinutes)} min · ${str(r.status)}`],
+      attendance: () => [`${str(r.userName)} · ${str(r.workDate)}`, pick('workMode', 'clockInAt').join(' · ')],
+      leaveRequests: () => [`${str(r.userName)} · ${str(r.type)}`, `${str(r.startDate)} → ${str(r.endDate)} · ${str(r.status)}`],
+      approvals: () => [str(r.title), pick('type', 'requestedByName', 'status').join(' · ')],
+      financeEntries: () => [str(r.description) || str(r.category), `${str(r.type)} · ${str(r.amount)} · ${str(r.status)}`],
+      clientInvoices: () => [`${str(r.invoiceNumber)} ${str(r.clientName)}`.trim(), `${str(r.currency)} ${str(r.totalAmount)} · ${str(r.status)}`],
+      assets: () => [`${str(r.tag)} ${str(r.name)}`.trim(), pick('category', 'assignedToName', 'status').join(' · ')],
+      performanceReviews: () => [`${str(r.employeeName)} · ${str(r.period)}`, pick('goalTitle', 'reviewerName').join(' · ')],
+      interns: () => [str(r.fullName), pick('programme', 'mentorName').join(' · ')],
+      notifications: () => [str(r.title), pick('type', 'authorName').join(' · ')],
+      departments: () => [`${str(r.code)} ${str(r.name)}`.trim(), str(r.description)],
+    };
+    const [title, subtitle] = lines[key]();
+    const at = str(r.createdAt || r.updatedAt || r.recordedAt || r.startsAt || r.startedAt || r.workDate || r.issueDate);
+    return { id: str(r.id), title: title || str(r.id), subtitle, createdAt: at || null };
+  }
+
+  listDataCollections(actor: AuthUser) {
+    this.requireSuperAdmin(actor);
+    return DATA_COLLECTIONS.map((c) => ({ key: c.key, label: c.label, count: this.dataRows(c.key).length }));
+  }
+
+  async listDataRecords(actor: AuthUser, key: string, query: { q?: string; limit?: string; offset?: string }) {
+    this.requireSuperAdmin(actor);
+    await this.syncSnapshotFromSupabase(actor.organizationId);
+    const col = this.dataCollection(key);
+    const q = String(query.q ?? '').trim().toLowerCase();
+    const limit = Math.min(200, Math.max(1, Number(query.limit) || 50));
+    const offset = Math.max(0, Number(query.offset) || 0);
+    const all = this.dataRows(col.key)
+      .map((r) => this.describeRecord(col.key, r))
+      .filter((d) => !q || `${d.title} ${d.subtitle} ${d.id}`.toLowerCase().includes(q))
+      .sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+    return { key: col.key, label: col.label, total: all.length, items: all.slice(offset, offset + limit) };
+  }
+
+  /**
+   * Permanently deletes records. Projects take their tasks, sprints, bugs and documents with them;
+   * chat groups take their messages; meetings their chat, attendance and signals.
+   */
+  async deleteDataRecords(actor: AuthUser, key: string, body: Record<string, unknown>) {
+    this.requireSuperAdmin(actor);
+    await this.syncSnapshotFromSupabase(actor.organizationId, true);
+    const col = this.dataCollection(key);
+    const ids = Array.from(new Set((Array.isArray(body?.ids) ? body.ids : []).map(String).filter(Boolean))).slice(0, 500);
+    if (!ids.length) throw new BadRequestException('Pick at least one record.');
+    const existing = new Set(this.dataRows(col.key).map((r) => String(r.id)));
+    const skipped: Array<{ id: string; reason: string }> = [];
+    let targets = ids.filter((id) => {
+      if (!existing.has(id)) {
+        skipped.push({ id, reason: 'Not found' });
+        return false;
+      }
+      return true;
+    });
+
+    if (col.key === 'channels') {
+      targets = targets.filter((id) => {
+        if (PROTECTED_CHANNELS.has(id)) skipped.push({ id, reason: 'System channel (used for standups/announcements)' });
+        return !PROTECTED_CHANNELS.has(id);
+      });
+    }
+    if (col.key === 'meetings') {
+      targets = targets.filter((id) => {
+        const m = this.meetings.find((x) => x.id === id);
+        const busy = m?.status === 'LIVE' && (m.participants?.length ?? 0) > 0;
+        if (busy) skipped.push({ id, reason: 'Live with people in it — end it first' });
+        return !busy;
+      });
+      this.purgeMeetingData(actor.organizationId, targets);
+    } else if (targets.length) {
+      const gone = new Set(targets);
+      const self = this as unknown as Record<string, Array<Record<string, unknown>>>;
+      self[col.key] = this.dataRows(col.key).filter((r) => !gone.has(String(r.id)));
+      const cascade: Array<[string, string[]]> = [];
+      if (col.key === 'projects') {
+        const drop = <T extends { id: string; projectId?: string | null }>(list: T[], k: string) => {
+          const removed = list.filter((x) => x.projectId && gone.has(x.projectId)).map((x) => x.id);
+          if (removed.length) cascade.push([k, removed]);
+          return list.filter((x) => !(x.projectId && gone.has(x.projectId)));
+        };
+        this.tasks = drop(this.tasks, 'task');
+        this.sprints = drop(this.sprints, 'sprint');
+        this.bugs = drop(this.bugs, 'bug');
+        this.documents = drop(this.documents, 'document');
+      }
+      if (col.key === 'channels') {
+        const removed = this.messages.filter((m) => gone.has(m.channelId)).map((m) => m.id);
+        if (removed.length) cascade.push(['message', removed]);
+        this.messages = this.messages.filter((m) => !gone.has(m.channelId));
+      }
+      this.persistState(actor.organizationId);
+      const prisma = this.prisma as unknown as Record<string, { deleteMany?: (a: unknown) => Promise<unknown> } | undefined>;
+      void (async () => {
+        for (const [model, list] of cascade) {
+          await prisma[model]?.deleteMany?.({ where: { id: { in: list } } })?.catch(() => undefined);
+        }
+        if (col.db) await prisma[col.db]?.deleteMany?.({ where: { id: { in: targets } } })?.catch(() => undefined);
+      })();
+    }
+
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'DATA_DELETED',
+      entityType: col.label,
+      entityId: targets.length === 1 ? targets[0] : null,
+      metadata: { collection: col.key, count: targets.length, ids: targets.slice(0, 50), skipped: skipped.length },
+    });
+    return { collection: col.key, deleted: targets.length, skipped };
   }
 
   // ─── Meeting deletion (Super Admin) ───────────────────────────────────────

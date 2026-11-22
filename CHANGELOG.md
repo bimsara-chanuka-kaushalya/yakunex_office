@@ -7,6 +7,17 @@ All notable changes to **Yakunex Hub** follow Semantic Versioning (`vMAJOR.MINOR
 
 ---
 
+## [v1.3.0] - 2026-11-22
+### Added
+- **Interactive Profile Picture (DP) Customizer**: Added drag-to-reposition, zoom slider (`100%–300%`), 90° rotation, circular framing guide, and crisp 256×256 JPEG export before uploading.
+- **Super Admin Module Access & Admin Tools**: Live per-role sidebar visibility rules (`SHOWN` / `LOCKED` / `HIDDEN` via `/api/module-access`) and Super Admin workspace management tools.
+
+### Fixed
+- **Global DP Sync Across All Surfaces**: Added `avatarUrl` to `toAuthUser()` in `AuthService` and switched `AuthProvider.reload()` to uncached `liveGet('/auth/me')` so uploading a new DP updates Sidebar, Topbar, Chat, Users, and Profile immediately.
+- **Profile Header Cleanup**: Removed the truncated employee selector dropdown from the `/profile` header.
+
+---
+
 ## [v1.2.1] - 2026-11-22
 ### Security & Reliability
 - **LiveKit SFU Enforced Screen-Share Approval**: Default meeting `screenShareMode` is now `APPROVAL_REQUIRED`; LiveKit `canPublishSources` and `RoomServiceClient.updateParticipant` enforce screen-share permissions live at the media server level, and clients require server acceptance before announcing or rendering remote screen shares.

@@ -319,6 +319,33 @@ export const INTERN_ALLOWED_MODULES = new Set([
   'notifications',
 ]);
 
+export type ModuleAccessState = 'SHOWN' | 'LOCKED' | 'HIDDEN';
+export type ModuleAccessConfig = Record<string, Record<string, ModuleAccessState>>;
+
+/** Roles whose sidebar the Super Admin shapes in Settings → Intern sidebar. */
+export const MODULE_ACCESS_ROLES = ['INTERN'] as const;
+
+/**
+ * Super Admin sidebar rules (loaded by the AuthProvider from /module-access). Kept here so the
+ * plain helpers below can read them; the provider re-renders consumers whenever they change.
+ */
+let moduleAccessConfig: ModuleAccessConfig = {};
+export function setModuleAccessConfig(config: ModuleAccessConfig | null | undefined): void {
+  moduleAccessConfig = config && typeof config === 'object' ? config : {};
+}
+
+/** Built-in intern default when the Super Admin has not set a rule for a module. */
+export function defaultModuleAccess(role: string, key: string): ModuleAccessState {
+  if (role === 'INTERN') return INTERN_ALLOWED_MODULES.has(key) ? 'SHOWN' : 'HIDDEN';
+  return 'SHOWN';
+}
+
+export function getModuleAccessState(key: string, role?: string | null): ModuleAccessState {
+  if (!role || key === 'profile') return 'SHOWN';
+  if (!(MODULE_ACCESS_ROLES as readonly string[]).includes(role)) return 'SHOWN';
+  return moduleAccessConfig[role]?.[key] ?? defaultModuleAccess(role, key);
+}
+
 function hasDesignationUnlock(key: string, can?: (perm: string) => boolean): boolean {
   if (!can) return false;
   // HR Managers (baseRole: PROJECT_MANAGER + USERS_WRITE override) unlock Users, Organization & Assets
@@ -345,7 +372,8 @@ export function isModuleLockedForRole(
     return false;
   }
   if (role === 'INTERN') {
-    return !INTERN_ALLOWED_MODULES.has(key);
+    // Hidden or locked by the Super Admin (or by the intern default) = no access to the page.
+    return getModuleAccessState(key, role) !== 'SHOWN';
   }
   if (hasDesignationUnlock(key, can)) {
     return false;
@@ -364,7 +392,8 @@ export function isNavItemVisibleForRole(
 ): boolean {
   if (!item.ready) return false;
   if (role === 'INTERN') {
-    return INTERN_ALLOWED_MODULES.has(item.key);
+    // Locked modules stay in the sidebar (with a lock), hidden ones disappear.
+    return getModuleAccessState(item.key, role) !== 'HIDDEN';
   }
   if (hasDesignationUnlock(item.key, can)) {
     return true;

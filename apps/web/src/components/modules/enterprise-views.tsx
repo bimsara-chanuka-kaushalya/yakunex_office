@@ -22,10 +22,11 @@ import { Button } from '@/components/ui/button';
 import { Card, CardHeader, StatCard } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { AvatarCropModal } from '@/components/ui/avatar-crop-modal';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { useAuth } from '@/components/providers';
-import { api, liveGet, patch, post } from '@/lib/api';
+import { api, clearApiCache, liveGet, patch, post } from '@/lib/api';
 import { useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
 import { PERMISSIONS } from '@/lib/permissions';
@@ -1141,11 +1142,12 @@ export function ProfileView() {
   const isHrOrSuperAdmin = isSuperAdmin || can(PERMISSIONS.USERS_WRITE);
 
   const [selectedUserId, setSelectedUserId] = useState<string>('');
-  const [directory, setDirectory] = useState<Array<{ id: string; companyId: string | null; fullName: string }>>([]);
   const [profile, setProfile] = useState<EmployeeProfilePayload | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [cropFile, setCropFile] = useState<File | null>(null);
+  const [uploadingDp, setUploadingDp] = useState(false);
   const [sessions, setSessions] = useState<
     Array<{ id: string; ipAddress?: string | null; userAgent?: string | null; createdAt: string }>
   >([]);
@@ -1251,60 +1253,31 @@ export function ProfileView() {
     }
   }
 
-  useEffect(() => {
-    api<{ employees?: Array<{ id: string; companyId: string | null; fullName: string }> }>('/organization')
-      .then((res) => setDirectory(Array.isArray(res?.employees) ? res.employees : []))
-      .catch(() => undefined);
-  }, []);
-
-  async function compressAvatarToDataUrl(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error('Could not read image file.'));
-      reader.onload = () => {
-        const rawUrl = String(reader.result ?? '');
-        const img = new Image();
-        img.onerror = () => resolve(rawUrl);
-        img.onload = () => {
-          const maxSize = 256;
-          const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
-          const w = Math.max(1, Math.round(img.width * scale));
-          const h = Math.max(1, Math.round(img.height * scale));
-          const canvas = document.createElement('canvas');
-          canvas.width = w;
-          canvas.height = h;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            resolve(rawUrl);
-            return;
-          }
-          ctx.drawImage(img, 0, 0, w, h);
-          resolve(canvas.toDataURL('image/jpeg', 0.84));
-        };
-        img.src = rawUrl;
-      };
-      reader.readAsDataURL(file);
-    });
-  }
-
-  async function handleDpFile(file: File | undefined) {
-    if (!file || !profile) return;
+  async function handleSaveCroppedDp(dataUrl: string) {
+    if (!profile) return;
     setError(null);
     setNotice(null);
+    setUploadingDp(true);
     try {
-      const dataUrl = await compressAvatarToDataUrl(file);
       const isSelf = !selectedUserId || selectedUserId === user?.id;
       const updated = isSelf
         ? await patch<EmployeeProfilePayload>('/profile/dp', { avatarUrl: dataUrl })
         : await patch<EmployeeProfilePayload>(`/profile/${profile.id}`, { avatarUrl: dataUrl });
       applyProfileState(updated);
+      clearApiCache();
+      setCropFile(null);
       setNotice('Profile picture updated!');
       toast.success('Profile picture updated!');
-      if (isSelf) void reload();
+      if (isSelf) await reload();
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('yakunex:workspace-mutated'));
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to update DP.';
       setError(msg);
       toast.error(msg);
+    } finally {
+      setUploadingDp(false);
     }
   }
 
@@ -1358,30 +1331,9 @@ export function ProfileView() {
         <div>
           <h2 className="font-display text-3xl font-semibold">Employee Profile</h2>
           <p className="mt-1 text-sm text-muted">
-            View personal details, update your DP, or request NIC &amp; Contact Number changes.
+            View and manage your personal details, customize your profile picture, and review active sessions.
           </p>
         </div>
-        {directory.length > 0 && (
-          <div className="w-72">
-            <Select
-              aria-label="Select employee profile"
-              value={selectedUserId || user?.id || ''}
-              onChange={(e) => setSelectedUserId(e.target.value)}
-            >
-              {user && !directory.some((d) => d.id === user.id) && (
-                <option value={user.id}>
-                  {user.companyId ? `${user.companyId} · ` : ''}{user.fullName} (Me)
-                </option>
-              )}
-              {directory.map((emp) => (
-                <option key={emp.id} value={emp.id}>
-                  {emp.companyId ? `${emp.companyId} · ` : ''}{emp.fullName}
-                  {emp.id === user?.id ? ' (Me)' : ''}
-                </option>
-              ))}
-            </Select>
-          </div>
-        )}
       </header>
 
       {notice && (
@@ -1427,7 +1379,7 @@ export function ProfileView() {
                     onChange={(e) => {
                       const f = e.target.files?.[0];
                       e.target.value = '';
-                      void handleDpFile(f);
+                      if (f) setCropFile(f);
                     }}
                   />
                 </label>
@@ -1559,6 +1511,14 @@ export function ProfileView() {
           </div>
         </Card>
       )}
+
+      <AvatarCropModal
+        open={Boolean(cropFile)}
+        file={cropFile}
+        saving={uploadingDp}
+        onCancel={() => setCropFile(null)}
+        onConfirm={handleSaveCroppedDp}
+      />
 
       <ConfirmDialog
         open={logoutAllOpen}

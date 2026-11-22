@@ -2,9 +2,11 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ToastProvider } from '@/components/ui/toast';
-import { api, ApiError, clearApiCache, post, refreshSession, warmWorkspaceCache } from '@/lib/api';
+import { api, ApiError, clearApiCache, liveGet, post, refreshSession, warmWorkspaceCache } from '@/lib/api';
 import { translate, type Lang } from '@/lib/i18n';
 import { PERMISSIONS, type Role } from '@/lib/permissions';
+import { setModuleAccessConfig, type ModuleAccessConfig } from '@/lib/nav';
+import { useLiveSync } from '@/lib/use-live-sync';
 
 export type RolePreviewPreset =
   | 'ADMIN'
@@ -142,6 +144,9 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   reload: () => Promise<void>;
+  /** Super Admin sidebar rules (hide / lock modules per role). */
+  moduleAccess: ModuleAccessConfig;
+  setModuleAccess: (config: ModuleAccessConfig) => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -211,7 +216,7 @@ function AuthProvider({ children }: { children: ReactNode }) {
       retryTimerRef.current = null;
     }
     try {
-      const data = await api<{ user: SessionUser; permissions: string[] }>('/auth/me');
+      const data = await liveGet<{ user: SessionUser; permissions: string[] }>('/auth/me');
       setUser(data.user);
       setPermissions(new Set(data.permissions));
       setStatus('authenticated');
@@ -309,6 +314,25 @@ function AuthProvider({ children }: { children: ReactNode }) {
     setStatus('anonymous');
   }, [setPreviewRole]);
 
+  const [moduleAccess, setModuleAccessState] = useState<ModuleAccessConfig>({});
+  const setModuleAccess = useCallback((config: ModuleAccessConfig) => {
+    setModuleAccessConfig(config);
+    setModuleAccessState(config ?? {});
+  }, []);
+  const loadModuleAccess = useCallback(async () => {
+    if (status !== 'authenticated') return;
+    try {
+      setModuleAccess(await api<ModuleAccessConfig>('/module-access'));
+    } catch {
+      // Keep the last known rules (built-in intern defaults if none were loaded yet).
+    }
+  }, [setModuleAccess, status]);
+  useEffect(() => {
+    void loadModuleAccess();
+  }, [loadModuleAccess]);
+  // A Super Admin change reaches open sessions within a moment, without a reload.
+  useLiveSync(loadModuleAccess, status === 'authenticated');
+
   const isSuperAdminReal = user?.role === 'SUPER_ADMIN';
   const activePreview = isSuperAdminReal && previewRole
     ? ROLE_PREVIEW_OPTIONS.find((o) => o.key === previewRole) ?? null
@@ -338,8 +362,10 @@ function AuthProvider({ children }: { children: ReactNode }) {
       login,
       logout,
       reload,
+      moduleAccess,
+      setModuleAccess,
     }),
-    [status, effectiveUser, effectivePermissions, isSuperAdminReal, activePreview, setPreviewRole, login, logout, reload],
+    [status, effectiveUser, effectivePermissions, isSuperAdminReal, activePreview, setPreviewRole, login, logout, reload, moduleAccess, setModuleAccess],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

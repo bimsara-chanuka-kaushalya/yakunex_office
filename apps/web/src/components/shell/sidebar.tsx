@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { Lock } from 'lucide-react';
 import { usePathname } from 'next/navigation';
 import { useAuth, useLang } from '@/components/providers';
 import { YakunexMark } from '@/components/brand/logo';
@@ -9,7 +10,7 @@ import { Avatar } from '@/components/ui/avatar';
 import { playAlertChime, showDesktopNotification } from '@/lib/alerts';
 import { liveGet } from '@/lib/api';
 import { useLiveSync } from '@/lib/use-live-sync';
-import { NAV_SECTIONS, isNavItemVisibleForRole } from '@/lib/nav';
+import { NAV_SECTIONS, getModuleAccessState, isNavItemVisibleForRole } from '@/lib/nav';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
 import { APP_VERSION } from '@/lib/version';
 import { cn } from '@/lib/cn';
@@ -134,6 +135,9 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
                           )}
                         />
                         <span className="flex-1 truncate">{t(item.key)}</span>
+                        {getModuleAccessState(item.key, user?.role) === 'LOCKED' && (
+                          <Lock className="h-3.5 w-3.5 shrink-0 text-muted" aria-label="Locked" />
+                        )}
                         {item.key === 'notifications' && badges.notifications > 0 && (
                           <span className="rounded-full bg-danger px-1.5 py-0.5 font-mono text-[10px] font-bold text-white">
                             {badges.notifications}

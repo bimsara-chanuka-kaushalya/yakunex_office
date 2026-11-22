@@ -1085,6 +1085,40 @@ export class WorkspaceController {
     return this.workspace.deleteMeeting(actor, id);
   }
 
+  // ─── Super Admin: sidebar access & Data Manager (role checked in the service) ──
+  @Get('module-access')
+  getModuleAccess() {
+    return this.workspace.getModuleAccess();
+  }
+
+  @Put('module-access/:role')
+  updateModuleAccess(@CurrentUser() actor: AuthUser, @Param('role') role: string, @Body() body: Record<string, unknown>) {
+    return this.workspace.updateModuleAccess(actor, role, body ?? {});
+  }
+
+  @Get('admin/data')
+  listDataCollections(@CurrentUser() actor: AuthUser) {
+    return this.workspace.listDataCollections(actor);
+  }
+
+  @Get('admin/data/:collection')
+  listDataRecords(
+    @CurrentUser() actor: AuthUser,
+    @Param('collection') collection: string,
+    @Query() query: { q?: string; limit?: string; offset?: string },
+  ) {
+    return this.workspace.listDataRecords(actor, collection, query ?? {});
+  }
+
+  @Post('admin/data/:collection/delete')
+  deleteDataRecords(
+    @CurrentUser() actor: AuthUser,
+    @Param('collection') collection: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.workspace.deleteDataRecords(actor, collection, body ?? {});
+  }
+
   @Get('dashboard/role-insights')
   getRoleInsights(@CurrentUser() actor: AuthUser) {
     return this.workspace.getRoleInsights(actor);
