@@ -933,6 +933,8 @@ export function MeetingStudio({
   const speakingRef = useRef<Record<string, boolean>>({});
   const roomSigRef = useRef<string>('');
   const roomEtagRef = useRef<string>('');
+  /** When you last switched your own camera/mic; for a few seconds your local choice wins over the server copy. */
+  const localMediaChangeAtRef = useRef(0);
   // Push "doorbell": the server says when something changed, the loops below fetch at once.
   const roomWakerRef = useRef(createWaker());
   const signalWakerRef = useRef(createWaker());
@@ -1240,11 +1242,15 @@ export function MeetingStudio({
         };
         iceConfigRef.current = nextConfig;
         setIceTurnConfigured(Boolean(cfg.hasTurn) || hasTurnServers(combined));
-        // Upgrade any peer connections not yet ICE connected with the dynamic ICE config
-        for (const pc of pcsRef.current.values()) {
+        // Upgrade any peer connections not yet ICE connected with the dynamic ICE config. New TURN
+        // servers only produce relay candidates after an ICE restart, so restart those peers — this
+        // is what lets cameras connect behind strict office / mobile-carrier NATs.
+        const turnNow = hasTurnServers(combined);
+        for (const [peerId, pc] of pcsRef.current.entries()) {
           if (pc.connectionState !== 'closed' && pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed') {
             try {
               pc.setConfiguration(nextConfig);
+              if (turnNow && pc.localDescription) void renegotiatePeerRef.current(peerId, true);
             } catch {
               // Ignore browser configuration constraint mismatches
             }
@@ -1552,7 +1558,8 @@ export function MeetingStudio({
           ? { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 15 } }
           : startTier === 'low-signal'
             ? { width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 20 } }
-            : { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
+            : // 720p starts faster than 1080p on most webcams/phones and is all a call tile shows.
+              { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24 } };
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: initialMicOn
@@ -1950,11 +1957,12 @@ export function MeetingStudio({
         const existingCam = remoteCamStreamsRef.current[peerId];
         const existingScr = remoteScreenStreamsRef.current[peerId];
 
-        const isScreenTrack =
-          Boolean(declaredScreenId && incomingStream.id === declaredScreenId) ||
-          Boolean(declaredTrackId && event.track.id === declaredTrackId) ||
-          Boolean(declaredAudioTrackId && event.track.id === declaredAudioTrackId) ||
-          Boolean(existingScr && existingScr.id === incomingStream.id) ||
+        const announced = Boolean(declaredScreenId || declaredTrackId);
+        const isScreenTrack = announced
+          ? Boolean(declaredScreenId && incomingStream.id === declaredScreenId) ||
+            Boolean(declaredTrackId && event.track.id === declaredTrackId) ||
+            Boolean(declaredAudioTrackId && event.track.id === declaredAudioTrackId)
+          : Boolean(existingScr && existingScr.id === incomingStream.id) ||
           (event.track.kind === 'video' && Boolean(peerMeta?.screenSharing) && !peerMeta?.camOn) ||
           (event.track.kind === 'video' &&
             existingCam !== undefined &&
@@ -2268,7 +2276,17 @@ export function MeetingStudio({
           ]);
           if (sig !== roomSigRef.current) {
             roomSigRef.current = sig;
-            setRoom(fresh);
+            const recentLocalChange = Date.now() - localMediaChangeAtRef.current < 4000;
+            setRoom(
+              recentLocalChange
+                ? {
+                    ...fresh,
+                    participants: fresh.participants.map((p) =>
+                      p.userId === currentUser.id ? { ...p, camOn: camOnRef.current, micOn: micOnRef.current } : p,
+                    ),
+                  }
+                : fresh,
+            );
             onMeetingUpdated?.(fresh);
           }
         } catch {
@@ -3359,13 +3377,15 @@ export function MeetingStudio({
         const canAdd = currentUser.id.localeCompare(peerId) < 0 || pc.remoteDescription !== null;
         if (await syncLocalTrackToPeer(pc, kind, newTrack, base, scrTrackIds, canAdd)) {
           renegotiateIds.push(peerId);
+        } else if (!pc.getSenders().some((snd) => snd.track?.id === newTrack.id)) {
+          void sendSignal(peerId, 'need-offer', { reset: false });
         }
       }
       if (renegotiateIds.length > 0) {
         await Promise.all(renegotiateIds.map((id) => renegotiatePeer(id)));
       }
     },
-    [commitLocalStream, currentUser.id, renegotiatePeer, syncLocalTrackToPeer],
+    [commitLocalStream, currentUser.id, renegotiatePeer, sendSignal, syncLocalTrackToPeer],
   );
 
   const micBusyRef = useRef(false);
@@ -3379,6 +3399,7 @@ export function MeetingStudio({
       return;
     }
     micBusyRef.current = true;
+    localMediaChangeAtRef.current = Date.now();
     // Update ref & UI state BEFORE syncSfuLocalTracks so SFU never mutes the newly captured track!
     micOnRef.current = next;
     setMicOn(next);
@@ -3436,6 +3457,8 @@ export function MeetingStudio({
               const canAdd = currentUser.id.localeCompare(peerId) < 0 || pc.remoteDescription !== null;
               if (await syncLocalTrackToPeer(pc, 'audio', track, base, scrTrackIds, canAdd)) {
                 void renegotiatePeer(peerId);
+              } else if (track && !pc.getSenders().some((snd) => snd.track?.id === track?.id)) {
+                void sendSignal(peerId, 'need-offer', { reset: false });
               }
             }
           }
@@ -3491,6 +3514,7 @@ export function MeetingStudio({
       return;
     }
     camBusyRef.current = true;
+    localMediaChangeAtRef.current = Date.now();
     // Update ref & UI state BEFORE syncSfuLocalTracks so SFU never mutes the newly captured camera!
     camOnRef.current = next;
     setCamOn(next);
@@ -3561,6 +3585,8 @@ export function MeetingStudio({
               const canAdd = currentUser.id.localeCompare(peerId) < 0 || pc.remoteDescription !== null;
               if (await syncLocalTrackToPeer(pc, 'video', track, base, scrTrackIds, canAdd)) {
                 void renegotiatePeer(peerId);
+              } else if (track && !pc.getSenders().some((snd) => snd.track?.id === track?.id)) {
+                void sendSignal(peerId, 'need-offer', { reset: false });
               }
             }
           }
@@ -3721,7 +3747,7 @@ export function MeetingStudio({
       room.screenShareMode === 'HOST_ONLY' ||
       ((currentUser.role.toUpperCase() === 'INTERN' ||
         isGuest ||
-        room.screenShareMode === 'APPROVAL_REQUIRED') &&
+        (room.screenShareMode ?? 'APPROVAL_REQUIRED') === 'APPROVAL_REQUIRED') &&
         !(room.screenShareApprovedIds ?? []).includes(currentUser.id)));
 
   const toggleScreenShare = async () => {
@@ -3800,6 +3826,27 @@ export function MeetingStudio({
     if (!scr) return;
     const scrVideoTrack = scr.getVideoTracks()[0];
     const scrAudioTrack = scr.getAudioTracks()[0];
+
+    // The browser picker needs the click, so it runs first; the server then decides. Nothing is
+    // sent to other people until the server has accepted the share (host approval, host-only mode,
+    // suspended activities).
+    try {
+      const updated = await mPatch<MeetingRow>('/participant', {
+        screenSharing: true,
+        screenStreamId: scr.id,
+      });
+      setRoom(updated);
+    } catch (err) {
+      scr.getTracks().forEach((t) => t.stop());
+      const msg = err instanceof Error ? err.message : 'Screen share needs host approval.';
+      showToast(msg.replace(/^[A-Z_]+:\s*/, ''));
+      if (/approval/i.test(msg)) {
+        await sendSignal('*', 'request-screenshare', { userId: currentUser.id, fullName: currentUser.fullName }).catch(
+          () => undefined,
+        );
+      }
+      return;
+    }
     if (scrVideoTrack) {
       scrVideoTrack.contentHint = 'motion';
       void scrVideoTrack
@@ -3824,25 +3871,13 @@ export function MeetingStudio({
       void stopScreenShare();
     });
 
-    // Send screen-meta + room state first, then renegotiate all peers in parallel so tracks bind without delay
-    await Promise.all([
-      sendSignal('*', 'screen-meta', {
-        active: true,
-        streamId: scr.id,
-        trackId: scrVideoTrack?.id ?? '',
-        audioTrackId: scrAudioTrack?.id ?? '',
-      }),
-      mPatch<MeetingRow>('/participant', {
-        screenSharing: true,
-        screenStreamId: scr.id,
-      })
-        .then((updated) => setRoom(updated))
-        .catch(async (err) => {
-          const msg = err instanceof Error ? err.message : 'Screen share requires host approval.';
-          showToast(msg);
-          await stopScreenShare();
-        }),
-    ]);
+    // Approved: announce the stream, then renegotiate all peers in parallel so tracks bind without delay
+    await sendSignal('*', 'screen-meta', {
+      active: true,
+      streamId: scr.id,
+      trackId: scrVideoTrack?.id ?? '',
+      audioTrackId: scrAudioTrack?.id ?? '',
+    });
 
     const peerOffers: Promise<void>[] = [];
     for (const [peerId, pc] of pcsRef.current.entries()) {
@@ -4819,8 +4854,9 @@ export function MeetingStudio({
     for (const [peerId, stream] of Object.entries(remoteScreenStreams)) {
       if (!hasLiveScreenVideo(stream)) continue;
       const p = room.participants.find((item) => item.userId === peerId);
-      // In SFU mode, TrackSubscribed can arrive 1-2s before the 3G /room HTTP poll flips p.screenSharing=true
-      if (p && !p.screenSharing && !sfuActive) continue;
+      // Only what the server accepted is shown: a client cannot push a screen to everyone by itself.
+      // (The live push stream delivers the server's "sharing" flag within ~0.1s of the share.)
+      if (!p || !p.screenSharing) continue;
       return {
         userId: peerId,
         presenterName: p ? formatParticipantDisplay(p) : 'Presenter',
@@ -4828,7 +4864,7 @@ export function MeetingStudio({
       };
     }
     return null;
-  }, [currentUser, remoteScreenStreams, room.participants, screenStream, sfuActive]);
+  }, [currentUser, remoteScreenStreams, room.participants, screenStream]);
 
   const GALLERY_PAGE_SIZE = 16;
 
@@ -5030,7 +5066,7 @@ export function MeetingStudio({
             />
             <RemoteAudioPlayer
               key={`audio-scr-${p.userId}`}
-              stream={remoteScreenStreams[p.userId]}
+              stream={p.screenSharing ? remoteScreenStreams[p.userId] : undefined}
               sinkId={selectedSpeakerId}
               muted={screenAudioMuted}
               volume={screenAudioMuted ? 0 : 1}

@@ -7,6 +7,13 @@ All notable changes to **Yakunex Hub** follow Semantic Versioning (`vMAJOR.MINOR
 
 ---
 
+## [v1.2.1] - 2026-11-22
+### Security & Reliability
+- **LiveKit SFU Enforced Screen-Share Approval**: Default meeting `screenShareMode` is now `APPROVAL_REQUIRED`; LiveKit `canPublishSources` and `RoomServiceClient.updateParticipant` enforce screen-share permissions live at the media server level, and clients require server acceptance before announcing or rendering remote screen shares.
+- **Meeting Camera / Mic / TURN Reliability**: Added a 4-second local media change grace window to prevent stale polls from reverting mic/cam toggles, triggered ICE restarts when dynamic TURN servers load behind strict NATs, and tuned default video startup to 720p @ 24fps.
+
+---
+
 ## [v1.2.0] - 2026-11-22
 ### Added
 - **WhatsApp-Grade Team Chat Rewrite**: Per-user unread counts (`chatReads` + `POST /api/chat/channels/:id/read`), `lastMessage` previews, `ALL / UNREAD / DIRECT / GROUPS` filters, mobile split-screen view, optimistic message sending with retry, auto-linkified URLs, and peer DM names/avatars.

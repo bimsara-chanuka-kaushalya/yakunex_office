@@ -17,7 +17,7 @@ import {
 } from '@prisma/client';
 import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { EventEmitter } from 'events';
-import { AccessToken } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient, TrackSource } from 'livekit-server-sdk';
 import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../common/types';
 import { PrismaService } from '../prisma/prisma.service';
@@ -3514,12 +3514,13 @@ export class WorkspaceService implements OnModuleInit {
     )
       ? (chatPermRaw as MeetingItem['chatPermission'])
       : 'EVERYONE_DM';
-    const shareModeRaw = String(body.screenShareMode ?? 'ALL').toUpperCase();
+    // Default: participants ask the host before sharing their screen (hosts/co-hosts always can).
+    const shareModeRaw = String(body.screenShareMode ?? 'APPROVAL_REQUIRED').toUpperCase();
     const screenShareMode = (['ALL', 'HOST_ONLY', 'APPROVAL_REQUIRED'] as const).includes(
       shareModeRaw as 'ALL',
     )
       ? (shareModeRaw as MeetingItem['screenShareMode'])
-      : 'ALL';
+      : 'APPROVAL_REQUIRED';
 
     const project = this.projects.find((p) => p.id === body.projectId) ?? null;
     let roomCode = `YH-ROOM-${Math.floor(100 + Math.random() * 900)}`;
@@ -4055,15 +4056,11 @@ export class WorkspaceService implements OnModuleInit {
       }
       if (body.screenSharing !== undefined) {
         const wantShare = Boolean(body.screenSharing);
-        const policy = this.resolveMeetingAccessPolicy(actor);
         if (wantShare && !isHost) {
           if (mtg.suspendedActivities || mtg.screenShareMode === 'HOST_ONLY') {
             throw new ForbiddenException('Only the host can share their screen right now.');
           }
-          if (
-            (policy.screenShareRequiresApproval || mtg.screenShareMode === 'APPROVAL_REQUIRED') &&
-            !mtg.screenShareApprovedIds?.includes(actor.id)
-          ) {
+          if (!this.mayShareScreen(mtg, actor)) {
             throw new ForbiddenException('Host Approval is required before screen sharing.');
           }
         }
@@ -4079,7 +4076,64 @@ export class WorkspaceService implements OnModuleInit {
     });
   }
 
+  /** Host/co-host/manager always; others only when the meeting rule and (if needed) host approval allow it. */
+  private mayShareScreen(mtg: MeetingItem, actor: AuthUser): boolean {
+    if (this.canControlMeeting(mtg, actor)) return true;
+    if (mtg.suspendedActivities || mtg.screenShareMode === 'HOST_ONLY') return false;
+    const needsApproval =
+      this.resolveMeetingAccessPolicy(actor).screenShareRequiresApproval ||
+      (mtg.screenShareMode ?? 'APPROVAL_REQUIRED') === 'APPROVAL_REQUIRED';
+    return !needsApproval || (mtg.screenShareApprovedIds ?? []).includes(actor.id);
+  }
+
+  private livekitPublishSources(mtg: MeetingItem, actor: AuthUser): TrackSource[] {
+    const sources = [TrackSource.CAMERA, TrackSource.MICROPHONE];
+    if (this.mayShareScreen(mtg, actor)) sources.push(TrackSource.SCREEN_SHARE, TrackSource.SCREEN_SHARE_AUDIO);
+    return sources;
+  }
+
+  /**
+   * With the LiveKit SFU, the media server itself refuses a screen share that is not allowed:
+   * after an approval or a security change, every participant's publish rights are updated live.
+   */
+  private syncLiveKitPublishPermissions(mtg: MeetingItem): void {
+    const url = process.env.LIVEKIT_URL?.trim();
+    const apiKey = process.env.LIVEKIT_API_KEY?.trim();
+    const apiSecret = process.env.LIVEKIT_API_SECRET?.trim();
+    if (!url || !apiKey || !apiSecret) return;
+    const client = new RoomServiceClient(url.replace(/^ws/, 'http'), apiKey, apiSecret);
+    for (const p of mtg.participants) {
+      const asActor = {
+        id: p.userId,
+        role: (p.isGuest ? 'INTERN' : p.role) as Role,
+        companyId: p.companyId ?? null,
+        fullName: p.fullName,
+      } as AuthUser;
+      void client
+        .updateParticipant(mtg.roomCode, p.userId, undefined, {
+          canPublish: true,
+          canSubscribe: true,
+          canPublishData: true,
+          canPublishSources: this.livekitPublishSources(mtg, asActor),
+        })
+        .catch(() => undefined); // not in the SFU room (mesh fallback) or already left
+    }
+  }
+
   async hostMeetingAction(
+    actor: AuthUser,
+    id: string,
+    body: Parameters<WorkspaceService['runHostMeetingAction']>[2],
+  ) {
+    const result = await this.runHostMeetingAction(actor, id, body);
+    if (['approve-screenshare', 'update-security', 'panic-suspend', 'toggle-cohost', 'transfer-host'].includes(body.action)) {
+      const mtg = this.meetings.find((m) => m.id === id);
+      if (mtg) this.syncLiveKitPublishPermissions(mtg);
+    }
+    return result;
+  }
+
+  private async runHostMeetingAction(
     actor: AuthUser,
     id: string,
     body: {
@@ -5572,6 +5626,8 @@ export class WorkspaceService implements OnModuleInit {
       canPublish: true,
       canSubscribe: true,
       canPublishData: true,
+      // The SFU refuses screen tracks from people who may not share (updated live on approval).
+      canPublishSources: this.livekitPublishSources(mtg, actor),
     });
     const token = await at.toJwt();
     return {

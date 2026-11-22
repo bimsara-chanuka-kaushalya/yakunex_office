@@ -245,6 +245,8 @@ describe('WorkspaceService Full-System Coverage (All 14 Modules)', () => {
     const room = await svc.scheduleMeeting(adminActor, { title: 'System Audit Call', instant: true });
     const joined = await svc.joinMeetingByCode(staffActor, room.roomCode, { micOn: true, camOn: true });
     expect(joined.participants.some((p) => p.userId === staffActor.id)).toBe(true);
+    // Participants share their screen after the host approves (the default rule).
+    await svc.hostMeetingAction(adminActor, room.id, { action: 'approve-screenshare', targetUserId: staffActor.id });
 
     const updatedState = await svc.updateParticipantState(staffActor, room.id, {
       screenSharing: true,

@@ -83,7 +83,7 @@ export function MeetingsView() {
   const [muteUponEntry, setMuteUponEntry] = useState(false);
   const [allowUnmuteSelf, setAllowUnmuteSelf] = useState(true);
   const [allowStartVideo, setAllowStartVideo] = useState(true);
-  const [screenShareMode, setScreenShareMode] = useState<'ALL' | 'APPROVAL_REQUIRED' | 'HOST_ONLY'>('ALL');
+  const [screenShareMode, setScreenShareMode] = useState<'ALL' | 'APPROVAL_REQUIRED' | 'HOST_ONLY'>('APPROVAL_REQUIRED');
   const [chatPermission, setChatPermission] = useState<'EVERYONE_DM' | 'EVERYONE_PUBLIC' | 'HOST_ONLY' | 'DISABLED'>('EVERYONE_DM');
   const [creatingRoom, setCreatingRoom] = useState(false);
 
@@ -124,7 +124,7 @@ export function MeetingsView() {
     setMuteUponEntry(false);
     setAllowUnmuteSelf(true);
     setAllowStartVideo(true);
-    setScreenShareMode('ALL');
+    setScreenShareMode('APPROVAL_REQUIRED');
     setChatPermission('EVERYONE_DM');
     setAllowExternalGuests(false);
     setRecordingAllowed(Boolean(policy && policy.recordingScope !== 'NONE'));
@@ -1019,8 +1019,8 @@ export function MeetingsView() {
                   setScreenShareMode(e.target.value as 'ALL' | 'APPROVAL_REQUIRED' | 'HOST_ONLY')
                 }
               >
-                <option value="ALL">Everyone (Interns request approval)</option>
-                <option value="APPROVAL_REQUIRED">Host Approval Required for All</option>
+                <option value="APPROVAL_REQUIRED">Ask the host first (recommended)</option>
+                <option value="ALL">Everyone can share (interns still ask)</option>
                 <option value="HOST_ONLY">Host &amp; Co-Host Only</option>
               </Select>
             </Field>

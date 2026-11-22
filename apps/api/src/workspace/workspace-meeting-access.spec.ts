@@ -171,6 +171,24 @@ describe('WorkspaceService meeting access control', () => {
     await expect(svc.getMeetingRoomFor(outsider, mtg.id)).rejects.toThrow(ForbiddenException);
   });
 
+  it('requires host approval before a participant can share their screen (default rule)', async () => {
+    const svc = makeService();
+    const mtg = await liveMeeting(svc);
+    expect(mtg.screenShareMode).toBe('APPROVAL_REQUIRED');
+    await svc.joinMeetingRoom(twin, mtg.id, {});
+    await expect(svc.updateParticipantState(twin, mtg.id, { screenSharing: true })).rejects.toThrow(/approval/i);
+    // The host and managers never need approval.
+    await expect(svc.updateParticipantState(host, mtg.id, { screenSharing: true })).resolves.toBeDefined();
+
+    await svc.hostMeetingAction(host, mtg.id, { action: 'approve-screenshare', targetUserId: twin.id });
+    const shared = await svc.updateParticipantState(twin, mtg.id, { screenSharing: true });
+    expect(shared.participants.find((p) => p.userId === twin.id)?.screenSharing).toBe(true);
+
+    // Host-only mode blocks even an approved participant.
+    await svc.hostMeetingAction(host, mtg.id, { action: 'update-security', payload: { screenShareMode: 'HOST_ONLY' } });
+    await expect(svc.updateParticipantState(twin, mtg.id, { screenSharing: true })).rejects.toThrow(ForbiddenException);
+  });
+
   it('shows guests by the name they typed', async () => {
     const svc = makeService();
     const admin = user('usr_admin', Role.SUPER_ADMIN, 'Admin Director', 'YNX-DIR-0009');

@@ -110,7 +110,7 @@ export function SecurityPopover({
             Screen Share Rule
           </label>
           <select
-            value={room.screenShareMode ?? 'ALL'}
+            value={room.screenShareMode ?? 'APPROVAL_REQUIRED'}
             onChange={(e) => void onUpdateSecurity({ screenShareMode: e.target.value })}
             className="mt-1 w-full rounded-xl border border-white/15 bg-black/30 px-2.5 py-1.5 text-xs text-white outline-none"
           >
@@ -148,7 +148,7 @@ export function SecurityPopover({
                 allowUnmuteSelf: true,
                 allowStartVideo: true,
                 chatPermission: 'EVERYONE_DM',
-                screenShareMode: 'ALL',
+                screenShareMode: 'APPROVAL_REQUIRED',
               });
               onClose();
             }}
