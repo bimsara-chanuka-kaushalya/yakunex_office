@@ -118,6 +118,8 @@ export interface MeetingRow {
   allowExternalGuests?: boolean;
   recordingAllowed?: boolean;
   passcode?: string | null;
+  /** True when the meeting has a passcode, even if this viewer is not shown it. */
+  hasPasscode?: boolean;
   recurrence?: 'NONE' | 'DAILY' | 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY';
   isLocked?: boolean;
   suspendedActivities?: boolean;

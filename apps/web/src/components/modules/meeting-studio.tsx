@@ -128,6 +128,11 @@ interface CurrentUserInfo {
 }
 
 function formatParticipantDisplay(p: { companyId?: string | null; fullName: string }): string {
+  // Guests have no company id and their name carries a "(Guest)" suffix: show the name they
+  // typed ("Saman Client (Guest)"), not "(Guest) · GUEST".
+  if (!p.companyId || p.companyId === 'GUEST') {
+    return String(p.fullName ?? '').trim() || 'Guest';
+  }
   const parts = String(p.fullName ?? '').trim().split(/\s+/).filter(Boolean);
   const lastName = parts[parts.length - 1] ?? '';
   if (lastName && p.companyId) return `${lastName} · ${p.companyId}`;
@@ -249,9 +254,12 @@ function enhanceSdpForResilience(sdp?: string): string | undefined {
 }
 
 function getInitials(name: string): string {
+  // Display names look like "Fernando · YNX-INT-0005": ignore the "· company id" suffix
+  // and any token that does not start with a letter.
   return name
+    .split('·')[0]
     .split(' ')
-    .filter(Boolean)
+    .filter((p) => /^\p{L}/u.test(p))
     .slice(0, 2)
     .map((p) => p[0]?.toUpperCase() ?? '')
     .join('') || 'YH';
@@ -951,7 +959,7 @@ export function MeetingStudio({
     const r = currentUser.role.toUpperCase();
     return (
       room.organizerId === currentUser.id ||
-      room.organizerName === currentUser.fullName ||
+      (!room.organizerId && room.organizerName === currentUser.fullName) ||
       r === 'SUPER_ADMIN'
     );
   }, [currentUser.fullName, currentUser.id, currentUser.role, isGuest, room.organizerId, room.organizerName]);
@@ -964,7 +972,7 @@ export function MeetingStudio({
     if (r === 'INTERN' || policy?.waitingRoomControl === 'NONE') return false;
     return (
       room.organizerId === currentUser.id ||
-      room.organizerName === currentUser.fullName ||
+      (!room.organizerId && room.organizerName === currentUser.fullName) ||
       (room.coHostIds ?? []).includes(currentUser.id) ||
       r === 'ADMIN' ||
       r === 'PROJECT_MANAGER'

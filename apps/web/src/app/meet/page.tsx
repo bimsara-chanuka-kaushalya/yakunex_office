@@ -176,12 +176,16 @@ function StandaloneMeetContent() {
             setTargetRoom(match);
             const isHostOrAdmin =
               match.organizerId === user!.id ||
-              match.organizerName === user!.fullName ||
+              (!match.organizerId && match.organizerName === user!.fullName) ||
               user!.role === 'SUPER_ADMIN' ||
               user!.role === 'ADMIN' ||
               user!.role === 'PROJECT_MANAGER' ||
               (match.coHostIds ?? []).includes(user!.id);
-            if (match.passcode && !isHostOrAdmin) {
+            if (match.status === 'CANCELLED' || (match.status === 'COMPLETED' && !isHostOrAdmin)) {
+              setError(match.status === 'CANCELLED' ? 'This meeting was cancelled.' : 'This meeting has ended.');
+              return;
+            }
+            if ((match.hasPasscode ?? Boolean(match.passcode)) && !isHostOrAdmin) {
               setPasscodeNeeded(true);
             }
           }
@@ -198,7 +202,7 @@ function StandaloneMeetContent() {
         }
       } catch (err) {
         if (active) {
-          setError(err instanceof Error ? err.message : 'Unable to load meeting room.');
+          setError(err instanceof Error ? cleanMeetingError(err.message) : 'Unable to load meeting room.');
         }
       } finally {
         if (active) setLoadingRoom(false);
@@ -243,7 +247,7 @@ function StandaloneMeetContent() {
         if (!res.ok) {
           const msg = typeof data?.message === 'string' ? data.message : 'Unable to join meeting as guest.';
           if (msg.includes('PASSCODE_REQUIRED')) setPasscodeNeeded(true);
-          throw new Error(msg.replace('PASSCODE_REQUIRED:', '').trim());
+          throw new Error(cleanMeetingError(msg));
         }
         setGuestSession({ token: data.guestToken, user: data.guestUser });
         const joined = data.room as MeetingRow;
@@ -290,7 +294,9 @@ function StandaloneMeetContent() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unable to enter meeting room.';
       if (msg.includes('PASSCODE_REQUIRED')) setPasscodeNeeded(true);
-      setError(msg.replace('PASSCODE_REQUIRED:', '').trim());
+      setError(cleanMeetingError(msg));
+      // The error banner sits at the top; on small screens the Join button is far below it.
+      if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
     } finally {
       setJoining(false);
     }
@@ -326,7 +332,10 @@ function StandaloneMeetContent() {
           fresh = await liveGet<MeetingRow>(`/meetings/${waitingSession.room.id}/room`);
         }
         if (!fresh || !active) return;
-        if (fresh.participants.some((p) => p.userId === activeUserId)) {
+        if (fresh.status === 'COMPLETED' || fresh.status === 'CANCELLED') {
+          setWaitingSession(null);
+          setError(fresh.status === 'CANCELLED' ? 'This meeting was cancelled.' : 'This meeting has ended.');
+        } else if (fresh.participants.some((p) => p.userId === activeUserId)) {
           setActiveSession({ ...waitingSession, room: fresh });
           setWaitingSession(null);
         } else if (!(fresh.waitingRoom ?? []).some((w) => w.userId === activeUserId)) {
@@ -590,6 +599,11 @@ function StandaloneMeetContent() {
       </div>
     </div>
   );
+}
+
+/** Server errors carry machine prefixes (PASSCODE_REQUIRED:, MEETING_ENDED:, INTERNAL_ONLY:) – hide them from people. */
+function cleanMeetingError(msg: string): string {
+  return msg.replace(/^(PASSCODE_REQUIRED|MEETING_ENDED|INTERNAL_ONLY):s*/, '').trim();
 }
 
 export default function StandaloneMeetPage() {

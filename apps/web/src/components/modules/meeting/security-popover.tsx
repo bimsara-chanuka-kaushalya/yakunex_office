@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { AlertOctagon, Check, Lock, Shield, Unlock } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { MeetingRow } from './meeting-types';
@@ -15,6 +16,25 @@ export function SecurityPopover({
   onPanicSuspend: () => Promise<void>;
   onClose: () => void;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Close on Escape or on a click outside the popover and its Security toolbar button.
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      const wrapper = panelRef.current?.parentElement;
+      if (wrapper && e.target instanceof Node && !wrapper.contains(e.target)) onClose();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [onClose]);
+
   const toggleItems: Array<{
     key: string;
     label: string;
@@ -45,7 +65,7 @@ export function SecurityPopover({
   ];
 
   return (
-    <div className="absolute bottom-14 left-0 z-50 w-76 rounded-2xl border border-white/15 bg-[#141D2E] p-3 text-white shadow-2xl">
+    <div ref={panelRef} className="absolute bottom-14 left-0 z-50 w-76 rounded-2xl border border-white/15 bg-[#141D2E] p-3 text-white shadow-2xl">
       <div className="mb-2 flex items-center justify-between border-b border-white/10 pb-2">
         <span className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#D4A843]">
           <Shield className="h-3.5 w-3.5" /> Meeting Security

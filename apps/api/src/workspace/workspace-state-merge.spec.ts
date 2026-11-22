@@ -48,6 +48,30 @@ describe('workspace_state three-way merge', () => {
     });
   });
 
+  it('merges two instances editing the same meeting (participants keyed by userId, votes as sets)', () => {
+    const meeting = (participants: unknown[], votes: string[], title = 'Sync') => ({
+      id: 'mtg_1',
+      title,
+      participants,
+      polls: [{ id: 'poll_1', options: [{ id: 'opt_1', votes }] }],
+    });
+    const p = (userId: string, micOn: boolean) => ({ userId, micOn });
+    const base = { meetings: [meeting([p('a', true), p('b', true)], [])] };
+    // Instance 1: A mutes and votes. Instance 2: B mutes, C joins, B votes.
+    const local = { meetings: [meeting([p('a', false), p('b', true)], ['a'])] };
+    const remote = { meetings: [meeting([p('a', true), p('b', false), p('c', true)], ['b'])] };
+    const merged = mergeSnapshots(base, local, remote, ['meetings']) as {
+      meetings: Array<ReturnType<typeof meeting>>;
+    };
+    const m = merged.meetings[0];
+    expect(m.participants).toEqual([p('a', false), p('b', false), p('c', true)]);
+    expect(m.polls[0].options[0].votes.sort()).toEqual(['a', 'b']);
+  });
+
+  it('applies a removal from one side while the other side adds a different vote', () => {
+    expect(mergeValue(['x', 'y'], ['y'], ['x', 'y', 'z'])).toEqual(['y', 'z']);
+  });
+
   it('keeps local state when the remote snapshot lacks a key', () => {
     expect(mergeValue(undefined, [{ id: 'x' }], undefined)).toEqual([{ id: 'x' }]);
   });

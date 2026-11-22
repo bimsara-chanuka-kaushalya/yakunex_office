@@ -12,6 +12,7 @@ import {
   Req,
   Sse,
   UseGuards,
+  UseInterceptors,
   type RawBodyRequest,
   type MessageEvent,
 } from '@nestjs/common';
@@ -24,9 +25,11 @@ import type { AuthUser } from '../common/types';
 import { PERMISSIONS } from '../rbac/permissions';
 import { WorkspaceService } from './workspace.service';
 import { WorkspaceTenantGuard } from './workspace-tenant.guard';
+import { MeetingViewInterceptor } from './meeting-view.interceptor';
 
 @Controller()
 @UseGuards(WorkspaceTenantGuard)
+@UseInterceptors(MeetingViewInterceptor)
 export class WorkspaceController {
   constructor(private readonly workspace: WorkspaceService) {}
 

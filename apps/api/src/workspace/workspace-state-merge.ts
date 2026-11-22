@@ -16,7 +16,7 @@
  */
 
 type Json = unknown;
-type IdItem = { id: string } & Record<string, unknown>;
+type IdItem = Record<string, unknown>;
 
 export function stableStringify(value: Json): string {
   if (value === undefined) return 'undefined';
@@ -38,11 +38,29 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** Identity of an array item: its `id`, or `userId` for per-person rows (participants etc.). */
+function keyOf(item: unknown): string | null {
+  if (!isPlainObject(item)) return null;
+  if (typeof item.id === 'string' && item.id.length > 0) return `id:${item.id}`;
+  if (typeof item.userId === 'string' && item.userId.length > 0) return `u:${item.userId}`;
+  return null;
+}
+
 function isIdArray(value: unknown): value is IdItem[] {
-  return (
-    Array.isArray(value) &&
-    value.every((item) => isPlainObject(item) && typeof item.id === 'string' && item.id.length > 0)
-  );
+  return Array.isArray(value) && value.every((item) => keyOf(item) !== null);
+}
+
+function isPrimitiveArray(value: unknown): value is Array<string | number | boolean> {
+  return Array.isArray(value) && value.every((v) => ['string', 'number', 'boolean'].includes(typeof v));
+}
+
+/** Set-style merge for lists like votes, upvoterIds, readByIds, coHostIds. */
+function mergePrimitiveArrays<T extends string | number | boolean>(base: T[], local: T[], remote: T[]): T[] {
+  const added = local.filter((v) => !base.includes(v));
+  const removed = new Set(base.filter((v) => !local.includes(v)));
+  const out = remote.filter((v) => !removed.has(v));
+  for (const v of added) if (!out.includes(v)) out.push(v);
+  return out;
 }
 
 function same(a: unknown, b: unknown): boolean {
@@ -51,27 +69,35 @@ function same(a: unknown, b: unknown): boolean {
 }
 
 function mergeIdArrays(base: IdItem[], local: IdItem[], remote: IdItem[]): IdItem[] {
-  const baseMap = new Map(base.map((x) => [x.id, stableStringify(x)]));
-  const localMap = new Map(local.map((x) => [x.id, x]));
-  const remoteMap = new Map(remote.map((x) => [x.id, x]));
+  const k = (x: IdItem) => keyOf(x) as string;
+  const baseObj = new Map(base.map((x) => [k(x), x]));
+  const baseMap = new Map(base.map((x) => [k(x), stableStringify(x)]));
+  const localMap = new Map(local.map((x) => [k(x), x]));
+  const remoteMap = new Map(remote.map((x) => [k(x), x]));
 
   const resolve = (id: string): IdItem | undefined => {
     const b = baseMap.get(id);
     const l = localMap.get(id);
     const r = remoteMap.get(id);
     const localChanged = (l === undefined ? undefined : stableStringify(l)) !== b;
+    const remoteChanged = (r === undefined ? undefined : stableStringify(r)) !== b;
+    if (localChanged && remoteChanged && l !== undefined && r !== undefined && b !== undefined) {
+      // Both sides edited the same item (e.g. two people toggling mic in one meeting on
+      // different API instances): merge it field by field instead of dropping one edit.
+      return mergeValue(baseObj.get(id), l, r) as IdItem;
+    }
     if (localChanged) return l; // includes local creations and local deletions (undefined)
     // Local untouched: keep the local object identity when remote did not change either.
-    if (l !== undefined && r !== undefined && stableStringify(r) === b) return l;
+    if (l !== undefined && !remoteChanged) return l;
     return r;
   };
 
   const result: IdItem[] = [];
   const placed = new Set<string>();
   for (const r of remote) {
-    if (placed.has(r.id)) continue;
-    placed.add(r.id);
-    const v = resolve(r.id);
+    if (placed.has(k(r))) continue;
+    placed.add(k(r));
+    const v = resolve(k(r));
     if (v !== undefined) result.push(v);
   }
 
@@ -79,13 +105,13 @@ function mergeIdArrays(base: IdItem[], local: IdItem[], remote: IdItem[]): IdIte
   // so that both `push` (append) and `unshift` (prepend) orderings are preserved.
   for (let i = 0; i < local.length; i += 1) {
     const item = local[i];
-    if (placed.has(item.id)) continue;
-    placed.add(item.id);
-    const v = resolve(item.id);
+    if (placed.has(k(item))) continue;
+    placed.add(k(item));
+    const v = resolve(k(item));
     if (v === undefined) continue;
     let insertAt = 0;
     for (let j = i - 1; j >= 0; j -= 1) {
-      const idx = result.findIndex((x) => x.id === local[j].id);
+      const idx = result.findIndex((x) => k(x) === k(local[j]));
       if (idx >= 0) {
         insertAt = idx + 1;
         break;
@@ -128,10 +154,15 @@ export function mergeValue(base: unknown, local: unknown, remote: unknown): unkn
 
   if (Array.isArray(local) && Array.isArray(remote)) {
     const baseArr = Array.isArray(base) ? base : [];
-    if (isIdArray(local) && isIdArray(remote) && isIdArray(baseArr)) {
+    if (local.length + remote.length > 0 && isIdArray(local) && isIdArray(remote) && isIdArray(baseArr)) {
       return mergeIdArrays(baseArr, local, remote);
     }
-    return same(local, base) ? remote : local;
+    if (same(local, base)) return remote;
+    if (same(remote, base)) return local;
+    if (isPrimitiveArray(local) && isPrimitiveArray(remote) && isPrimitiveArray(baseArr)) {
+      return mergePrimitiveArrays(baseArr, local, remote);
+    }
+    return local;
   }
 
   if (isPlainObject(local) && isPlainObject(remote)) {

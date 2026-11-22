@@ -1552,11 +1552,14 @@ export function MeetingsView() {
             const canEndThis =
               user?.role !== 'INTERN' &&
               (mtg.organizerId === user?.id ||
-                mtg.organizerName === user?.fullName ||
+                (!mtg.organizerId && mtg.organizerName === user?.fullName) ||
                 (mtg.coHostIds ?? []).includes(user?.id ?? '') ||
                 user?.role === 'SUPER_ADMIN' ||
                 user?.role === 'ADMIN' ||
                 user?.role === 'PROJECT_MANAGER');
+            const isEnded = mtg.status === 'COMPLETED' || mtg.status === 'CANCELLED';
+            // Only hosts / managers can reopen an ended meeting (the API rejects everyone else).
+            const canJoin = !isEnded || (mtg.status === 'COMPLETED' && canEndThis);
 
             return (
               <Card key={mtg.id} className="flex flex-col justify-between p-5">
@@ -1580,7 +1583,7 @@ export function MeetingsView() {
                           <Shield className="h-3 w-3" /> Waiting Room
                         </Badge>
                       )}
-                      {mtg.passcode && (
+                      {(mtg.hasPasscode ?? Boolean(mtg.passcode)) && (
                         <Badge tone="neutral" className="gap-1">
                           <Lock className="h-3 w-3" /> Passcode
                         </Badge>
@@ -1629,7 +1632,13 @@ export function MeetingsView() {
                     </span>
                     <span className="inline-flex items-center gap-1 font-medium text-ink">
                       <Users className="h-3.5 w-3.5 text-gold-600" />
-                      {inCallCount > 0 ? `${inCallCount} in call` : 'Waiting to start'}
+                      {mtg.status === 'CANCELLED'
+                        ? 'Cancelled'
+                        : mtg.status === 'COMPLETED'
+                          ? 'Ended'
+                          : inCallCount > 0
+                            ? `${inCallCount} in call`
+                            : 'Waiting to start'}
                     </span>
                     {mtg.allowedRoles && !mtg.allowedRoles.includes('ALL') && (
                       <span className="text-[11px] text-gold-strong dark:text-gold">
@@ -1647,20 +1656,22 @@ export function MeetingsView() {
 
                 <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3.5">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <a
-                      href={`/meet?room=${encodeURIComponent(mtg.roomCode)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={cn(
-                        'inline-flex h-8 items-center gap-1.5 rounded-xl px-3.5 text-xs font-semibold transition',
-                        isLive
-                          ? 'bg-[#2D8CFF] text-white shadow-sm shadow-[#2D8CFF]/30 hover:bg-[#3B96FF]'
-                          : 'border border-line bg-surface text-ink hover:bg-canvas',
-                      )}
-                    >
-                      <Video className="h-3.5 w-3.5" />
-                      {mtg.status === 'COMPLETED' ? 'Reopen & Join' : 'Join Meeting'}
-                    </a>
+                    {canJoin && (
+                      <a
+                        href={`/meet?room=${encodeURIComponent(mtg.roomCode)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={cn(
+                          'inline-flex h-8 items-center gap-1.5 rounded-xl px-3.5 text-xs font-semibold transition',
+                          isLive
+                            ? 'bg-[#2D8CFF] text-white shadow-sm shadow-[#2D8CFF]/30 hover:bg-[#3B96FF]'
+                            : 'border border-line bg-surface text-ink hover:bg-canvas',
+                        )}
+                      >
+                        <Video className="h-3.5 w-3.5" />
+                        {mtg.status === 'COMPLETED' ? 'Reopen & Join' : 'Join Meeting'}
+                      </a>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"

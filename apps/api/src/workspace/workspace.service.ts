@@ -389,6 +389,9 @@ export interface MeetingItem {
     role: string;
     isGuest?: boolean;
     requestedAt: string;
+    /** Mic / camera the person chose before joining, applied when they are admitted. */
+    micOn?: boolean;
+    camOn?: boolean;
   }>;
   coHostIds?: string[];
   screenShareApprovedIds?: string[];
@@ -455,6 +458,9 @@ const SPRINT_STATUSES = ['PLANNED', 'ACTIVE', 'COMPLETED'] as const;
 const BUG_STATUSES = ['NEW', 'ASSIGNED', 'IN_PROGRESS', 'FIXED', 'TESTING', 'VERIFIED', 'CLOSED'] as const;
 const BUG_SEVERITIES = ['MINOR', 'MAJOR', 'CRITICAL', 'BLOCKER'] as const;
 const PROJECT_STATUSES = Object.values(ProjectStatus) as string[];
+/** In-meeting chat lives inside the shared snapshot, so keep it bounded. */
+const MAX_MEETING_CHAT_MESSAGES = 500;
+const MAX_MEETING_ATTACHMENT_CHARS = 2_000_000;
 const MEETING_STATUSES = ['LIVE', 'SCHEDULED', 'COMPLETED', 'CANCELLED'] as const;
 const APPROVAL_DECISIONS = ['APPROVED', 'REJECTED', 'RETURNED'] as const;
 const FINANCE_TYPES = ['INCOME', 'EXPENSE', 'INVOICE', 'PAYROLL'] as const;
@@ -3086,7 +3092,7 @@ export class WorkspaceService implements OnModuleInit {
     if (
       actor.role === Role.SUPER_ADMIN ||
       mtg.organizerId === actor.id ||
-      mtg.organizerName === actor.fullName ||
+      (!mtg.organizerId && mtg.organizerName === actor.fullName) ||
       (mtg.coHostIds ?? []).includes(actor.id) ||
       mtg.participants.some((p) => p.userId === actor.id) ||
       (mtg.waitingRoom ?? []).some((w) => w.userId === actor.id) ||
@@ -3240,7 +3246,7 @@ export class WorkspaceService implements OnModuleInit {
     if (actor.role === Role.SUPER_ADMIN) return true;
     return (
       mtg.organizerId === actor.id ||
-      mtg.organizerName === actor.fullName ||
+      (!mtg.organizerId && mtg.organizerName === actor.fullName) ||
       Boolean(mtg.coHostIds?.includes(actor.id))
     );
   }
@@ -3263,6 +3269,71 @@ export class WorkspaceService implements OnModuleInit {
         isHostOrCoHost) ||
       this.isManagerOrAdmin(actor)
     );
+  }
+
+  /** "Silva · YNX-STF-0003" for staff; guests keep the name they typed ("Saman Client (Guest)"). */
+  private meetingDisplayName(actor: AuthUser): string {
+    if (!actor.companyId || actor.companyId === 'GUEST' || actor.id.startsWith('guest_')) {
+      return actor.fullName;
+    }
+    const parts = actor.fullName.trim().split(/\s+/).filter(Boolean);
+    return `${parts[parts.length - 1] || actor.fullName} · ${actor.companyId}`;
+  }
+
+  private isMeetingMember(mtg: MeetingItem, actor: AuthUser, allowWaiting: boolean): boolean {
+    if (mtg.participants.some((p) => p.userId === actor.id)) return true;
+    if (allowWaiting) {
+      if ((mtg.waitingRoom ?? []).some((w) => w.userId === actor.id)) return true;
+      // Ending a meeting empties the participant list before the "meeting-ended" signal is
+      // sent; people who attended must still be able to receive that final signal.
+      if (mtg.status !== 'LIVE' && (mtg.attendanceLog ?? []).some((a) => a.userId === actor.id)) return true;
+    }
+    return this.canControlMeeting(mtg, actor);
+  }
+
+  /**
+   * Loads the meeting and checks the caller is in it (or may control it). Another API instance
+   * may have admitted the caller a moment ago, so a miss is re-checked after a forced sync.
+   */
+  private async requireMeetingMember(
+    actor: AuthUser,
+    id: string,
+    opts: { allowWaiting?: boolean } = {},
+  ): Promise<MeetingItem> {
+    await this.syncMeetingsFromDb(actor.organizationId);
+    let mtg = this.meetings.find((m) => m.id === id);
+    if (!mtg || !this.isMeetingMember(mtg, actor, Boolean(opts.allowWaiting))) {
+      await this.syncMeetingsFromDb(actor.organizationId, true);
+      mtg = this.meetings.find((m) => m.id === id);
+    }
+    if (!mtg) throw new NotFoundException('Meeting not found.');
+    if (!this.isMeetingMember(mtg, actor, Boolean(opts.allowWaiting))) {
+      throw new ForbiddenException('You are not a participant of this meeting.');
+    }
+    return mtg;
+  }
+
+  /**
+   * What a given viewer may see of a meeting: other people's private chat messages are removed,
+   * and the passcode is only shown to people who could already see the meeting in their list
+   * (its audience) or can control it — never to guests or to someone who only knows the code.
+   */
+  viewMeetingFor<T extends MeetingItem>(mtg: T, viewer: AuthUser | { id: string } | null): T & { hasPasscode: boolean } {
+    const viewerId = viewer?.id ?? null;
+    const isGuestViewer = !viewerId || viewerId.startsWith('guest_');
+    const fullViewer = viewer && 'role' in viewer ? (viewer as AuthUser) : null;
+    const canSeePasscode =
+      !isGuestViewer &&
+      fullViewer !== null &&
+      (this.canControlMeeting(mtg, fullViewer) || this.canActorSeeMeeting(mtg, fullViewer));
+    return {
+      ...mtg,
+      hasPasscode: Boolean(mtg.passcode),
+      passcode: canSeePasscode ? mtg.passcode : null,
+      chatMessages: (mtg.chatMessages ?? []).filter(
+        (m) => !m.recipientId || (viewerId !== null && (m.recipientId === viewerId || m.senderId === viewerId)),
+      ),
+    };
   }
 
   private async pushMeetingNotification(
@@ -3474,20 +3545,21 @@ export class WorkspaceService implements OnModuleInit {
     await this.syncMeetingsFromDb(organizationId, true);
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
+    const isHostLike =
+      !actor || this.isMeetingHostOrCoHost(mtg, actor) || this.isManagerOrAdmin(actor);
+    if (body.status && !isHostLike) {
+      throw new ForbiddenException(
+        'Only the meeting host, co-host, or manager can end the meeting for everyone.',
+      );
+    }
+    if ((body.title !== undefined || body.agenda !== undefined) && !isHostLike) {
+      throw new ForbiddenException('Only the meeting host, co-host, or manager can edit the meeting details.');
+    }
+    if (body.notes !== undefined && actor && !isHostLike && !this.isMeetingMember(mtg, actor, false)) {
+      throw new ForbiddenException('Only meeting participants can edit the meeting notes.');
+    }
     if (body.status) {
       const nextStatus = pickEnum(body.status, MEETING_STATUSES, 'meeting status', mtg.status);
-      if (actor && (nextStatus === 'COMPLETED' || nextStatus === 'CANCELLED')) {
-        const canEnd =
-          mtg.organizerId === actor.id ||
-          mtg.organizerName === actor.fullName ||
-          (mtg.coHostIds ?? []).includes(actor.id) ||
-          this.isManagerOrAdmin(actor);
-        if (!canEnd) {
-          throw new ForbiddenException(
-            'Only the meeting host, co-host, or manager can end the meeting for everyone.',
-          );
-        }
-      }
       mtg.status = nextStatus;
       if (mtg.status === 'COMPLETED' || mtg.status === 'CANCELLED') {
         const nowIso = new Date().toISOString();
@@ -3596,7 +3668,7 @@ export class WorkspaceService implements OnModuleInit {
       const isHostOrManager =
         !isGuest &&
         (mtg.organizerId === actor.id ||
-          mtg.organizerName === actor.fullName ||
+          (!mtg.organizerId && mtg.organizerName === actor.fullName) ||
           actor.role === Role.SUPER_ADMIN ||
           actor.role === Role.ADMIN ||
           actor.role === Role.PROJECT_MANAGER ||
@@ -3631,6 +3703,15 @@ export class WorkspaceService implements OnModuleInit {
         }
       }
 
+      if (mtg.status === 'CANCELLED') {
+        throw new ForbiddenException('This meeting was cancelled.');
+      }
+      // A late reconnect from an attendee must not revive a meeting the host ended
+      // (and broadcast a fresh "meeting started" notification to everyone).
+      if (mtg.status === 'COMPLETED' && (isGuest || !(isHostOrManager || this.canControlMeeting(mtg, actor)))) {
+        throw new ForbiddenException('MEETING_ENDED: This meeting has ended.');
+      }
+
       const wasNotLive = mtg.status === 'SCHEDULED' || mtg.status === 'COMPLETED';
       if (wasNotLive) {
         mtg.status = 'LIVE';
@@ -3659,6 +3740,8 @@ export class WorkspaceService implements OnModuleInit {
             role: isGuest ? 'GUEST' : actor.role,
             isGuest,
             requestedAt: joinedAt,
+            micOn,
+            camOn,
           });
           await this.persistStateNow(actor.organizationId);
           await this.appendMeetingSignal(
@@ -3778,21 +3861,11 @@ export class WorkspaceService implements OnModuleInit {
       const mtg = this.meetings.find((m) => m.id === id);
       if (!mtg) throw new NotFoundException('Meeting not found.');
       const isHost = this.canControlMeeting(mtg, actor);
-      let participant = mtg.participants.find((p) => p.userId === actor.id);
-      if (!participant) {
-        participant = {
-          userId: actor.id,
-          companyId: actor.companyId ?? null,
-          fullName: actor.fullName,
-          role: actor.id.startsWith('guest_') ? 'GUEST' : actor.role,
-          isGuest: actor.id.startsWith('guest_'),
-          micOn: !mtg.muteUponEntry,
-          camOn: mtg.allowStartVideo !== false,
-          screenSharing: false,
-          handRaised: false,
-          joinedAt: new Date().toISOString(),
-        };
-        mtg.participants.push(participant);
+      // Only people already admitted to the call may change their state. Auto-adding them here
+      // let waiting-room, removed and post-meeting users slip back into the room.
+      const participant = mtg.participants.find((p) => p.userId === actor.id);
+      if (!participant || mtg.status !== 'LIVE') {
+        throw new ForbiddenException('You are not in this meeting. Join the meeting first.');
       }
       if (body.micOn !== undefined) {
         const wantMic = Boolean(body.micOn);
@@ -3870,6 +3943,12 @@ export class WorkspaceService implements OnModuleInit {
       if (policy.recordingScope === 'NONE') {
         throw new ForbiddenException('Your tier does not have recording permission.');
       }
+      if (!this.isMeetingMember(mtg, actor, false)) {
+        throw new ForbiddenException('Only meeting participants can record.');
+      }
+      if (!mtg.recordingAllowed && !this.canControlMeeting(mtg, actor) && Boolean(body.payload?.active)) {
+        throw new ForbiddenException('Recording is not allowed in this meeting.');
+      }
       const active = Boolean(body.payload?.active);
       mtg.recordingActive = active;
       mtg.recordingByName = active ? actor.fullName : null;
@@ -3909,8 +3988,8 @@ export class WorkspaceService implements OnModuleInit {
           fullName: entry.fullName,
           role: entry.role,
           isGuest: entry.isGuest,
-          micOn: !mtg.muteUponEntry && mtg.allowUnmuteSelf !== false,
-          camOn: mtg.allowStartVideo !== false,
+          micOn: entry.micOn === true && !mtg.muteUponEntry && mtg.allowUnmuteSelf !== false && !mtg.suspendedActivities,
+          camOn: entry.camOn === true && mtg.allowStartVideo !== false && !mtg.suspendedActivities,
           screenSharing: false,
           handRaised: false,
           joinedAt: nowIso,
@@ -3945,8 +4024,8 @@ export class WorkspaceService implements OnModuleInit {
             fullName: entry.fullName,
             role: entry.role,
             isGuest: entry.isGuest,
-            micOn: !mtg.muteUponEntry && mtg.allowUnmuteSelf !== false,
-            camOn: mtg.allowStartVideo !== false,
+            micOn: entry.micOn === true && !mtg.muteUponEntry && mtg.allowUnmuteSelf !== false && !mtg.suspendedActivities,
+            camOn: entry.camOn === true && mtg.allowStartVideo !== false && !mtg.suspendedActivities,
             screenSharing: false,
             handRaised: false,
             joinedAt: nowIso,
@@ -4010,7 +4089,7 @@ export class WorkspaceService implements OnModuleInit {
         mtg.waitingRoom = (mtg.waitingRoom ?? []).filter((w) => w.userId !== body.targetUserId);
       }
       if (mtg.spotlightUserId === body.targetUserId) mtg.spotlightUserId = null;
-      mtg.attendeeCount = mtg.participants.length;
+      // attendeeCount is the peak headcount; removing someone must not rewrite history.
       await this.persistStateNow(actor.organizationId);
       await this.appendMeetingSignal(
         id,
@@ -4378,8 +4457,14 @@ export class WorkspaceService implements OnModuleInit {
       const poll = mtg.polls.find((p) => p.id === body.pollId);
       if (!poll) throw new NotFoundException('Poll not found.');
       if (poll.status !== 'OPEN') throw new BadRequestException('Poll is closed.');
-      const chosen = Array.isArray(body.optionIds) ? body.optionIds.map(String) : [];
-      if (chosen.length === 0) throw new BadRequestException('Select at least one option.');
+      if (!this.isMeetingMember(mtg, actor, false)) {
+        throw new ForbiddenException('Only meeting participants can vote.');
+      }
+      const validIds = new Set(poll.options.map((o) => o.id));
+      const chosen = (Array.isArray(body.optionIds) ? body.optionIds.map(String) : []).filter((oid) =>
+        validIds.has(oid),
+      );
+      if (chosen.length === 0) throw new BadRequestException('Select at least one valid option.');
       const targetIds = poll.multipleChoice ? chosen : [chosen[0]];
       for (const opt of poll.options) {
         opt.votes = opt.votes.filter((uid) => uid !== actor.id);
@@ -4426,6 +4511,9 @@ export class WorkspaceService implements OnModuleInit {
     if (!mtg) throw new NotFoundException('Meeting not found.');
     mtg.qaItems = mtg.qaItems ?? [];
 
+    if (body.action !== 'answer' && !this.isMeetingMember(mtg, actor, false)) {
+      throw new ForbiddenException('Only meeting participants can use Q&A.');
+    }
     if (body.action === 'ask') {
       if (mtg.suspendedActivities) throw new ForbiddenException('Activities are suspended by the host.');
       const q = String(body.question ?? '').trim();
@@ -4494,8 +4582,11 @@ export class WorkspaceService implements OnModuleInit {
     mtg.breakoutRooms = mtg.breakoutRooms ?? [];
 
     if (body.action === 'join-room' && body.roomId) {
+      const room = mtg.breakoutRooms.find((b) => b.id === body.roomId);
+      if (!room || !room.active) throw new NotFoundException('Breakout room is not open.');
       const p = mtg.participants.find((x) => x.userId === actor.id);
-      if (p) p.breakoutRoomId = body.roomId;
+      if (!p) throw new ForbiddenException('Join the meeting before entering a breakout room.');
+      p.breakoutRoomId = room.id;
       await this.persistStateNow(actor.organizationId);
       return mtg;
     }
@@ -4740,6 +4831,8 @@ export class WorkspaceService implements OnModuleInit {
       batch?: Array<{ toUserId?: string; type: string; payload?: unknown }>;
     },
   ) {
+    // WebRTC offers/ICE and host commands travel as signals: only people in the call may send them.
+    await this.requireMeetingMember(actor, id);
     if (Array.isArray(body?.batch) && body.batch.length > 0) {
       const valid = body.batch
         .map((entry) => ({
@@ -4775,6 +4868,8 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   async pollMeetingSignals(actor: AuthUser, id: string, after: number) {
+    // Waiting-room users must keep polling to learn they were admitted.
+    await this.requireMeetingMember(actor, id, { allowWaiting: true });
     const now = Date.now();
     let dbItems: MeetingSignalItem[] = [];
 
@@ -4842,9 +4937,7 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   async postMeetingChat(actor: AuthUser, id: string, body: Record<string, unknown>) {
-    await this.syncMeetingsFromDb(actor.organizationId, true);
-    const mtg = this.meetings.find((m) => m.id === id);
-    if (!mtg) throw new NotFoundException('Meeting not found.');
+    const mtg = await this.requireMeetingMember(actor, id);
 
     const isHost = this.canControlMeeting(mtg, actor);
     const chatPerm = mtg.chatPermission ?? 'EVERYONE_DM';
@@ -4878,8 +4971,10 @@ export class WorkspaceService implements OnModuleInit {
         ? body.attachmentName.trim()
         : null;
     if (!text && !attachmentUrl) throw new BadRequestException('Message cannot be empty.');
-    const senderParts = actor.fullName.trim().split(/\s+/).filter(Boolean);
-    const senderLast = senderParts[senderParts.length - 1] || actor.fullName;
+    if (attachmentUrl && attachmentUrl.length > MAX_MEETING_ATTACHMENT_CHARS) {
+      throw new BadRequestException('Attachment is too large (max ~1.5 MB).');
+    }
+    if (text.length > 4000) throw new BadRequestException('Message is too long (max 4000 characters).');
     const replyToId = body.replyToId ? String(body.replyToId) : null;
     const replyTarget = replyToId ? mtg.chatMessages.find((m) => m.id === replyToId) : null;
     const replyPreview = replyTarget
@@ -4889,7 +4984,7 @@ export class WorkspaceService implements OnModuleInit {
     mtg.chatMessages.push({
       id: `mc_${randomUUID().slice(0, 8)}`,
       senderId: actor.id,
-      senderName: actor.companyId ? `${senderLast} · ${actor.companyId}` : senderLast,
+      senderName: this.meetingDisplayName(actor),
       body: text || (attachmentName ? `Attachment: ${attachmentName}` : 'Attachment'),
       createdAt: new Date().toISOString(),
       replyToId,
@@ -4899,6 +4994,9 @@ export class WorkspaceService implements OnModuleInit {
       attachmentUrl,
       attachmentName,
     });
+    if (mtg.chatMessages.length > MAX_MEETING_CHAT_MESSAGES) {
+      mtg.chatMessages = mtg.chatMessages.slice(-MAX_MEETING_CHAT_MESSAGES);
+    }
     await this.persistStateNow(actor.organizationId);
     return mtg;
   }
@@ -5228,9 +5326,10 @@ export class WorkspaceService implements OnModuleInit {
    * Falls back cleanly to `{ enabled: false, provider: 'mesh' }` when no SFU is configured.
    */
   async getMeetingSfuToken(actor: AuthUser, id: string, breakoutRoomCode?: string) {
-    await this.syncMeetingsFromDb(actor.organizationId);
-    const mtg = this.meetings.find((m) => m.id === id);
-    if (!mtg) throw new NotFoundException('Meeting room not found.');
+    // A media token lets the holder into the LiveKit room directly, so it must only be issued
+    // to admitted participants – otherwise lock, passcode and waiting room are all bypassed.
+    const mtg = await this.requireMeetingMember(actor, id);
+    if (mtg.status !== 'LIVE') throw new ForbiddenException('This meeting is not live.');
 
     const targetRoomName =
       breakoutRoomCode && mtg.breakoutRooms?.some((b) => b.roomCode === breakoutRoomCode && b.active)
@@ -5250,11 +5349,9 @@ export class WorkspaceService implements OnModuleInit {
       };
     }
 
-    const nameParts = actor.fullName.trim().split(/\s+/).filter(Boolean);
-    const lastName = nameParts[nameParts.length - 1] || actor.fullName;
     const at = new AccessToken(apiKey, apiSecret, {
       identity: actor.id,
-      name: actor.companyId ? `${lastName} · ${actor.companyId}` : lastName,
+      name: this.meetingDisplayName(actor),
       ttl: '4h',
       metadata: JSON.stringify({ role: actor.role, companyId: actor.companyId ?? null }),
     });
