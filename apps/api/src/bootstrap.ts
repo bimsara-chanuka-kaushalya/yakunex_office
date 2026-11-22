@@ -2,6 +2,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import express from 'express';
 import helmet from 'helmet';
+import { API_VERSION } from './common/version';
 import { config } from './config/config';
 
 export function configureApp(app: INestApplication): void {
@@ -25,6 +26,10 @@ export function configureApp(app: INestApplication): void {
     }),
   );
   app.use(express.urlencoded({ limit: '10mb', extended: true }));
+  app.use((_req: express.Request, res: express.Response, next: express.NextFunction) => {
+    res.setHeader('X-Yakunex-Version', API_VERSION);
+    next();
+  });
 
   app.setGlobalPrefix('api');
   app.use(

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { CheckCircle2, Clock, FolderKanban, ShieldCheck } from 'lucide-react';
 import { YakunexMark } from '@/components/brand/logo';
+import { APP_VERSION } from '@/lib/version';
 
 interface PortalPayload {
   organizationName: string;
@@ -151,6 +152,10 @@ export default function ClientPortalPage() {
             ))}
           </div>
         )}
+
+        <footer className="pt-2 text-center text-[11px] text-white/40">
+          Powered by Yakunex Hub <span className="font-mono text-[#D4A843]/80">{APP_VERSION}</span> · Enterprise Delivery Suite
+        </footer>
       </div>
     </main>
   );

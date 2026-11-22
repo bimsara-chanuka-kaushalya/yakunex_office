@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
 import { Providers } from '@/components/providers';
+import { APP_VERSION_NUMBER } from '@/lib/version';
 import './globals.css';
 
 const siteUrl =
@@ -76,6 +77,7 @@ const jsonLd = {
   '@context': 'https://schema.org',
   '@type': 'SoftwareApplication',
   name: 'Yakunex Hub',
+  softwareVersion: APP_VERSION_NUMBER,
   applicationCategory: 'BusinessApplication',
   operatingSystem: 'Web',
   description:

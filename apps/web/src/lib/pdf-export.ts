@@ -1,5 +1,7 @@
 'use client';
 
+import { APP_VERSION } from '@/lib/version';
+
 export interface PdfExportOptions {
   title: string;
   subtitle?: string;
@@ -145,7 +147,7 @@ export function exportBrandedPdf(opts: PdfExportOptions): void {
   ${sectionsHtml}
   ${tableHtml}
   <div class="footer">
-    <span>Yakunex Hub Enterprise System · ${escapeHtml(companyMail)}</span>
+    <span>Yakunex Hub Enterprise System ${escapeHtml(APP_VERSION)} · ${escapeHtml(companyMail)}</span>
     <span>Confidential — Internal &amp; Authorized Distribution</span>
   </div>
   <script>

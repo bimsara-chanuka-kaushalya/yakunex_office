@@ -56,6 +56,7 @@ import { api, del, liveGet, patch, post, put } from '@/lib/api';
 import { useLiveSync } from '@/lib/use-live-sync';
 import { exportBrandedPdf } from '@/lib/pdf-export';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
+import { APP_VERSION } from '@/lib/version';
 import { cn } from '@/lib/cn';
 
 // ─── 1. TEAM CHAT PAGE (/chat) ───────────────────────────────────────────────
@@ -2628,11 +2629,16 @@ export function SettingsView() {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h2 className="font-display text-3xl font-semibold">Settings & Role Permissions</h2>
-        <p className="mt-1 text-sm text-muted">
-          Company profile, working schedule policies and the global Role → Permission matrix.
-        </p>
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 className="font-display text-3xl font-semibold">Settings &amp; Role Permissions</h2>
+          <p className="mt-1 text-sm text-muted">
+            Company profile, working schedule policies and the global Role → Permission matrix.
+          </p>
+        </div>
+        <Badge tone="gold" className="font-mono">
+          System Release · {APP_VERSION}
+        </Badge>
       </header>
 
       {savedNotice && (

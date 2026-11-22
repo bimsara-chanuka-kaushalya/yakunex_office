@@ -11,6 +11,7 @@ import { liveGet } from '@/lib/api';
 import { useLiveSync } from '@/lib/use-live-sync';
 import { NAV_SECTIONS, isNavItemVisibleForRole } from '@/lib/nav';
 import { ROLE_LABELS, type Role } from '@/lib/permissions';
+import { APP_VERSION } from '@/lib/version';
 import { cn } from '@/lib/cn';
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
@@ -82,7 +83,12 @@ export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
             <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-sidebar bg-success" />
           </div>
           <div className="leading-tight">
-            <p className="font-display text-[15px] font-semibold tracking-tight text-ink">Yakunex Hub</p>
+            <div className="flex items-center gap-1.5">
+              <p className="font-display text-[15px] font-semibold tracking-tight text-ink">Yakunex Hub</p>
+              <span className="rounded-md bg-gold/15 px-1.5 py-0.5 font-mono text-[9px] font-bold text-gold-strong dark:text-gold">
+                {APP_VERSION}
+              </span>
+            </div>
             <p className="text-[10px] font-semibold uppercase tracking-wider text-gold-strong dark:text-gold">
               Enterprise Cloud
             </p>

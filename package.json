@@ -14,7 +14,8 @@
     "seed": "npm --prefix apps/api run seed",
     "db:push": "npm --prefix apps/api run prisma:db:push",
     "db:generate": "npm --prefix apps/api run prisma:generate",
-    "db:studio": "npm --prefix apps/api run prisma:studio"
+    "db:studio": "npm --prefix apps/api run prisma:studio",
+    "version:bump": "node scripts/bump-version.mjs"
   }
 }
 

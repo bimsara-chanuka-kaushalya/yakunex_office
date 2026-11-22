@@ -9,6 +9,7 @@ import { YakunexLogo, YakunexMark } from '@/components/brand/logo';
 import { Button } from '@/components/ui/button';
 import { Field, Input, PasswordInput } from '@/components/ui/field';
 import { ApiError } from '@/lib/api';
+import { APP_VERSION } from '@/lib/version';
 
 /** Only same-site relative paths are allowed, which blocks open redirects. */
 function safeNext(value: string | null): string {
@@ -80,7 +81,9 @@ export default function LoginPage() {
         {/* Bottom Logo & Copyright */}
         <div className="relative z-10 flex items-center justify-between border-t border-white/10 pt-6">
           <YakunexLogo className="w-36 opacity-85" />
-          <p className="text-xs text-white/40">© 2026 Yakunex Technologies (Pvt) Ltd.</p>
+          <p className="text-xs text-white/40">
+            © 2026 Yakunex Technologies (Pvt) Ltd. · <span className="font-mono text-gold/80">{APP_VERSION}</span>
+          </p>
         </div>
       </section>
 
@@ -182,7 +185,7 @@ export default function LoginPage() {
 
         {/* Footer */}
         <div className="text-center text-[11px] text-muted">
-          Yakunex Hub · Enterprise Cloud Workspace · Protected with Argon2id &amp; TLS
+          Yakunex Hub <span className="font-mono font-semibold text-gold-strong dark:text-gold">{APP_VERSION}</span> · Enterprise Cloud Workspace · Protected with Argon2id &amp; TLS
         </div>
       </section>
     </main>
