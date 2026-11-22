@@ -229,13 +229,14 @@ interface ApprovalRow {
   description: string;
   requestedByName: string;
   amount?: number;
+  meta?: { avatarUrl?: string; requiresSuperAdmin?: boolean };
   status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'RETURNED';
   decidedByName?: string | null;
   createdAt: string;
 }
 
 export function ApprovalsView() {
-  const { can } = useAuth();
+  const { user, can } = useAuth();
   const toast = useToast();
   const [rows, setRows] = useState<ApprovalRow[] | null>(null);
   const [type, setType] = useState('EXPENSE');
@@ -323,23 +324,35 @@ export function ApprovalsView() {
           ) : (
             rows.map((r) => (
               <div key={`${r.source}-${r.id}`} className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <Badge tone="neutral">{r.type}</Badge>
-                    <p className="font-semibold text-ink">{r.title}</p>
-                    {r.amount !== undefined && (
-                      <span className="font-mono text-xs text-gold-strong">${r.amount.toLocaleString()}</span>
-                    )}
+                <div className="flex items-center gap-3">
+                  {r.type === 'DP_CHANGE' && r.meta?.avatarUrl && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={r.meta.avatarUrl}
+                      alt="Requested DP"
+                      className="h-12 w-12 shrink-0 rounded-full border border-gold/40 object-cover"
+                    />
+                  )}
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <Badge tone="neutral">{r.type}</Badge>
+                      <p className="font-semibold text-ink">{r.title}</p>
+                      {r.amount !== undefined && (
+                        <span className="font-mono text-xs text-gold-strong">${r.amount.toLocaleString()}</span>
+                      )}
+                    </div>
+                    <p className="mt-1 text-xs text-muted">
+                      By {r.requestedByName} · {r.description}
+                    </p>
                   </div>
-                  <p className="mt-1 text-xs text-muted">
-                    By {r.requestedByName} · {r.description}
-                  </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge tone={r.status === 'APPROVED' ? 'success' : r.status === 'REJECTED' ? 'danger' : 'gold'}>
                     {r.status}
                   </Badge>
-                  {isApprover && r.status === 'PENDING' && (
+                  {isApprover &&
+                    r.status === 'PENDING' &&
+                    (!(r.type === 'PROFILE_UPDATE' || r.meta?.requiresSuperAdmin) || user?.role === 'SUPER_ADMIN') && (
                     <>
                       <Button size="sm" variant="primary" onClick={() => void onDecide(r, 'APPROVED')}>
                         <CheckCircle2 className="h-3.5 w-3.5" /> Approve
@@ -1261,14 +1274,17 @@ export function ProfileView() {
     try {
       const isSelf = !selectedUserId || selectedUserId === user?.id;
       const updated = isSelf
-        ? await patch<EmployeeProfilePayload>('/profile/dp', { avatarUrl: dataUrl })
-        : await patch<EmployeeProfilePayload>(`/profile/${profile.id}`, { avatarUrl: dataUrl });
+        ? await patch<EmployeeProfilePayload & { pendingApproval?: boolean; approvalMessage?: string }>('/profile/dp', { avatarUrl: dataUrl })
+        : await patch<EmployeeProfilePayload & { pendingApproval?: boolean; approvalMessage?: string }>(`/profile/${profile.id}`, { avatarUrl: dataUrl });
       applyProfileState(updated);
       clearApiCache();
       setCropFile(null);
-      setNotice('Profile picture updated!');
-      toast.success('Profile picture updated!');
-      if (isSelf) await reload();
+      const msg = updated.pendingApproval
+        ? (updated.approvalMessage || 'Profile picture submitted for HR / Super Admin approval.')
+        : 'Profile picture updated!';
+      setNotice(msg);
+      toast.success(msg);
+      if (isSelf && !updated.pendingApproval) await reload();
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('yakunex:workspace-mutated'));
       }
@@ -1307,11 +1323,14 @@ export function ProfileView() {
         payload.role = role;
         payload.title = title;
       }
-      const updated = await patch<EmployeeProfilePayload>(`/profile/${profile.id}`, payload);
+      const updated = await patch<EmployeeProfilePayload & { pendingApproval?: boolean; approvalMessage?: string }>(`/profile/${profile.id}`, payload);
       applyProfileState(updated);
-      setNotice(`Profile updated successfully for ${updated.fullName}.`);
-      toast.success(`Saved profile changes for ${updated.fullName}.`);
-      if (profile.id === user?.id) void reload();
+      const msg = updated.pendingApproval
+        ? (updated.approvalMessage || `Profile changes for ${updated.fullName} submitted for Super Admin approval.`)
+        : `Profile updated successfully for ${updated.fullName}.`;
+      setNotice(msg);
+      toast.success(msg);
+      if (profile.id === user?.id && !updated.pendingApproval) void reload();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to update profile.';
       setError(msg);
@@ -1323,7 +1342,7 @@ export function ProfileView() {
 
   if (!profile) return <Skeleton className="h-96 rounded-2xl" />;
   const isViewingSelf = !selectedUserId || selectedUserId === user?.id;
-  const canEditPersonal = isViewingSelf || isHrOrSuperAdmin;
+  const canEditPersonal = isHrOrSuperAdmin;
 
   return (
     <div className="space-y-6">
@@ -1370,19 +1389,24 @@ export function ProfileView() {
                 {profile.title || profile.role} · {profile.email}
               </p>
               {(isViewingSelf || isHrOrSuperAdmin) && (
-                <label className="mt-3 inline-flex cursor-pointer items-center gap-2 rounded-xl border border-gold/40 bg-gold/10 px-3 py-1.5 text-xs font-semibold text-gold-strong transition hover:bg-gold/20">
-                  <Camera className="h-3.5 w-3.5" /> Change Profile Picture (DP)
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      e.target.value = '';
-                      if (f) setCropFile(f);
-                    }}
-                  />
-                </label>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-gold/40 bg-gold/10 px-3 py-1.5 text-xs font-semibold text-gold-strong transition hover:bg-gold/20">
+                    <Camera className="h-3.5 w-3.5" /> Change Profile Picture (DP)
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        e.target.value = '';
+                        if (f) setCropFile(f);
+                      }}
+                    />
+                  </label>
+                  {!isHrOrSuperAdmin && (
+                    <span className="text-[11px] text-muted">Requires HR or Super Admin approval</span>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -1433,38 +1457,15 @@ export function ProfileView() {
             </Select>
           </Field>
 
-          {(isViewingSelf || isHrOrSuperAdmin) && (
-            <>
-              <div className="md:col-span-2 mt-2 border-t border-line pt-4">
-                <p className="text-xs font-semibold uppercase tracking-wider text-gold-strong dark:text-gold">
-                  Sri Lanka Payroll, EPF &amp; Bank SLIPS Details
-                </p>
-              </div>
-              <Field label="Monthly Basic Salary (LKR)" htmlFor="pf-sal">
-                <Input id="pf-sal" type="number" min="0" disabled={!isHrOrSuperAdmin} value={monthlyBasicSalaryLkr} onChange={(e) => setMonthlyBasicSalaryLkr(e.target.value)} />
-              </Field>
-              <Field label="Fixed Monthly Allowances (LKR)" htmlFor="pf-allow">
-                <Input id="pf-allow" type="number" min="0" disabled={!isHrOrSuperAdmin} value={fixedAllowancesLkr} onChange={(e) => setFixedAllowancesLkr(e.target.value)} />
-              </Field>
-              <Field label="EPF / ETF Member Number" htmlFor="pf-epf">
-                <Input id="pf-epf" disabled={!isHrOrSuperAdmin} value={epfNumber} onChange={(e) => setEpfNumber(e.target.value)} placeholder="e.g. EPF-0042" />
-              </Field>
-              <Field label="Bank Name" htmlFor="pf-bank">
-                <Input id="pf-bank" disabled={!canEditPersonal} value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="e.g. Commercial Bank / Sampath Bank" />
-              </Field>
-              <Field label="Bank Branch" htmlFor="pf-branch">
-                <Input id="pf-branch" disabled={!canEditPersonal} value={bankBranch} onChange={(e) => setBankBranch(e.target.value)} placeholder="e.g. Colombo 03" />
-              </Field>
-              <Field label="Bank Account Number" htmlFor="pf-acc">
-                <Input id="pf-acc" disabled={!canEditPersonal} value={bankAccountNo} onChange={(e) => setBankAccountNo(e.target.value)} placeholder="e.g. 8001234567" />
-              </Field>
-            </>
-          )}
-
           {canEditPersonal && (
             <div className="flex justify-end md:col-span-2">
               <Button type="submit" disabled={saving}>
-                <UserCheck className="h-4 w-4" /> {saving ? 'Saving…' : 'Save Profile Changes'}
+                <UserCheck className="h-4 w-4" />{' '}
+                {saving
+                  ? 'Saving…'
+                  : isSuperAdmin
+                    ? 'Save Profile Changes'
+                    : 'Submit Changes for Super Admin Approval'}
               </Button>
             </div>
           )}

@@ -7,6 +7,14 @@ All notable changes to **Yakunex Hub** follow Semantic Versioning (`vMAJOR.MINOR
 
 ---
 
+## [v1.3.1] - 2026-11-22
+### Fixed
+- **Profile Access & Approval Governance**: Restricted profile data editing to Super Admin, Admin, and HR (`HR` / `Admin` edits route to Super Admin approval in Approval Center; Super Admin edits apply immediately).
+- **DP Approval Workflow**: Allowed all employees to customize and upload their own DP while routing non-HR/Admin DP uploads to HR / Super Admin approval before publishing.
+- **Profile UI Cleanup**: Removed the Sri Lanka Payroll, EPF & Bank SLIPS Details section from `/profile`.
+
+---
+
 ## [v1.3.0] - 2026-11-22
 ### Added
 - **Interactive Profile Picture (DP) Customizer**: Added drag-to-reposition, zoom slider (`100%–300%`), 90° rotation, circular framing guide, and crisp 256×256 JPEG export before uploading.

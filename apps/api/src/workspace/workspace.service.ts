@@ -766,7 +766,14 @@ export class WorkspaceService implements OnModuleInit {
     requestedById: string;
     requestedByName: string;
     amount?: number;
-    meta?: { targetUserId?: string; field?: 'nicNumber' | 'phone'; newValue?: string };
+    meta?: {
+      targetUserId?: string;
+      field?: 'nicNumber' | 'phone';
+      newValue?: string;
+      avatarUrl?: string;
+      profilePatch?: Record<string, unknown>;
+      requiresSuperAdmin?: boolean;
+    };
     status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'RETURNED';
     decidedByName?: string | null;
     comment?: string | null;
@@ -6014,6 +6021,12 @@ export class WorkspaceService implements OnModuleInit {
     body = { ...body, status: decision };
     const item = this.approvals.find((a) => a.id === id);
     if (!item) throw new NotFoundException('Approval request not found.');
+    if ((item.type === 'PROFILE_UPDATE' || item.meta?.requiresSuperAdmin) && actor.role !== Role.SUPER_ADMIN) {
+      throw new ForbiddenException('Only a Super Admin can approve or reject HR/Admin profile edits.');
+    }
+    if (item.type === 'DP_CHANGE' && !this.isHrOrSuperAdmin(actor)) {
+      throw new ForbiddenException('Only HR or Super Admin can approve or reject profile picture changes.');
+    }
     item.status = body.status;
     item.decidedByName = actor.fullName;
     item.comment = body.comment ?? null;
@@ -6044,6 +6057,21 @@ export class WorkspaceService implements OnModuleInit {
           data: { phone: item.meta.newValue },
         }).catch(() => undefined);
       }
+    }
+    if (body.status === 'APPROVED' && item.type === 'DP_CHANGE' && item.meta?.targetUserId && item.meta?.avatarUrl) {
+      const uid = item.meta.targetUserId;
+      const avatar = item.meta.avatarUrl;
+      this.avatarCache.set(uid, avatar);
+      await this.prisma.user?.update?.({
+        where: { id: uid },
+        data: { avatarUrl: avatar },
+      }).catch(() => undefined);
+      this.prisma.invalidateUserCache?.(uid);
+      this.workspaceVersion = Date.now();
+      this.workspaceBus.emit('mutated', { organizationId: actor.organizationId, version: this.workspaceVersion });
+    }
+    if (body.status === 'APPROVED' && item.type === 'PROFILE_UPDATE' && item.meta?.targetUserId && item.meta?.profilePatch) {
+      await this.applyProfileUpdate(actor.organizationId, item.meta.targetUserId, item.meta.profilePatch);
     }
     this.notifications.unshift({
       id: `ntf_${randomUUID().slice(0, 8)}`,
@@ -6488,6 +6516,42 @@ export class WorkspaceService implements OnModuleInit {
     if (clean.length > 2_000_000) {
       throw new BadRequestException('Profile image is too large (max ~1.5 MB).');
     }
+    if (!this.isHrOrSuperAdmin(actor)) {
+      await this.syncSnapshotFromSupabase(actor.organizationId, true);
+      this.approvals = this.approvals.filter(
+        (a) => !(a.type === 'DP_CHANGE' && a.status === 'PENDING' && a.meta?.targetUserId === actor.id),
+      );
+      const item = {
+        id: `apr_${randomUUID().slice(0, 8)}`,
+        type: 'DP_CHANGE',
+        title: `${actor.fullName} · Profile Picture (DP) Change`,
+        description: `${actor.fullName} uploaded a new profile picture awaiting HR or Super Admin approval.`,
+        requestedById: actor.id,
+        requestedByName: actor.fullName,
+        meta: { targetUserId: actor.id, avatarUrl: clean },
+        status: 'PENDING' as const,
+        createdAt: new Date().toISOString(),
+      };
+      this.approvals.unshift(item);
+      this.notifications.unshift({
+        id: `ntf_${randomUUID().slice(0, 8)}`,
+        type: 'APPROVAL',
+        title: `DP Change Approval: ${actor.fullName}`,
+        body: `${actor.fullName} requested a new profile picture. Review in Approval Center.`,
+        targetUserId: '*',
+        allowedRoles: ['SUPER_ADMIN', 'ADMIN', 'PROJECT_MANAGER'],
+        readByIds: [actor.id],
+        authorName: actor.fullName,
+        createdAt: new Date().toISOString(),
+      });
+      await this.persistStateNow(actor.organizationId);
+      const current = await this.getEmployeeProfile(actor, actor.id, true);
+      return {
+        ...current,
+        pendingApproval: true,
+        approvalMessage: 'Profile picture submitted for HR / Super Admin approval.',
+      };
+    }
     this.avatarCache.set(actor.id, clean);
     await this.prisma.user?.update?.({
       where: { id: actor.id },
@@ -6559,10 +6623,9 @@ export class WorkspaceService implements OnModuleInit {
       avatarUrl?: string;
     },
   ) {
-    const isSelf = actor.id === targetUserId;
     const isAdminOrHr = this.isHrOrSuperAdmin(actor);
-    if (!isSelf && !isAdminOrHr) {
-      throw new ForbiddenException('Only Super Admin or HR can update another employee profile.');
+    if (!isAdminOrHr) {
+      throw new ForbiddenException('Only Super Admin, Admin, or HR can edit profile data.');
     }
     if ((body.role !== undefined || body.title !== undefined) && actor.role !== Role.SUPER_ADMIN) {
       throw new ForbiddenException('Only a Super Admin can change an employee job role or title.');
@@ -6584,6 +6647,64 @@ export class WorkspaceService implements OnModuleInit {
 
     await this.syncSnapshotFromSupabase(actor.organizationId, true);
 
+    const keys = Object.keys(body).filter((k) => (body as Record<string, unknown>)[k] !== undefined);
+    const isDpOnly = keys.length === 1 && keys[0] === 'avatarUrl';
+    if (actor.role !== Role.SUPER_ADMIN && !isDpOnly) {
+      const targetName = this.userProfiles[targetUserId]?.fullName || targetUserId;
+      const summaryFields = keys.join(', ');
+      const item = {
+        id: `apr_${randomUUID().slice(0, 8)}`,
+        type: 'PROFILE_UPDATE',
+        title: `Profile Edit: ${targetName}`,
+        description: `${actor.fullName} requested profile updates (${summaryFields}) awaiting Super Admin approval.`,
+        requestedById: actor.id,
+        requestedByName: actor.fullName,
+        meta: { targetUserId, profilePatch: { ...body }, requiresSuperAdmin: true },
+        status: 'PENDING' as const,
+        createdAt: new Date().toISOString(),
+      };
+      this.approvals.unshift(item);
+      this.notifications.unshift({
+        id: `ntf_${randomUUID().slice(0, 8)}`,
+        type: 'APPROVAL',
+        title: `Super Admin Approval Needed: ${targetName}`,
+        body: `${actor.fullName} edited profile details (${summaryFields}). Approve in Approval Center.`,
+        targetUserId: '*',
+        allowedRoles: ['SUPER_ADMIN'],
+        readByIds: [actor.id],
+        authorName: actor.fullName,
+        createdAt: new Date().toISOString(),
+      });
+      await this.persistStateNow(actor.organizationId);
+      const current = await this.getEmployeeProfile(actor, targetUserId, true);
+      return {
+        ...current,
+        pendingApproval: true,
+        approvalMessage: 'Profile changes submitted for Super Admin approval.',
+      };
+    }
+
+    await this.applyProfileUpdate(actor.organizationId, targetUserId, body, actor.role === Role.SUPER_ADMIN);
+
+    await this.audit.log({
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      action: 'EMPLOYEE_PROFILE_UPDATED',
+      entityType: 'User',
+      entityId: targetUserId,
+      metadata: { fields: Object.keys(body) },
+    });
+
+    return this.getEmployeeProfile(actor, targetUserId, true);
+  }
+
+  private async applyProfileUpdate(
+    organizationId: string,
+    targetUserId: string,
+    body: Record<string, unknown>,
+    allowRoleAndTitle = false,
+  ) {
+    const isAdminOrHr = true;
     const prev = this.userProfiles[targetUserId] ?? {};
     this.userProfiles[targetUserId] = {
       ...prev,
@@ -6606,10 +6727,10 @@ export class WorkspaceService implements OnModuleInit {
       ...(body.bankName !== undefined ? { bankName: String(body.bankName).trim() } : {}),
       ...(body.bankBranch !== undefined ? { bankBranch: String(body.bankBranch).trim() } : {}),
       ...(body.bankAccountNo !== undefined ? { bankAccountNo: String(body.bankAccountNo).trim() } : {}),
-      ...(body.role !== undefined && actor.role === Role.SUPER_ADMIN ? { role: body.role } : {}),
-      ...(body.title !== undefined && actor.role === Role.SUPER_ADMIN ? { title: String(body.title).trim() } : {}),
+      ...(allowRoleAndTitle && body.role !== undefined ? { role: body.role as Role } : {}),
+      ...(allowRoleAndTitle && body.title !== undefined ? { title: String(body.title).trim() } : {}),
     };
-    await this.persistStateNow(actor.organizationId);
+    await this.persistStateNow(organizationId);
 
     const dbPatch: Record<string, unknown> = {};
     if (body.fullName !== undefined && String(body.fullName).trim().length >= 2) {
@@ -6624,8 +6745,8 @@ export class WorkspaceService implements OnModuleInit {
       dbPatch.avatarUrl = avatar;
       this.avatarCache.set(targetUserId, avatar);
     }
-    if (body.role !== undefined && actor.role === Role.SUPER_ADMIN) dbPatch.role = body.role;
-    if (body.title !== undefined && actor.role === Role.SUPER_ADMIN) dbPatch.title = String(body.title).trim() || null;
+    if (allowRoleAndTitle && body.role !== undefined) dbPatch.role = body.role;
+    if (allowRoleAndTitle && body.title !== undefined) dbPatch.title = String(body.title).trim() || null;
 
     if (Object.keys(dbPatch).length > 0 && this.prisma.user?.update) {
       const updatedDbUser = await this.prisma.user
@@ -6636,19 +6757,10 @@ export class WorkspaceService implements OnModuleInit {
         .catch(() => null);
       if (updatedDbUser) {
         this.prisma.upsertUserInCache?.(updatedDbUser);
+      } else {
+        this.prisma.invalidateUserCache?.(targetUserId);
       }
     }
-
-    await this.audit.log({
-      organizationId: actor.organizationId,
-      actorId: actor.id,
-      action: 'EMPLOYEE_PROFILE_UPDATED',
-      entityType: 'User',
-      entityId: targetUserId,
-      metadata: { fields: Object.keys(body) },
-    });
-
-    return this.getEmployeeProfile(actor, targetUserId, true);
   }
 
   private haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
