@@ -1655,7 +1655,7 @@ export function MeetingStudio({
         const vTrack = stream.getVideoTracks()[0];
         if (!vTrack && camOnRef.current) {
           setCamOn(false);
-          void patch<MeetingRow>(`/meetings/${room.id}/participant`, { camOn: false })
+          void mPatch<MeetingRow>('/participant', { camOn: false })
             .then((updated) => setRoom(updated))
             .catch(() => undefined);
         }
@@ -4121,18 +4121,24 @@ export function MeetingStudio({
       });
       setRoom(updated);
       showToast('Meeting notes saved.');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Unable to save meeting notes.');
     } finally {
       setSavingNotes(false);
     }
   };
 
   const hostMute = async (targetUserId?: string) => {
-    const updated = await patch<MeetingRow>(`/meetings/${room.id}/host-action`, {
-      action: targetUserId ? 'mute' : 'mute-all',
-      targetUserId,
-    });
-    setRoom(updated);
-    showToast(targetUserId ? 'Participant muted.' : 'All participants muted.');
+    try {
+      const updated = await patch<MeetingRow>(`/meetings/${room.id}/host-action`, {
+        action: targetUserId ? 'mute' : 'mute-all',
+        targetUserId,
+      });
+      setRoom(updated);
+      showToast(targetUserId ? 'Participant muted.' : 'All participants muted.');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Unable to mute participant.');
+    }
   };
 
   const hostAction = async (
