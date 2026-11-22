@@ -7,6 +7,13 @@ All notable changes to **Yakunex Hub** follow Semantic Versioning (`vMAJOR.MINOR
 
 ---
 
+## [v1.1.1] - 2026-11-22
+### Performance & UX
+- **Silent, Instant Live-Sync**: Replaced per-component SSE connections with a single shared `/api/workspace/live-stream` connection per tab and `isSilentRefresh()` background updates so views never flash loading skeletons during live refreshes.
+- **Request Deduplication & Smart Polling**: Shared concurrent `liveGet` calls within 1s across widgets (excluding `/meetings` signaling) and scaled down backup polling when SSE streams are healthy.
+
+---
+
 ## [v1.1.0] - 2026-11-22
 ### Added
 - **Role-Based "My Day" Daily Workspace** (`GET /api/my-day` + `My day`, `Team`, `HR desk`, and `Company` dashboard panels with blocker reporting, daily standup, intern reflection, and bulk approval actions).
