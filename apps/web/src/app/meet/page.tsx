@@ -603,7 +603,7 @@ function StandaloneMeetContent() {
 
 /** Server errors carry machine prefixes (PASSCODE_REQUIRED:, MEETING_ENDED:, INTERNAL_ONLY:) – hide them from people. */
 function cleanMeetingError(msg: string): string {
-  return msg.replace(/^(PASSCODE_REQUIRED|MEETING_ENDED|INTERNAL_ONLY):s*/, '').trim();
+  return msg.replace(/^(PASSCODE_REQUIRED|MEETING_ENDED|INTERNAL_ONLY):\s*/, '').trim();
 }
 
 export default function StandaloneMeetPage() {
