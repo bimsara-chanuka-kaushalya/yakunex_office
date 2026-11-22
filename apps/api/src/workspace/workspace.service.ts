@@ -1155,7 +1155,11 @@ export class WorkspaceService implements OnModuleInit {
     try {
       const done = await this.loadRemoteSnapshot(organizationId);
       if (done) this.lastSnapshotSyncAt = Date.now();
-      void this.refreshAvatarCache(organizationId);
+      if (force) {
+        await this.refreshAvatarCache(organizationId, true);
+      } else {
+        void this.refreshAvatarCache(organizationId);
+      }
     } catch {
       // Non-fatal fallback
     }
@@ -5915,6 +5919,8 @@ export class WorkspaceService implements OnModuleInit {
       data: { avatarUrl: clean },
     }).catch(() => undefined);
     this.prisma.invalidateUserCache?.(actor.id);
+    this.workspaceVersion = Date.now();
+    this.workspaceBus.emit('mutated', { organizationId: actor.organizationId, version: this.workspaceVersion });
     return this.getEmployeeProfile(actor, actor.id);
   }
 
@@ -6002,25 +6008,6 @@ export class WorkspaceService implements OnModuleInit {
     if (targetDbUser === null) throw new NotFoundException('Employee not found.');
 
     await this.syncSnapshotFromSupabase(actor.organizationId, true);
-
-    // NIC and contact number changes by the employee themself must go through the
-    // approval flow (POST /profile/request-change). Unchanged values are accepted so the
-    // full profile form can still be saved.
-    if (isSelf && !isAdminOrHr) {
-      const current = this.userProfiles[targetUserId] ?? {};
-      const currentNic = String(current.nicNumber ?? '').trim();
-      const currentPhone = String(current.phone ?? targetDbUser?.phone ?? '').trim();
-      if (body.nicNumber !== undefined && String(body.nicNumber).trim() !== currentNic) {
-        throw new ForbiddenException(
-          'NIC ID Number changes need HR approval. Use "Request change" on your profile instead.',
-        );
-      }
-      if (body.phone !== undefined && String(body.phone).trim() !== currentPhone) {
-        throw new ForbiddenException(
-          'Contact Number changes need HR approval. Use "Request change" on your profile instead.',
-        );
-      }
-    }
 
     const prev = this.userProfiles[targetUserId] ?? {};
     this.userProfiles[targetUserId] = {
