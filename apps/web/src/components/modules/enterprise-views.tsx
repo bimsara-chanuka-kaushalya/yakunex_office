@@ -1159,7 +1159,7 @@ export function ProfileView() {
   const [phone, setPhone] = useState('');
   const [role, setRole] = useState('STAFF');
   const [title, setTitle] = useState('');
-  const [monthlyBasicSalaryLkr, setMonthlyBasicSalaryLkr] = useState('200000');
+  const [monthlyBasicSalaryLkr, setMonthlyBasicSalaryLkr] = useState('0');
   const [fixedAllowancesLkr, setFixedAllowancesLkr] = useState('0');
   const [epfNumber, setEpfNumber] = useState('');
   const [bankName, setBankName] = useState('');
@@ -1184,7 +1184,7 @@ export function ProfileView() {
     setPhone(data.phone ?? '');
     setRole(data.role ?? 'STAFF');
     setTitle(data.title ?? '');
-    setMonthlyBasicSalaryLkr(String(data.monthlyBasicSalaryLkr ?? 200000));
+    setMonthlyBasicSalaryLkr(String(data.monthlyBasicSalaryLkr ?? 0));
     setFixedAllowancesLkr(String(data.fixedAllowancesLkr ?? 0));
     setEpfNumber(data.epfNumber ?? '');
     setBankName(data.bankName ?? '');

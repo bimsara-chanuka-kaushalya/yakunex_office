@@ -14,6 +14,8 @@ async function ensureInitialized(): Promise<void> {
     initPromise = (async () => {
       const app = await NestFactory.create(AppModule, new ExpressAdapter(server), {
         bufferLogs: true,
+        // Needed to verify GitHub webhook signatures against the exact bytes GitHub signed.
+        rawBody: true,
       });
       configureApp(app);
       await app.init();

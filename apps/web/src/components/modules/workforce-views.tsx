@@ -939,6 +939,7 @@ interface SriLankaPayrollRow {
   userId: string;
   userName: string;
   hourlyLkr?: number;
+  salaryConfigured?: boolean;
   monthlyBasicSalaryLkr?: number;
   fixedAllowancesLkr?: number;
   epfNumber?: string;
@@ -1556,6 +1557,9 @@ export function AttendanceView() {
                     <td className="px-5 py-3 font-medium text-ink">
                       {p.userName}
                       <span className="ml-2 text-xs text-muted">({p.daysWorked}d)</span>
+                      {p.salaryConfigured === false && (
+                        <span className="ml-2 text-xs font-semibold text-warning">Salary not set</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right font-mono text-xs">
                       {p.regHours}h / <span className="text-warning">{p.ot15Hours}h</span> /{' '}
@@ -1594,7 +1598,7 @@ export function AttendanceView() {
                             ],
                             columns: ['Component', 'Detail', 'Amount (LKR)'],
                             rows: [
-                              ['Regular Hours', `${p.regHours}h @ LKR ${(p.hourlyLkr ?? 1250).toLocaleString()}/hr`, p.basePay.toLocaleString()],
+                              ['Regular Hours', `${p.regHours}h @ LKR ${(p.hourlyLkr ?? 0).toLocaleString()}/hr`, p.basePay.toLocaleString()],
                               ['Overtime (1.5x Weekday + 2.0x Weekend/Poya)', `${p.ot15Hours}h + ${p.ot20Hours}h`, p.otPay.toLocaleString()],
                               ...(p.fixedAllowancesLkr ? [['Fixed Allowances', 'Monthly allowance', p.fixedAllowancesLkr.toLocaleString()]] : []),
                               ['Gross Earnings', `${(p.regHours + p.ot15Hours + p.ot20Hours).toFixed(2)}h total`, p.grossLkr.toLocaleString()],

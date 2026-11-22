@@ -21,6 +21,7 @@ import { AccessToken } from 'livekit-server-sdk';
 import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../common/types';
 import { PrismaService } from '../prisma/prisma.service';
+import { deepClone, mergeSnapshots } from './workspace-state-merge';
 import {
   ALL_PERMISSION_KEYS,
   DEFAULT_ROLE_PERMISSIONS,
@@ -447,6 +448,75 @@ const DEFAULT_STUN_SERVERS: IceServerEntry[] = [
   { urls: 'stun:stun.cloudflare.com:3478' },
 ];
 
+const TASK_STATUSES = ['BACKLOG', 'TODO', 'IN_PROGRESS', 'IN_REVIEW', 'TESTING', 'BLOCKED', 'COMPLETED'] as const;
+const PRIORITIES = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const;
+const ISSUE_TYPES = ['EPIC', 'STORY', 'TASK', 'BUG'] as const;
+const SPRINT_STATUSES = ['PLANNED', 'ACTIVE', 'COMPLETED'] as const;
+const BUG_STATUSES = ['NEW', 'ASSIGNED', 'IN_PROGRESS', 'FIXED', 'TESTING', 'VERIFIED', 'CLOSED'] as const;
+const BUG_SEVERITIES = ['MINOR', 'MAJOR', 'CRITICAL', 'BLOCKER'] as const;
+const PROJECT_STATUSES = Object.values(ProjectStatus) as string[];
+const MEETING_STATUSES = ['LIVE', 'SCHEDULED', 'COMPLETED', 'CANCELLED'] as const;
+const APPROVAL_DECISIONS = ['APPROVED', 'REJECTED', 'RETURNED'] as const;
+const FINANCE_TYPES = ['INCOME', 'EXPENSE', 'INVOICE', 'PAYROLL'] as const;
+const FINANCE_STATUSES = ['PAID', 'PENDING', 'APPROVED'] as const;
+const ASSET_CONDITIONS = ['GOOD', 'MAINTENANCE', 'RETIRED'] as const;
+const ASSET_STATUSES = ['ASSIGNED', 'AVAILABLE', 'REPAIR'] as const;
+
+/**
+ * Validates an enum-like request field. Empty values return `fallback`; anything outside
+ * `allowed` is rejected with 400 instead of being stored as an invalid state.
+ */
+function pickEnum<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  field: string,
+  fallback: T,
+): T;
+function pickEnum<T extends string>(value: unknown, allowed: readonly T[], field: string): T | undefined;
+function pickEnum<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  field: string,
+  fallback?: T,
+): T | undefined {
+  if (value === undefined || value === null || String(value).trim() === '') return fallback;
+  const normalized = String(value).trim().toUpperCase();
+  if (!(allowed as readonly string[]).includes(normalized)) {
+    throw new BadRequestException(`Invalid ${field} "${String(value)}". Allowed: ${allowed.join(', ')}.`);
+  }
+  return normalized as T;
+}
+
+/** Built-in Sri Lanka public / Poya holidays. Add later years in the PublicHoliday table. */
+const BUILTIN_HOLIDAYS: Array<{ date: string; name: string; type: string }> = [
+  { date: '2026-01-03', name: 'Duruthu Full Moon Poya Day', type: 'POYA' },
+  { date: '2026-01-15', name: 'Tamil Thai Pongal Day', type: 'MERCANTILE' },
+  { date: '2026-02-01', name: 'Navam Full Moon Poya Day', type: 'POYA' },
+  { date: '2026-02-04', name: 'Independence Day', type: 'MERCANTILE' },
+  { date: '2026-03-02', name: 'Madin Full Moon Poya Day', type: 'POYA' },
+  { date: '2026-04-01', name: 'Bak Full Moon Poya Day', type: 'POYA' },
+  { date: '2026-04-13', name: 'Sinhala & Tamil New Year Eve', type: 'MERCANTILE' },
+  { date: '2026-04-14', name: 'Sinhala & Tamil New Year Day', type: 'MERCANTILE' },
+  { date: '2026-05-01', name: 'May Day & Vesak Full Moon Poya', type: 'MERCANTILE' },
+  { date: '2026-05-02', name: 'Day Following Vesak Poya', type: 'POYA' },
+  { date: '2026-05-30', name: 'Adhi Poson Full Moon Poya', type: 'POYA' },
+  { date: '2026-06-29', name: 'Poson Full Moon Poya Day', type: 'POYA' },
+  { date: '2026-07-29', name: 'Esala Full Moon Poya Day', type: 'POYA' },
+  { date: '2026-08-27', name: 'Nikini Full Moon Poya Day', type: 'POYA' },
+  { date: '2026-09-26', name: 'Binara Full Moon Poya Day', type: 'POYA' },
+  { date: '2026-10-25', name: 'Vap Full Moon Poya Day', type: 'POYA' },
+  { date: '2026-11-24', name: 'Il Full Moon Poya Day', type: 'POYA' },
+  { date: '2026-12-23', name: 'Unduvap Full Moon Poya Day', type: 'POYA' },
+  { date: '2026-12-25', name: 'Christmas Day', type: 'MERCANTILE' },
+];
+
+/** Sri Lanka time (UTC+05:30) – payroll days must follow the local calendar, not UTC. */
+const COLOMBO_OFFSET_MS = 330 * 60_000;
+function colomboDate(iso: string): { date: string; dayOfWeek: number } {
+  const local = new Date(Date.parse(iso) + COLOMBO_OFFSET_MS);
+  return { date: local.toISOString().slice(0, 10), dayOfWeek: local.getUTCDay() };
+}
+
 function containsTurnUrl(entry: IceServerEntry): boolean {
   const list = Array.isArray(entry.urls) ? entry.urls : [entry.urls];
   return list.some((u) => typeof u === 'string' && /^turns?:/i.test(u.trim()));
@@ -461,6 +531,15 @@ export class WorkspaceService implements OnModuleInit {
   private iceConfigCache: { data: MeetingIceConfig; expiresAt: number } | null = null;
   private lastMeetingsSyncAt = 0;
   private lastSnapshotSyncAt = 0;
+  /** Snapshot last read from / written to workspace_state (the merge base). */
+  private baseSnapshot: Record<string, unknown> = {};
+  /** updatedAt of the workspace_state row that `baseSnapshot` represents (optimistic lock). */
+  private baseUpdatedAt: Date | null = null;
+  private persistChain: Promise<void> = Promise.resolve();
+  private persistQueued: Promise<void> | null = null;
+  /** Profile pictures live in User.avatarUrl, never in the shared JSON snapshot. */
+  private avatarCache = new Map<string, string>();
+  private lastAvatarRefreshAt = 0;
   private lastSignalPruneAt = new Map<string, number>();
   private meetingMutationChain: Promise<unknown> = Promise.resolve();
   private meetingSignals = new Map<string, { seq: number; items: MeetingSignalItem[] }>();
@@ -734,7 +813,6 @@ export class WorkspaceService implements OnModuleInit {
       phone?: string;
       role?: Role;
       title?: string;
-      avatarDataUrl?: string;
       monthlyBasicSalaryLkr?: number;
       fixedAllowancesLkr?: number;
       epfNumber?: string;
@@ -776,12 +854,20 @@ export class WorkspaceService implements OnModuleInit {
     await this.hydrateFromSupabase();
   }
 
+  /**
+   * The in-memory workspace holds exactly one organization's data. Requests from any other
+   * organization are rejected by WorkspaceTenantGuard so their data can never mix.
+   */
+  async getPrimaryOrgId(): Promise<string | null> {
+    return this.resolveOrgId();
+  }
+
   private async resolveOrgId(organizationId?: string): Promise<string | null> {
+    if (this.defaultOrgId) return this.defaultOrgId;
     if (organizationId) {
       this.defaultOrgId = organizationId;
       return organizationId;
     }
-    if (this.defaultOrgId) return this.defaultOrgId;
     try {
       const org = await this.prisma.organization.findFirst({ select: { id: true } });
       this.defaultOrgId = org?.id ?? null;
@@ -807,7 +893,9 @@ export class WorkspaceService implements OnModuleInit {
         where: { organizationId_key: { organizationId: org.id, key: 'workspace_state' } },
       });
       if (stateRow?.value && typeof stateRow.value === 'object') {
-        const snap = stateRow.value as Record<string, unknown>;
+        const snap = this.normalizeSnapshot(stateRow.value);
+        this.baseSnapshot = deepClone(snap);
+        this.baseUpdatedAt = stateRow.updatedAt ?? null;
         if (Array.isArray(snap.clients)) this.clients = snap.clients as ClientItem[];
         if (Array.isArray(snap.projects)) this.projects = snap.projects as ProjectItem[];
         if (Array.isArray(snap.sprints)) this.sprints = snap.sprints as SprintItem[];
@@ -891,65 +979,183 @@ export class WorkspaceService implements OnModuleInit {
         },
       });
 
+      await this.refreshAvatarCache(org.id, true);
+
       this.logger.log('✅ Workspace state hydrated from Supabase PostgreSQL.');
     } catch (err) {
       this.logger.warn(`Workspace hydration skipped (in-memory fallback): ${(err as Error).message}`);
     }
   }
 
+  // ─── Shared snapshot (workspace_state) synchronisation ───────────────────
+  // Every load merges the stored snapshot with this instance's unsaved changes, and every
+  // save is an optimistic, compare-and-swap write on SystemSetting.updatedAt. Concurrent
+  // writers therefore merge instead of overwriting each other (no lost updates, and deleted
+  // rows can no longer reappear from a stale read).
+
+  private static readonly STATE_KEYS = [
+    'clients',
+    'projects',
+    'sprints',
+    'tasks',
+    'bugs',
+    'documents',
+    'timeEntries',
+    'attendance',
+    'leaveRequests',
+    'interns',
+    'channels',
+    'messages',
+    'meetings',
+    'departments',
+    'reportingManagers',
+    'approvals',
+    'financeEntries',
+    'clientInvoices',
+    'assets',
+    'performanceReviews',
+    'notifications',
+    'userProfiles',
+    'settings',
+  ] as const;
+
+  private static readonly MAX_MESSAGES_PER_CHANNEL = 2000;
+  private static readonly MAX_NOTIFICATIONS = 1000;
+
+  private captureState(): Record<string, unknown> {
+    const self = this as unknown as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of WorkspaceService.STATE_KEYS) out[key] = self[key];
+    return out;
+  }
+
+  private applyState(snap: Record<string, unknown>): void {
+    const self = this as unknown as Record<string, unknown>;
+    for (const key of WorkspaceService.STATE_KEYS) {
+      const value = snap[key];
+      if (value === undefined) continue;
+      if (key === 'settings') {
+        if (value && typeof value === 'object') {
+          this.settings = { ...this.settings, ...(value as Partial<OrganizationSettings>) };
+        }
+        continue;
+      }
+      if (key === 'reportingManagers' || key === 'userProfiles') {
+        if (value && typeof value === 'object' && !Array.isArray(value)) self[key] = value;
+        continue;
+      }
+      if (Array.isArray(value)) self[key] = value;
+    }
+  }
+
+  /**
+   * Moves inline profile pictures out of the shared snapshot (they belong in User.avatarUrl)
+   * and drops base64 avatars that older versions copied into every chat message.
+   */
+  private normalizeSnapshot(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const snap = value as Record<string, unknown>;
+    const profiles = snap.userProfiles;
+    if (profiles && typeof profiles === 'object' && !Array.isArray(profiles)) {
+      for (const [userId, profile] of Object.entries(profiles as Record<string, Record<string, unknown>>)) {
+        if (profile && typeof profile === 'object' && 'avatarDataUrl' in profile) {
+          const avatar = profile.avatarDataUrl;
+          if (typeof avatar === 'string' && avatar.trim() && !this.avatarCache.has(userId)) {
+            this.avatarCache.set(userId, avatar);
+          }
+          delete profile.avatarDataUrl;
+        }
+      }
+    }
+    if (Array.isArray(snap.messages)) {
+      for (const m of snap.messages as Array<Record<string, unknown>>) {
+        if (m && typeof m.senderAvatarUrl === 'string' && m.senderAvatarUrl.startsWith('data:')) {
+          m.senderAvatarUrl = null;
+        }
+      }
+    }
+    return snap;
+  }
+
+  /** Keeps the shared snapshot bounded: chat history per channel and the notification feed. */
+  private pruneState(): void {
+    const maxPerChannel = WorkspaceService.MAX_MESSAGES_PER_CHANNEL;
+    const counts = new Map<string, number>();
+    for (const m of this.messages) counts.set(m.channelId, (counts.get(m.channelId) ?? 0) + 1);
+    if ([...counts.values()].some((n) => n > maxPerChannel)) {
+      const keepFrom = new Map<string, number>();
+      for (const [ch, n] of counts) keepFrom.set(ch, Math.max(0, n - maxPerChannel));
+      const seen = new Map<string, number>();
+      this.messages = this.messages.filter((m) => {
+        const idx = seen.get(m.channelId) ?? 0;
+        seen.set(m.channelId, idx + 1);
+        return m.pinned || idx >= (keepFrom.get(m.channelId) ?? 0);
+      });
+    }
+    if (this.notifications.length > WorkspaceService.MAX_NOTIFICATIONS) {
+      this.notifications = [...this.notifications]
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+        .slice(0, WorkspaceService.MAX_NOTIFICATIONS);
+    }
+  }
+
+  /** Merges a stored snapshot into memory without discarding this instance's unsaved changes. */
+  private mergeRemoteSnapshot(value: unknown, updatedAt: Date | null): void {
+    const remote = this.normalizeSnapshot(value);
+    const merged = mergeSnapshots(
+      this.baseSnapshot,
+      this.captureState(),
+      remote,
+      WorkspaceService.STATE_KEYS,
+    );
+    this.applyState(merged);
+    this.baseSnapshot = deepClone(remote);
+    this.baseUpdatedAt = updatedAt;
+  }
+
+  private async loadRemoteSnapshot(organizationId?: string): Promise<boolean> {
+    const orgId = await this.resolveOrgId(organizationId);
+    if (!orgId || !this.prisma.systemSetting?.findUnique) return false;
+    const row = await this.prisma.systemSetting.findUnique({
+      where: { organizationId_key: { organizationId: orgId, key: 'workspace_state' } },
+    });
+    if (!row?.value || typeof row.value !== 'object') return true;
+    const rowUpdatedAt = row.updatedAt instanceof Date ? row.updatedAt : null;
+    if (rowUpdatedAt && this.baseUpdatedAt && rowUpdatedAt.getTime() === this.baseUpdatedAt.getTime()) {
+      return true; // nothing new in the database
+    }
+    this.mergeRemoteSnapshot(row.value, rowUpdatedAt);
+    return true;
+  }
+
+  private async refreshAvatarCache(organizationId?: string, force = false): Promise<void> {
+    if (!force && Date.now() - this.lastAvatarRefreshAt < 60_000) return;
+    this.lastAvatarRefreshAt = Date.now();
+    try {
+      const orgId = await this.resolveOrgId(organizationId);
+      if (!orgId || !this.prisma.user?.findMany) return;
+      const rows = (await this.prisma.user.findMany({
+        where: { organizationId: orgId, avatarUrl: { not: null } },
+        select: { id: true, avatarUrl: true },
+      })) as Array<{ id: string; avatarUrl: string | null }>;
+      for (const r of rows ?? []) {
+        if (r.avatarUrl) this.avatarCache.set(r.id, r.avatarUrl);
+      }
+    } catch {
+      // Avatars are cosmetic; keep the cached values.
+    }
+  }
+
+  private avatarOf(userId: string, fallback?: string | null): string | null {
+    return this.avatarCache.get(userId) ?? fallback ?? null;
+  }
+
   private async syncSnapshotFromSupabase(organizationId?: string, force = false): Promise<void> {
     if (!force && Date.now() - this.lastSnapshotSyncAt < 2000) return;
     try {
-      const orgId = await this.resolveOrgId(organizationId);
-      if (!orgId || !this.prisma.systemSetting?.findUnique) return;
-      const stateRow = await this.prisma.systemSetting.findUnique({
-        where: { organizationId_key: { organizationId: orgId, key: 'workspace_state' } },
-      });
-      this.lastSnapshotSyncAt = Date.now();
-      if (!stateRow?.value || typeof stateRow.value !== 'object') return;
-      const snap = stateRow.value as Record<string, unknown>;
-      if (Array.isArray(snap.clients)) this.clients = snap.clients as ClientItem[];
-      if (Array.isArray(snap.projects)) this.projects = snap.projects as ProjectItem[];
-      if (Array.isArray(snap.sprints)) this.sprints = snap.sprints as SprintItem[];
-      if (Array.isArray(snap.tasks)) this.tasks = snap.tasks as TaskItem[];
-      if (Array.isArray(snap.bugs)) this.bugs = snap.bugs as BugItem[];
-      if (Array.isArray(snap.documents)) this.documents = snap.documents as DocumentItem[];
-      if (Array.isArray(snap.timeEntries)) this.timeEntries = snap.timeEntries as TimeEntryItem[];
-      if (Array.isArray(snap.attendance)) this.attendance = snap.attendance as AttendanceItem[];
-      if (Array.isArray(snap.leaveRequests)) this.leaveRequests = snap.leaveRequests as LeaveRequestItem[];
-      if (Array.isArray(snap.interns)) this.interns = snap.interns as InternItem[];
-      if (Array.isArray(snap.messages)) this.messages = snap.messages as ChatMessageItem[];
-      if (Array.isArray(snap.meetings)) this.meetings = snap.meetings as MeetingItem[];
-      if (Array.isArray(snap.departments) && snap.departments.length > 0) {
-        this.departments = snap.departments as WorkspaceService['departments'];
-      }
-      if (snap.reportingManagers && typeof snap.reportingManagers === 'object') {
-        this.reportingManagers = snap.reportingManagers as Record<string, string | null>;
-      }
-      if (Array.isArray(snap.financeEntries)) {
-        this.financeEntries = snap.financeEntries as WorkspaceService['financeEntries'];
-      }
-      if (Array.isArray(snap.clientInvoices)) {
-        this.clientInvoices = snap.clientInvoices as WorkspaceService['clientInvoices'];
-      }
-      if (Array.isArray(snap.assets)) {
-        this.assets = snap.assets as WorkspaceService['assets'];
-      }
-      if (Array.isArray(snap.performanceReviews)) {
-        this.performanceReviews = snap.performanceReviews as WorkspaceService['performanceReviews'];
-      }
-      if (Array.isArray(snap.notifications)) {
-        this.notifications = snap.notifications as WorkspaceService['notifications'];
-      }
-      if (Array.isArray(snap.approvals)) {
-        this.approvals = snap.approvals as WorkspaceService['approvals'];
-      }
-      if (snap.userProfiles && typeof snap.userProfiles === 'object') {
-        this.userProfiles = snap.userProfiles as WorkspaceService['userProfiles'];
-      }
-      if (snap.settings && typeof snap.settings === 'object') {
-        this.settings = { ...this.settings, ...(snap.settings as Partial<OrganizationSettings>) };
-      }
+      const done = await this.loadRemoteSnapshot(organizationId);
+      if (done) this.lastSnapshotSyncAt = Date.now();
+      void this.refreshAvatarCache(organizationId);
     } catch {
       // Non-fatal fallback
     }
@@ -960,50 +1166,92 @@ export class WorkspaceService implements OnModuleInit {
     void this.persistStateNow(organizationId);
   }
 
-  private async persistStateNow(organizationId?: string): Promise<void> {
+  /**
+   * Serialises saves within this instance. A save that is queued but not yet started already
+   * includes every change made before it starts, so later callers share it.
+   */
+  private persistStateNow(organizationId?: string): Promise<void> {
     if (this.persistTimer) {
       clearTimeout(this.persistTimer);
       this.persistTimer = null;
     }
+    if (this.persistQueued) return this.persistQueued;
+    const run = this.persistChain.then(() => {
+      this.persistQueued = null;
+      return this.writeSnapshot(organizationId);
+    });
+    this.persistQueued = run;
+    this.persistChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async writeSnapshot(organizationId?: string): Promise<void> {
     try {
       const orgId = await this.resolveOrgId(organizationId);
       if (!orgId || !this.prisma.systemSetting?.upsert) return;
-      const payload = {
-        clients: this.clients,
-        projects: this.projects,
-        sprints: this.sprints,
-        tasks: this.tasks,
-        bugs: this.bugs,
-        documents: this.documents,
-        timeEntries: this.timeEntries,
-        attendance: this.attendance,
-        leaveRequests: this.leaveRequests,
-        interns: this.interns,
-        channels: this.channels,
-        messages: this.messages,
-        meetings: this.meetings,
-        departments: this.departments,
-        reportingManagers: this.reportingManagers,
-        approvals: this.approvals,
-        financeEntries: this.financeEntries,
-        clientInvoices: this.clientInvoices,
-        assets: this.assets,
-        performanceReviews: this.performanceReviews,
-        notifications: this.notifications,
-        userProfiles: this.userProfiles,
-        settings: this.settings,
-      } as unknown as Prisma.InputJsonValue;
+      const where = { organizationId_key: { organizationId: orgId, key: 'workspace_state' } };
+      const canCompareAndSwap =
+        typeof this.prisma.systemSetting.findUnique === 'function' &&
+        typeof this.prisma.systemSetting.updateMany === 'function';
 
-      await this.prisma.systemSetting.upsert({
-        where: { organizationId_key: { organizationId: orgId, key: 'workspace_state' } },
-        update: { value: payload },
-        create: {
-          organizationId: orgId,
-          key: 'workspace_state',
-          value: payload,
-        },
-      });
+      if (!canCompareAndSwap) {
+        this.pruneState();
+        const payload = deepClone(this.captureState());
+        await this.prisma.systemSetting.upsert({
+          where,
+          update: { value: payload as Prisma.InputJsonValue },
+          create: { organizationId: orgId, key: 'workspace_state', value: payload as Prisma.InputJsonValue },
+        });
+        this.baseSnapshot = payload;
+      } else {
+        let written = false;
+        for (let attempt = 0; attempt < 6 && !written; attempt += 1) {
+          const row = await this.prisma.systemSetting.findUnique({ where });
+          const rowUpdatedAt = row?.updatedAt instanceof Date ? row.updatedAt : null;
+          if (row && (!this.baseUpdatedAt || !rowUpdatedAt || rowUpdatedAt.getTime() !== this.baseUpdatedAt.getTime())) {
+            this.mergeRemoteSnapshot(row.value, rowUpdatedAt);
+          }
+          this.pruneState();
+          const payload = deepClone(this.captureState());
+
+          if (!row) {
+            try {
+              const created = await this.prisma.systemSetting.create({
+                data: { organizationId: orgId, key: 'workspace_state', value: payload as Prisma.InputJsonValue },
+              });
+              this.baseSnapshot = payload;
+              this.baseUpdatedAt = created?.updatedAt instanceof Date ? created.updatedAt : null;
+              written = true;
+            } catch {
+              // Another writer created the row first – retry as an update.
+            }
+            continue;
+          }
+
+          const nextUpdatedAt = new Date(Math.max(Date.now(), (rowUpdatedAt?.getTime() ?? 0) + 1));
+          const res = await this.prisma.systemSetting.updateMany({
+            where: {
+              organizationId: orgId,
+              key: 'workspace_state',
+              ...(rowUpdatedAt ? { updatedAt: rowUpdatedAt } : {}),
+            },
+            data: { value: payload as Prisma.InputJsonValue, updatedAt: nextUpdatedAt },
+          });
+          if ((res?.count ?? 0) > 0) {
+            this.baseSnapshot = payload;
+            this.baseUpdatedAt = nextUpdatedAt;
+            written = true;
+          }
+          // count === 0 → someone else saved in between; loop re-reads, merges and retries.
+        }
+        if (!written) {
+          this.logger.warn('workspace_state save kept conflicting with other writers; changes stay in memory and are retried on the next save.');
+          return;
+        }
+      }
+
       this.lastMeetingsSyncAt = Date.now();
+      this.lastSnapshotSyncAt = Date.now();
       this.workspaceVersion = Date.now();
       this.workspaceBus.emit('mutated', { organizationId: orgId, version: this.workspaceVersion });
     } catch (err) {
@@ -1141,10 +1389,13 @@ export class WorkspaceService implements OnModuleInit {
     return created;
   }
 
-  deleteClient(id: string) {
+  async deleteClient(id: string, actor: AuthUser) {
+    if (!this.clients.some((c) => c.id === id)) throw new NotFoundException('Client not found.');
     this.clients = this.clients.filter((c) => c.id !== id);
-    this.persistState();
-    void this.prisma.client?.deleteMany?.({ where: { id } }).catch(() => undefined);
+    await this.persistStateNow(actor.organizationId);
+    await this.prisma.client
+      ?.deleteMany?.({ where: { id, organizationId: actor.organizationId } })
+      ?.catch(() => undefined);
     return { ok: true };
   }
 
@@ -1174,8 +1425,8 @@ export class WorkspaceService implements OnModuleInit {
       clientId: client?.id ?? null,
       clientName: client?.name ?? String(body.clientName || 'Internal / Yakunex'),
       category: String(body.category || 'WEB_DEVELOPMENT'),
-      status: String(body.status || 'PLANNING'),
-      priority: (body.priority as ProjectItem['priority']) || 'MEDIUM',
+      status: pickEnum(body.status, PROJECT_STATUSES, 'project status', 'PLANNING'),
+      priority: pickEnum(body.priority, PRIORITIES, 'priority', 'MEDIUM'),
       budget: Number(body.budget) || 2500000,
       currency: 'LKR',
       startDate: String(body.startDate || new Date().toISOString().slice(0, 10)),
@@ -1244,8 +1495,8 @@ export class WorkspaceService implements OnModuleInit {
   async updateProject(actor: AuthUser, id: string, body: Record<string, unknown>) {
     const project = this.projects.find((p) => p.id === id);
     if (!project) throw new NotFoundException('Project not found.');
-    if (body.status !== undefined) project.status = String(body.status);
-    if (body.priority !== undefined) project.priority = body.priority as ProjectItem['priority'];
+    if (body.status !== undefined) project.status = pickEnum(body.status, PROJECT_STATUSES, 'project status', project.status);
+    if (body.priority !== undefined) project.priority = pickEnum(body.priority, PRIORITIES, 'priority', project.priority);
     if (body.progressPercent !== undefined) {
       project.progressPercent = Math.max(0, Math.min(100, Number(body.progressPercent)));
     }
@@ -1282,10 +1533,13 @@ export class WorkspaceService implements OnModuleInit {
     return project;
   }
 
-  deleteProject(id: string) {
+  async deleteProject(id: string, actor: AuthUser) {
+    if (!this.projects.some((p) => p.id === id)) throw new NotFoundException('Project not found.');
     this.projects = this.projects.filter((p) => p.id !== id);
-    this.persistState();
-    void this.prisma.project?.deleteMany?.({ where: { id } }).catch(() => undefined);
+    await this.persistStateNow(actor.organizationId);
+    await this.prisma.project
+      ?.deleteMany?.({ where: { id, organizationId: actor.organizationId } })
+      ?.catch(() => undefined);
     return { ok: true };
   }
 
@@ -1318,7 +1572,7 @@ export class WorkspaceService implements OnModuleInit {
       projectName: project?.name ?? 'General Delivery',
       name,
       goal: String(body.goal ?? '').trim(),
-      status: (body.status as SprintItem['status']) || 'PLANNED',
+      status: pickEnum(body.status, SPRINT_STATUSES, 'sprint status', 'PLANNED'),
       startDate: String(body.startDate || new Date().toISOString().slice(0, 10)),
       endDate: String(body.endDate || '2026-11-30'),
       retrospective: '',
@@ -1363,7 +1617,7 @@ export class WorkspaceService implements OnModuleInit {
   updateSprint(id: string, body: Record<string, unknown>) {
     const sprint = this.sprints.find((s) => s.id === id);
     if (!sprint) throw new NotFoundException('Sprint not found.');
-    if (body.status) sprint.status = body.status as SprintItem['status'];
+    if (body.status) sprint.status = pickEnum(body.status, SPRINT_STATUSES, 'sprint status', sprint.status);
     if (body.retrospective !== undefined) sprint.retrospective = String(body.retrospective);
     this.persistState();
     void this.prisma.sprint?.updateMany?.({
@@ -1403,8 +1657,8 @@ export class WorkspaceService implements OnModuleInit {
         : 'TASK') as TaskItem['issueType'],
       title,
       description: String(body.description ?? '').trim(),
-      status: (body.status as TaskItem['status']) || 'TODO',
-      priority: (body.priority as TaskItem['priority']) || 'MEDIUM',
+      status: pickEnum(body.status, TASK_STATUSES, 'task status', 'TODO'),
+      priority: pickEnum(body.priority, PRIORITIES, 'priority', 'MEDIUM'),
       storyPoints: Number(body.storyPoints) || 3,
       estimatedHours: Number(body.estimatedHours) || 6,
       actualHours: 0,
@@ -1485,9 +1739,9 @@ export class WorkspaceService implements OnModuleInit {
   updateTask(id: string, body: Record<string, unknown>) {
     const task = this.tasks.find((t) => t.id === id);
     if (!task) throw new NotFoundException('Task not found.');
-    if (body.status) task.status = body.status as TaskItem['status'];
-    if (body.priority) task.priority = body.priority as TaskItem['priority'];
-    if (body.issueType) task.issueType = String(body.issueType).toUpperCase() as TaskItem['issueType'];
+    if (body.status) task.status = pickEnum(body.status, TASK_STATUSES, 'task status', task.status);
+    if (body.priority) task.priority = pickEnum(body.priority, PRIORITIES, 'priority', task.priority);
+    if (body.issueType) task.issueType = pickEnum(body.issueType, ISSUE_TYPES, 'issue type');
     if (body.assigneeName !== undefined) task.assigneeName = String(body.assigneeName);
     if (body.title !== undefined && String(body.title).trim()) task.title = String(body.title).trim();
     if (body.description !== undefined) task.description = String(body.description);
@@ -1544,8 +1798,8 @@ export class WorkspaceService implements OnModuleInit {
       stepsToReproduce: String(body.stepsToReproduce ?? '').trim(),
       expectedResult: String(body.expectedResult ?? '').trim(),
       actualResult: String(body.actualResult ?? '').trim(),
-      severity: (body.severity as BugItem['severity']) || 'MAJOR',
-      priority: (body.priority as BugItem['priority']) || 'HIGH',
+      severity: pickEnum(body.severity, BUG_SEVERITIES, 'bug severity', 'MAJOR'),
+      priority: pickEnum(body.priority, PRIORITIES, 'priority', 'HIGH'),
       status: 'NEW',
       reporterName: actor.fullName,
       assigneeName: String(body.assigneeName || actor.fullName),
@@ -1615,8 +1869,8 @@ export class WorkspaceService implements OnModuleInit {
   updateBug(id: string, body: Record<string, unknown>) {
     const bug = this.bugs.find((b) => b.id === id);
     if (!bug) throw new NotFoundException('Bug not found.');
-    if (body.status) bug.status = body.status as BugItem['status'];
-    if (body.severity) bug.severity = body.severity as BugItem['severity'];
+    if (body.status) bug.status = pickEnum(body.status, BUG_STATUSES, 'bug status', bug.status);
+    if (body.severity) bug.severity = pickEnum(body.severity, BUG_SEVERITIES, 'bug severity', bug.severity);
     if (body.assigneeName) bug.assigneeName = String(body.assigneeName);
     this.persistState();
     void this.prisma.bug?.updateMany?.({
@@ -2404,7 +2658,7 @@ export class WorkspaceService implements OnModuleInit {
       .filter((m) => m.channelId === channelId && !m.deleted)
       .map((m) => ({
         ...m,
-        senderAvatarUrl: this.userProfiles[m.senderId]?.avatarDataUrl ?? m.senderAvatarUrl ?? null,
+        senderAvatarUrl: this.avatarOf(m.senderId, m.senderAvatarUrl),
       }));
   }
 
@@ -2422,7 +2676,8 @@ export class WorkspaceService implements OnModuleInit {
       senderId: actor.id,
       senderName: actor.companyId ? `${actor.fullName.trim().split(/\s+/).pop() || actor.fullName} · ${actor.companyId}` : actor.fullName,
       senderRole: actor.role,
-      senderAvatarUrl: this.userProfiles[actor.id]?.avatarDataUrl ?? actor.avatarUrl ?? null,
+      // Resolved at read time (avatarOf); never copy base64 images into every message.
+      senderAvatarUrl: actor.avatarUrl && !actor.avatarUrl.startsWith('data:') ? actor.avatarUrl : null,
       body: text,
       replyToId: replyTo?.id ?? null,
       replyPreview: replyTo ? `${replyTo.senderName}: ${replyTo.body.slice(0, 60)}` : null,
@@ -2642,33 +2897,8 @@ export class WorkspaceService implements OnModuleInit {
       return;
     }
     try {
-      const orgId = await this.resolveOrgId(organizationId);
-      if (!orgId || !this.prisma.systemSetting?.findUnique) return;
-      const setting = await this.prisma.systemSetting.findUnique({
-        where: { organizationId_key: { organizationId: orgId, key: 'workspace_state' } },
-      });
-      const val = (setting?.value ?? null) as Record<string, unknown> | null;
-      if (val && typeof val === 'object') {
-        if (Array.isArray(val.clients)) this.clients = val.clients as ClientItem[];
-        if (Array.isArray(val.projects)) this.projects = val.projects as ProjectItem[];
-        if (Array.isArray(val.sprints)) this.sprints = val.sprints as SprintItem[];
-        if (Array.isArray(val.tasks)) this.tasks = val.tasks as TaskItem[];
-        if (Array.isArray(val.bugs)) this.bugs = val.bugs as BugItem[];
-        if (Array.isArray(val.documents)) this.documents = val.documents as DocumentItem[];
-        if (Array.isArray(val.timeEntries)) this.timeEntries = val.timeEntries as TimeEntryItem[];
-        if (Array.isArray(val.attendance)) this.attendance = val.attendance as AttendanceItem[];
-        if (Array.isArray(val.leaveRequests)) this.leaveRequests = val.leaveRequests as LeaveRequestItem[];
-        if (Array.isArray(val.interns)) this.interns = val.interns as InternItem[];
-        if (Array.isArray(val.channels) && val.channels.length > 0) {
-          this.channels = val.channels as ChatChannelItem[];
-        }
-        if (Array.isArray(val.messages)) this.messages = val.messages as ChatMessageItem[];
-        if (Array.isArray(val.meetings)) this.meetings = val.meetings as MeetingItem[];
-        if (val.settings && typeof val.settings === 'object') {
-          this.settings = { ...this.settings, ...(val.settings as Partial<OrganizationSettings>) };
-        }
-      }
-      this.lastMeetingsSyncAt = Date.now();
+      const done = await this.loadRemoteSnapshot(organizationId);
+      if (done) this.lastMeetingsSyncAt = Date.now();
     } catch {
       // Fallback to in-memory state if DB is temporarily unreachable
     }
@@ -3241,7 +3471,7 @@ export class WorkspaceService implements OnModuleInit {
     const mtg = this.meetings.find((m) => m.id === id);
     if (!mtg) throw new NotFoundException('Meeting not found.');
     if (body.status) {
-      const nextStatus = body.status as MeetingItem['status'];
+      const nextStatus = pickEnum(body.status, MEETING_STATUSES, 'meeting status', mtg.status);
       if (actor && (nextStatus === 'COMPLETED' || nextStatus === 'CANCELLED')) {
         const canEnd =
           mtg.organizerId === actor.id ||
@@ -5074,7 +5304,7 @@ export class WorkspaceService implements OnModuleInit {
         });
         employees = rows.map((r) => ({
           ...r,
-          avatarUrl: this.userProfiles[r.id]?.avatarDataUrl ?? (r as { avatarUrl?: string | null }).avatarUrl ?? null,
+          avatarUrl: this.avatarOf(r.id, (r as { avatarUrl?: string | null }).avatarUrl),
           managerId: this.reportingManagers[r.id] ?? null,
         }));
       }
@@ -5200,6 +5430,9 @@ export class WorkspaceService implements OnModuleInit {
         return this.decideLeave(actor, id, { status: body.status });
       }
     }
+    const decision = pickEnum(body.status, APPROVAL_DECISIONS, 'approval decision');
+    if (!decision) throw new BadRequestException('Approval decision is required.');
+    body = { ...body, status: decision };
     const item = this.approvals.find((a) => a.id === id);
     if (!item) throw new NotFoundException('Approval request not found.');
     item.status = body.status;
@@ -5282,12 +5515,12 @@ export class WorkspaceService implements OnModuleInit {
     }
     const entry = {
       id: `fin_${randomUUID().slice(0, 8)}`,
-      type: (String(body.type ?? 'EXPENSE').toUpperCase() as 'INCOME' | 'EXPENSE' | 'INVOICE' | 'PAYROLL'),
+      type: pickEnum(body.type, FINANCE_TYPES, 'finance entry type', 'EXPENSE'),
       category: String(body.category ?? 'General').trim(),
       description: String(body.description ?? '').trim() || 'Financial record',
       projectName: body.projectName ? String(body.projectName).trim() : null,
       amount,
-      status: (String(body.status ?? 'APPROVED').toUpperCase() as 'PAID' | 'PENDING' | 'APPROVED'),
+      status: pickEnum(body.status, FINANCE_STATUSES, 'finance entry status', 'APPROVED'),
       recordedByName: actor.fullName,
       recordedAt: new Date().toISOString(),
     };
@@ -5419,7 +5652,7 @@ export class WorkspaceService implements OnModuleInit {
       name,
       category: (String(body.category ?? 'LAPTOP').toUpperCase() as 'LAPTOP' | 'MONITOR' | 'LICENSE' | 'MOBILE' | 'OFFICE'),
       assignedToName: body.assignedToName ? String(body.assignedToName).trim() : null,
-      condition: (String(body.condition ?? 'GOOD').toUpperCase() as 'GOOD' | 'MAINTENANCE' | 'RETIRED'),
+      condition: pickEnum(body.condition, ASSET_CONDITIONS, 'asset condition', 'GOOD'),
       status: body.assignedToName ? ('ASSIGNED' as const) : ('AVAILABLE' as const),
       updatedAt: new Date().toISOString(),
     };
@@ -5435,8 +5668,8 @@ export class WorkspaceService implements OnModuleInit {
       item.assignedToName = body.assignedToName ? String(body.assignedToName).trim() : null;
       item.status = item.assignedToName ? 'ASSIGNED' : 'AVAILABLE';
     }
-    if (body.condition) item.condition = String(body.condition).toUpperCase() as typeof item.condition;
-    if (body.status) item.status = String(body.status).toUpperCase() as typeof item.status;
+    if (body.condition) item.condition = pickEnum(body.condition, ASSET_CONDITIONS, 'asset condition', item.condition);
+    if (body.status) item.status = pickEnum(body.status, ASSET_STATUSES, 'asset status', item.status);
     item.updatedAt = new Date().toISOString();
     this.persistState(actor.organizationId);
     return item;
@@ -5647,11 +5880,11 @@ export class WorkspaceService implements OnModuleInit {
       address: ext.address ?? '',
       birthday: ext.birthday ?? '',
       phone: ext.phone ?? base.phone ?? '',
-      avatarUrl: ext.avatarDataUrl ?? base.avatarUrl ?? null,
+      avatarUrl: this.avatarOf(uid, base.avatarUrl),
       role: ext.role ?? base.role,
       ...(canViewComp
         ? {
-            monthlyBasicSalaryLkr: ext.monthlyBasicSalaryLkr ?? 200_000,
+            monthlyBasicSalaryLkr: ext.monthlyBasicSalaryLkr ?? 0,
             fixedAllowancesLkr: ext.fixedAllowancesLkr ?? 0,
             epfNumber: ext.epfNumber ?? '',
             bankName: ext.bankName ?? '',
@@ -5676,9 +5909,7 @@ export class WorkspaceService implements OnModuleInit {
     if (clean.length > 2_000_000) {
       throw new BadRequestException('Profile image is too large (max ~1.5 MB).');
     }
-    const prev = this.userProfiles[actor.id] ?? {};
-    this.userProfiles[actor.id] = { ...prev, avatarDataUrl: clean };
-    await this.persistStateNow(actor.organizationId);
+    this.avatarCache.set(actor.id, clean);
     await this.prisma.user?.update?.({
       where: { id: actor.id },
       data: { avatarUrl: clean },
@@ -5755,7 +5986,41 @@ export class WorkspaceService implements OnModuleInit {
     if ((body.role !== undefined || body.title !== undefined) && actor.role !== Role.SUPER_ADMIN) {
       throw new ForbiddenException('Only a Super Admin can change an employee job role or title.');
     }
+    if (body.avatarUrl !== undefined && String(body.avatarUrl).trim().length > 2_000_000) {
+      throw new BadRequestException('Profile image is too large (max ~1.5 MB).');
+    }
+
+    // The target must belong to the caller's organization.
+    const targetDbUser = this.prisma.user?.findFirst
+      ? ((await this.prisma.user
+          .findFirst({
+            where: { id: targetUserId, organizationId: actor.organizationId, deletedAt: null },
+            select: { id: true, phone: true },
+          })
+          .catch(() => undefined)) as { id: string; phone: string | null } | null | undefined)
+      : undefined;
+    if (targetDbUser === null) throw new NotFoundException('Employee not found.');
+
     await this.syncSnapshotFromSupabase(actor.organizationId, true);
+
+    // NIC and contact number changes by the employee themself must go through the
+    // approval flow (POST /profile/request-change). Unchanged values are accepted so the
+    // full profile form can still be saved.
+    if (isSelf && !isAdminOrHr) {
+      const current = this.userProfiles[targetUserId] ?? {};
+      const currentNic = String(current.nicNumber ?? '').trim();
+      const currentPhone = String(current.phone ?? targetDbUser?.phone ?? '').trim();
+      if (body.nicNumber !== undefined && String(body.nicNumber).trim() !== currentNic) {
+        throw new ForbiddenException(
+          'NIC ID Number changes need HR approval. Use "Request change" on your profile instead.',
+        );
+      }
+      if (body.phone !== undefined && String(body.phone).trim() !== currentPhone) {
+        throw new ForbiddenException(
+          'Contact Number changes need HR approval. Use "Request change" on your profile instead.',
+        );
+      }
+    }
 
     const prev = this.userProfiles[targetUserId] ?? {};
     this.userProfiles[targetUserId] = {
@@ -5769,9 +6034,6 @@ export class WorkspaceService implements OnModuleInit {
       ...(body.address !== undefined ? { address: String(body.address).trim() } : {}),
       ...(body.birthday !== undefined ? { birthday: String(body.birthday).trim() } : {}),
       ...(body.phone !== undefined ? { phone: String(body.phone).trim() } : {}),
-      ...(body.avatarUrl !== undefined && String(body.avatarUrl).trim().length > 0
-        ? { avatarDataUrl: String(body.avatarUrl).trim() }
-        : {}),
       ...(isAdminOrHr && body.monthlyBasicSalaryLkr !== undefined && Number.isFinite(Number(body.monthlyBasicSalaryLkr))
         ? { monthlyBasicSalaryLkr: Math.max(0, Math.round(Number(body.monthlyBasicSalaryLkr))) }
         : {}),
@@ -5793,7 +6055,12 @@ export class WorkspaceService implements OnModuleInit {
     }
     if (body.phone !== undefined) dbPatch.phone = String(body.phone).trim() || null;
     if (body.avatarUrl !== undefined && String(body.avatarUrl).trim().length > 0) {
-      dbPatch.avatarUrl = String(body.avatarUrl).trim();
+      const avatar = String(body.avatarUrl).trim();
+      if (avatar.length > 2_000_000) {
+        throw new BadRequestException('Profile image is too large (max ~1.5 MB).');
+      }
+      dbPatch.avatarUrl = avatar;
+      this.avatarCache.set(targetUserId, avatar);
     }
     if (body.role !== undefined && actor.role === Role.SUPER_ADMIN) dbPatch.role = body.role;
     if (body.title !== undefined && actor.role === Role.SUPER_ADMIN) dbPatch.title = String(body.title).trim() || null;
@@ -6194,27 +6461,7 @@ export class WorkspaceService implements OnModuleInit {
   // ─── Sri Lanka Leave Balances & 2026 Poya / Mercantile Holidays ──────────
   async getLeaveSummaryAndHolidays(actor: AuthUser) {
     await this.syncSnapshotFromSupabase(actor.organizationId);
-    const holidays2026 = [
-      { date: '2026-01-03', name: 'Duruthu Full Moon Poya Day', type: 'POYA' },
-      { date: '2026-01-15', name: 'Tamil Thai Pongal Day', type: 'MERCANTILE' },
-      { date: '2026-02-01', name: 'Navam Full Moon Poya Day', type: 'POYA' },
-      { date: '2026-02-04', name: 'Independence Day', type: 'MERCANTILE' },
-      { date: '2026-03-02', name: 'Madin Full Moon Poya Day', type: 'POYA' },
-      { date: '2026-04-01', name: 'Bak Full Moon Poya Day', type: 'POYA' },
-      { date: '2026-04-13', name: 'Sinhala & Tamil New Year Eve', type: 'MERCANTILE' },
-      { date: '2026-04-14', name: 'Sinhala & Tamil New Year Day', type: 'MERCANTILE' },
-      { date: '2026-05-01', name: 'May Day & Vesak Full Moon Poya', type: 'MERCANTILE' },
-      { date: '2026-05-02', name: 'Day Following Vesak Poya', type: 'POYA' },
-      { date: '2026-05-30', name: 'Adhi Poson Full Moon Poya', type: 'POYA' },
-      { date: '2026-06-29', name: 'Poson Full Moon Poya Day', type: 'POYA' },
-      { date: '2026-07-29', name: 'Esala Full Moon Poya Day', type: 'POYA' },
-      { date: '2026-08-27', name: 'Nikini Full Moon Poya Day', type: 'POYA' },
-      { date: '2026-09-26', name: 'Binara Full Moon Poya Day', type: 'POYA' },
-      { date: '2026-10-25', name: 'Vap Full Moon Poya Day', type: 'POYA' },
-      { date: '2026-11-24', name: 'Il Full Moon Poya Day', type: 'POYA' },
-      { date: '2026-12-23', name: 'Unduvap Full Moon Poya Day', type: 'POYA' },
-      { date: '2026-12-25', name: 'Christmas Day', type: 'MERCANTILE' },
-    ];
+    const holidays2026 = await this.getHolidayCalendar(actor.organizationId);
 
     const myApproved = this.leaveRequests.filter(
       (lr) => lr.userId === actor.id && lr.status === 'APPROVED',
@@ -6272,14 +6519,32 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   // ─── Sri Lanka OT (1.5x / 2x) + EPF (8% / 12%) + ETF (3%) Payroll Summary ─
+  /** Built-in holidays merged with the organization's PublicHoliday rows (DB rows win). */
+  private async getHolidayCalendar(
+    organizationId: string,
+  ): Promise<Array<{ date: string; name: string; type: string }>> {
+    const byDate = new Map(BUILTIN_HOLIDAYS.map((h) => [h.date, { ...h }]));
+    try {
+      const rows = (await this.prisma.publicHoliday?.findMany?.({
+        where: { organizationId },
+        select: { date: true, name: true },
+      })) as Array<{ date: Date; name: string }> | undefined;
+      for (const r of rows ?? []) {
+        const date = r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date).slice(0, 10);
+        byDate.set(date, { date, name: r.name, type: 'PUBLIC' });
+      }
+    } catch {
+      // Fall back to the built-in calendar.
+    }
+    return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  }
+
   async getSriLankaPayrollSummary(actor: AuthUser) {
     await this.syncSnapshotFromSupabase(actor.organizationId);
-    const poyaSet = new Set([
-      '2026-01-03', '2026-01-15', '2026-02-01', '2026-02-04', '2026-03-02',
-      '2026-04-01', '2026-04-13', '2026-04-14', '2026-05-01', '2026-05-02',
-      '2026-05-30', '2026-06-29', '2026-07-29', '2026-08-27', '2026-09-26',
-      '2026-10-25', '2026-11-24', '2026-12-23', '2026-12-25',
-    ]);
+    const calendar = await this.getHolidayCalendar(actor.organizationId);
+    const poyaSet = new Set(calendar.map((h) => h.date));
+    const calendarYears = new Set(calendar.map((h) => h.date.slice(0, 4)));
+    const yearsMissingHolidays = new Set<string>();
 
     const byUser = new Map<
       string,
@@ -6298,13 +6563,26 @@ export class WorkspaceService implements OnModuleInit {
       ? this.timeEntries
       : this.timeEntries.filter((te) => te.userId === actor.id);
 
+    // Sum minutes per employee per Sri Lanka calendar day first: the 8-hour OT threshold
+    // applies to the whole day, not to each individual time entry.
+    const perDay = new Map<string, { userId: string; userName: string; date: string; dayOfWeek: number; minutes: number; billable: number }>();
     for (const te of visibleEntries) {
-      const dateStr = te.startedAt.slice(0, 10);
-      const dayOfWeek = new Date(te.startedAt).getDay(); // 0=Sun, 6=Sat
-      const isHolidayOrWeekend = dayOfWeek === 0 || dayOfWeek === 6 || poyaSet.has(dateStr);
-      const row = byUser.get(te.userId) ?? {
-        userId: te.userId,
-        userName: te.userName,
+      if (!te.startedAt) continue;
+      const minutes = Math.max(0, Number(te.durationMinutes) || 0);
+      const { date, dayOfWeek } = colomboDate(te.startedAt);
+      const key = `${te.userId}|${date}`;
+      const day = perDay.get(key) ?? { userId: te.userId, userName: te.userName, date, dayOfWeek, minutes: 0, billable: 0 };
+      day.minutes += minutes;
+      if (te.billable) day.billable += minutes;
+      perDay.set(key, day);
+    }
+
+    for (const day of perDay.values()) {
+      if (!calendarYears.has(day.date.slice(0, 4))) yearsMissingHolidays.add(day.date.slice(0, 4));
+      const isHolidayOrWeekend = day.dayOfWeek === 0 || day.dayOfWeek === 6 || poyaSet.has(day.date);
+      const row = byUser.get(day.userId) ?? {
+        userId: day.userId,
+        userName: day.userName,
         regularMinutes: 0,
         weekdayOtMinutes: 0,
         holidayOtMinutes: 0,
@@ -6312,25 +6590,22 @@ export class WorkspaceService implements OnModuleInit {
         daysWorked: 0,
       };
       if (isHolidayOrWeekend) {
-        row.holidayOtMinutes += te.durationMinutes;
-      } else if (te.durationMinutes > 480) {
-        row.regularMinutes += 480;
-        row.weekdayOtMinutes += te.durationMinutes - 480;
+        row.holidayOtMinutes += day.minutes;
       } else {
-        row.regularMinutes += te.durationMinutes;
+        row.regularMinutes += Math.min(day.minutes, 480);
+        row.weekdayOtMinutes += Math.max(0, day.minutes - 480);
       }
-      if (te.billable) row.billableMinutes += te.durationMinutes;
-      row.daysWorked += 1;
-      byUser.set(te.userId, row);
+      row.billableMinutes += day.billable;
+      if (day.minutes > 0) row.daysWorked += 1;
+      byUser.set(day.userId, row);
     }
 
-    const defaultHourlyLkr = 1250;
     const rows = Array.from(byUser.values()).map((r) => {
       const prof = this.userProfiles[r.userId] ?? {};
-      const monthlyBasic = prof.monthlyBasicSalaryLkr && prof.monthlyBasicSalaryLkr > 0
-        ? prof.monthlyBasicSalaryLkr
-        : 200_000;
-      const hourlyLkr = Math.round(monthlyBasic / 160) || defaultHourlyLkr;
+      // No invented salary: unconfigured employees show 0 and are flagged for HR.
+      const salaryConfigured = Boolean(prof.monthlyBasicSalaryLkr && prof.monthlyBasicSalaryLkr > 0);
+      const monthlyBasic = salaryConfigured ? Number(prof.monthlyBasicSalaryLkr) : 0;
+      const hourlyLkr = salaryConfigured ? Math.round(monthlyBasic / 160) : 0;
       const fixedAllowances = Math.max(0, Math.round(prof.fixedAllowancesLkr ?? 0));
 
       const regHours = Number((r.regularMinutes / 60).toFixed(2));
@@ -6347,6 +6622,7 @@ export class WorkspaceService implements OnModuleInit {
       return {
         ...r,
         hourlyLkr,
+        salaryConfigured,
         monthlyBasicSalaryLkr: monthlyBasic,
         fixedAllowancesLkr: fixedAllowances,
         epfNumber: prof.epfNumber ?? '',
@@ -6368,7 +6644,12 @@ export class WorkspaceService implements OnModuleInit {
       };
     });
 
-    return { currency: 'LKR', rows };
+    return {
+      currency: 'LKR',
+      rows,
+      // Years with logged time but no holiday calendar: holiday OT there may be under-counted.
+      holidayCalendarMissingYears: [...yearsMissingHolidays].sort(),
+    };
   }
 
   /**
@@ -6433,19 +6714,29 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   // ─── GitHub PR Webhook Auto-Transition (Jira Enterprise Integration) ─────
-  async handleGithubWebhook(payload: Record<string, unknown>, signatureHeader?: string) {
+  async handleGithubWebhook(
+    payload: Record<string, unknown>,
+    signatureHeader?: string,
+    rawBody?: Buffer,
+  ) {
     const secret = process.env.GITHUB_WEBHOOK_SECRET?.trim();
-    if (secret) {
-      const provided = String(signatureHeader ?? '').trim();
-      if (!provided.startsWith('sha256=')) {
-        throw new ForbiddenException('Missing or malformed X-Hub-Signature-256 header.');
-      }
-      const expected = `sha256=${createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex')}`;
-      const a = Buffer.from(provided);
-      const b = Buffer.from(expected);
-      if (a.length !== b.length || !timingSafeEqual(a, b)) {
-        throw new ForbiddenException('Invalid GitHub webhook signature.');
-      }
+    // Without a shared secret anyone could forge PR events and move task statuses.
+    if (!secret) {
+      throw new ForbiddenException('GitHub webhook is disabled: set GITHUB_WEBHOOK_SECRET on the API.');
+    }
+    const provided = String(signatureHeader ?? '').trim();
+    if (!provided.startsWith('sha256=')) {
+      throw new ForbiddenException('Missing or malformed X-Hub-Signature-256 header.');
+    }
+    if (!rawBody || rawBody.length === 0) {
+      throw new ForbiddenException('Webhook body could not be read for signature verification.');
+    }
+    // GitHub signs the exact request bytes, so verify the raw body, not a re-serialised object.
+    const expected = `sha256=${createHmac('sha256', secret).update(rawBody).digest('hex')}`;
+    const a = Buffer.from(provided);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      throw new ForbiddenException('Invalid GitHub webhook signature.');
     }
 
     await this.syncSnapshotFromSupabase(undefined, true);

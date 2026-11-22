@@ -6,6 +6,15 @@ import type { AuthUser } from '../common/types';
 import type { PrismaService } from '../prisma/prisma.service';
 import { WorkspaceService } from './workspace.service';
 
+const WEBHOOK_SECRET = 'test_webhook_secret_123';
+
+/** Sends a webhook the way GitHub does: raw JSON bytes plus their HMAC-SHA256 signature. */
+function sendSignedWebhook(svc: WorkspaceService, payload: Record<string, unknown>) {
+  const raw = Buffer.from(JSON.stringify(payload));
+  const sig = `sha256=${createHmac('sha256', WEBHOOK_SECRET).update(raw).digest('hex')}`;
+  return svc.handleGithubWebhook(JSON.parse(raw.toString()), sig, raw);
+}
+
 describe('WorkspaceService Enterprise Waves 1-5 Coverage', () => {
   const adminActor: AuthUser = {
     id: 'usr_admin',
@@ -74,6 +83,14 @@ describe('WorkspaceService Enterprise Waves 1-5 Coverage', () => {
       billable: true,
     });
 
+    // Without a configured salary no pay is invented; the row is flagged for HR instead.
+    const unconfigured = await svc.getSriLankaPayrollSummary(adminActor);
+    const pending = unconfigured.rows.find((r) => r.userId === staffActor.id);
+    expect(pending?.salaryConfigured).toBe(false);
+    expect(pending?.grossLkr).toBe(0);
+
+    await svc.adminUpdateProfile(adminActor, staffActor.id, { monthlyBasicSalaryLkr: 200_000 });
+
     const payroll = await svc.getSriLankaPayrollSummary(adminActor);
     expect(payroll.currency).toBe('LKR');
     const row = payroll.rows.find((r) => r.userId === staffActor.id);
@@ -114,8 +131,9 @@ describe('WorkspaceService Enterprise Waves 1-5 Coverage', () => {
       issueType: 'TASK',
     });
 
+    process.env.GITHUB_WEBHOOK_SECRET = WEBHOOK_SECRET;
     // GitHub PR opened transitions matching task to IN_REVIEW
-    const opened = await svc.handleGithubWebhook({
+    const opened = await sendSignedWebhook(svc, {
       action: 'opened',
       pull_request: {
         title: `[${t1.code}] Add ISO-8583 parser`,
@@ -128,7 +146,7 @@ describe('WorkspaceService Enterprise Waves 1-5 Coverage', () => {
     expect(opened.newStatus).toBe('IN_REVIEW');
 
     // GitHub PR merged transitions matching task to TESTING
-    const merged = await svc.handleGithubWebhook({
+    const merged = await sendSignedWebhook(svc, {
       action: 'closed',
       pull_request: {
         title: `[${t1.code}] Add ISO-8583 parser`,
@@ -138,6 +156,7 @@ describe('WorkspaceService Enterprise Waves 1-5 Coverage', () => {
       },
     });
     expect(merged.newStatus).toBe('TESTING');
+    delete process.env.GITHUB_WEBHOOK_SECRET;
 
     // Completing 1 of 2 tasks recalculates project progressPercent to 50%
     svc.updateTask(t1.id, { status: 'COMPLETED' });
@@ -167,7 +186,13 @@ describe('WorkspaceService Enterprise Waves 1-5 Coverage', () => {
     const project = await svc.createProject(adminActor, { name: 'Security Hardening' });
     const task = await svc.createTask(adminActor, { projectId: project.id, title: 'Verify webhook HMAC' });
 
-    process.env.GITHUB_WEBHOOK_SECRET = 'test_webhook_secret_123';
+    // Without a configured secret the webhook is disabled entirely.
+    delete process.env.GITHUB_WEBHOOK_SECRET;
+    await expect(
+      svc.handleGithubWebhook({ action: 'opened' }, undefined, Buffer.from('{}')),
+    ).rejects.toThrow(ForbiddenException);
+
+    process.env.GITHUB_WEBHOOK_SECRET = WEBHOOK_SECRET;
     try {
       const payload = {
         action: 'opened',
@@ -183,9 +208,13 @@ describe('WorkspaceService Enterprise Waves 1-5 Coverage', () => {
       await expect(svc.handleGithubWebhook(payload, undefined)).rejects.toThrow(ForbiddenException);
       await expect(svc.handleGithubWebhook(payload, 'sha256=deadbeef')).rejects.toThrow(ForbiddenException);
 
-      // Valid HMAC passes, while non-GitHub phishing PR URL is ignored
-      const validSig = `sha256=${createHmac('sha256', process.env.GITHUB_WEBHOOK_SECRET).update(JSON.stringify(payload)).digest('hex')}`;
-      const res = await svc.handleGithubWebhook(payload, validSig);
+      // A signature over different bytes (e.g. re-formatted JSON) is rejected.
+      const pretty = Buffer.from(JSON.stringify(payload, null, 2));
+      const compactSig = `sha256=${createHmac('sha256', WEBHOOK_SECRET).update(JSON.stringify(payload)).digest('hex')}`;
+      await expect(svc.handleGithubWebhook(payload, compactSig, pretty)).rejects.toThrow(ForbiddenException);
+
+      // Valid HMAC over the raw body passes, while non-GitHub phishing PR URL is ignored
+      const res = await sendSignedWebhook(svc, payload);
       expect(res.matched).toBe(true);
       expect(res.newStatus).toBe('IN_REVIEW');
       const updatedTask = svc.listTasks().find((t) => t.id === task.id);

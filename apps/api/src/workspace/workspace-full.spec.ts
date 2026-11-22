@@ -99,8 +99,9 @@ describe('WorkspaceService Full-System Coverage (All 14 Modules)', () => {
     expect(updated.progressPercent).toBe(45);
     expect(updated.stages[0].status).toBe('DONE');
 
-    expect(svc.deleteProject(project.id).ok).toBe(true);
-    expect(svc.deleteClient(client.id).ok).toBe(true);
+    expect((await svc.deleteProject(project.id, adminActor)).ok).toBe(true);
+    expect((await svc.deleteClient(client.id, adminActor)).ok).toBe(true);
+    await expect(svc.deleteProject(project.id, adminActor)).rejects.toThrow();
   });
 
   it('covers Sprints, Tasks, Bugs, and Document visibility boundaries', async () => {

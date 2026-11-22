@@ -9,18 +9,24 @@ import {
   Post,
   Put,
   Query,
+  Req,
   Sse,
+  UseGuards,
+  type RawBodyRequest,
   type MessageEvent,
 } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { Role } from '@prisma/client';
+import type { Request } from 'express';
 import { Observable } from 'rxjs';
 import { CurrentUser, Public, RequirePermissions } from '../common/decorators';
 import type { AuthUser } from '../common/types';
 import { PERMISSIONS } from '../rbac/permissions';
 import { WorkspaceService } from './workspace.service';
+import { WorkspaceTenantGuard } from './workspace-tenant.guard';
 
 @Controller()
+@UseGuards(WorkspaceTenantGuard)
 export class WorkspaceController {
   constructor(private readonly workspace: WorkspaceService) {}
 
@@ -39,8 +45,8 @@ export class WorkspaceController {
 
   @Delete('clients/:id')
   @RequirePermissions(PERMISSIONS.PROJECTS_WRITE)
-  deleteClient(@Param('id') id: string) {
-    return this.workspace.deleteClient(id);
+  deleteClient(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.deleteClient(id, actor);
   }
 
   // ─── Projects ─────────────────────────────────────────────────────────────
@@ -68,8 +74,8 @@ export class WorkspaceController {
 
   @Delete('projects/:id')
   @RequirePermissions(PERMISSIONS.PROJECTS_WRITE)
-  deleteProject(@Param('id') id: string) {
-    return this.workspace.deleteProject(id);
+  deleteProject(@CurrentUser() actor: AuthUser, @Param('id') id: string) {
+    return this.workspace.deleteProject(id, actor);
   }
 
   // ─── Sprints ──────────────────────────────────────────────────────────────
@@ -1043,10 +1049,11 @@ export class WorkspaceController {
   @Public()
   @SkipThrottle()
   githubWebhook(
+    @Req() req: RawBodyRequest<Request>,
     @Body() body: Record<string, unknown>,
     @Headers('x-hub-signature-256') signature?: string,
   ) {
-    return this.workspace.handleGithubWebhook(body ?? {}, signature);
+    return this.workspace.handleGithubWebhook(body ?? {}, signature, req.rawBody);
   }
 
   // ─── External Client Portal ───────────────────────────────────────────────

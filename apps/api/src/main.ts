@@ -5,7 +5,7 @@ import { configureApp } from './bootstrap';
 import { config } from './config/config';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create(AppModule, { bufferLogs: true, rawBody: true });
   configureApp(app);
   app.enableShutdownHooks();
 
