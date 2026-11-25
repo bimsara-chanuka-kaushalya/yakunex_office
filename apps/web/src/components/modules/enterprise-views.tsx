@@ -23,6 +23,7 @@ import { Card, CardHeader, StatCard } from '@/components/ui/card';
 import { Field, Input, Select } from '@/components/ui/field';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { AvatarCropModal } from '@/components/ui/avatar-crop-modal';
+import { TwoFactorSecurityCard } from '@/components/ui/two-factor-card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/components/ui/toast';
 import { useAuth } from '@/components/providers';
@@ -1472,9 +1473,11 @@ export function ProfileView() {
         </form>
       </Card>
 
-      {/* Active Sessions & Remote Device Security (Self only) */}
+      {/* Authenticator App 2FA + Active Sessions & Remote Device Security (Self only) */}
       {(!selectedUserId || selectedUserId === user?.id) && (
-        <Card>
+        <>
+          <TwoFactorSecurityCard />
+          <Card>
           <CardHeader
             title="Active Sessions & Device Security"
             description="Review signed-in devices and revoke all active sessions remotely."
@@ -1511,6 +1514,7 @@ export function ProfileView() {
             )}
           </div>
         </Card>
+        </>
       )}
 
       <AvatarCropModal

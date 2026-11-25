@@ -1219,7 +1219,10 @@ export function MeetingStudio({
   useEffect(() => {
     let active = true;
     const iceReq = guestToken
-      ? fetch('/api/meetings/public/ice-config', { cache: 'no-store' }).then((r) => r.json())
+      ? fetch('/api/meetings/public/ice-config', {
+          cache: 'no-store',
+          headers: { 'x-meeting-guest-token': guestToken },
+        }).then((r) => (r.ok ? r.json() : { iceServers: [] }))
       : liveGet<{ iceServers?: RTCIceServer[]; hasTurn?: boolean; iceCandidatePoolSize?: number }>(
           '/meetings/ice-config',
         );

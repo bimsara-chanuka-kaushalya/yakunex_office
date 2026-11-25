@@ -902,8 +902,11 @@ interface AttendanceRow {
   clockOutAt: string | null;
   onBreak: boolean;
   breakMinutes: number;
+  workedMinutes?: number;
   isLate: boolean;
   notes: string;
+  projectId?: string | null;
+  projectName?: string | null;
   workMode?: 'OFFICE' | 'REMOTE' | 'FIELD';
   latitude?: number | null;
   longitude?: number | null;
@@ -923,6 +926,11 @@ interface LiveBoardMember {
   userRole: string;
   clockInAt: string | null;
   onBreak: boolean;
+  breakMinutes?: number;
+  projectId?: string | null;
+  projectName?: string | null;
+  notes?: string;
+  deviceType?: string | null;
   workMode: 'OFFICE' | 'REMOTE' | 'FIELD';
   latitude: number | null;
   longitude: number | null;
@@ -976,13 +984,38 @@ interface SriLankaPayrollRow {
   daysWorked: number;
 }
 
+function calcDistanceMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6_371_000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.min(1, Math.sqrt(a))));
+}
+
+function formatShiftHms(clockInAt?: string | null, breakMinutes = 0, clockOutAt?: string | null): string {
+  if (!clockInAt) return '00:00:00';
+  const endMs = clockOutAt ? Date.parse(clockOutAt) : Date.now();
+  const netSec = Math.max(0, Math.floor((endMs - Date.parse(clockInAt)) / 1000) - breakMinutes * 60);
+  const h = Math.floor(netSec / 3600);
+  const m = Math.floor((netSec % 3600) / 60);
+  const s = netSec % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 export function AttendanceView() {
   const { user, can } = useAuth();
+  const toast = useToast();
   const canKiosk = can(PERMISSIONS.TIME_APPROVE);
   const [todayRecord, setTodayRecord] = useState<AttendanceRow | null>(null);
   const [records, setRecords] = useState<AttendanceRow[]>([]);
   const [liveBoard, setLiveBoard] = useState<LiveBoardMember[]>([]);
   const [payrollRows, setPayrollRows] = useState<SriLankaPayrollRow[]>([]);
+  const [googleMapsApiKey, setGoogleMapsApiKey] = useState<string>('');
+  const [projectsList, setProjectsList] = useState<Array<{ id: string; code: string; name: string }>>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('');
   const [officeGeofence, setOfficeGeofence] = useState<{
     latitude: number;
     longitude: number;
@@ -999,6 +1032,20 @@ export function AttendanceView() {
   const [kioskUserId, setKioskUserId] = useState('');
   const [kioskAction, setKioskAction] = useState<'CLOCK_IN' | 'BREAK' | 'CLOCK_OUT'>('CLOCK_IN');
 
+  // Jibble UX state: live 1s clock tick, pre-clock-in GPS probe, roster filter & focused map pin
+  const [, setClockTick] = useState(0);
+  const [gpsPreview, setGpsPreview] = useState<{
+    checking: boolean;
+    lat?: number;
+    lon?: number;
+    acc?: number;
+    dist?: number;
+    denied?: boolean;
+  }>({ checking: false });
+  const [rosterFilter, setRosterFilter] = useState<'ALL' | 'IN' | 'BREAK' | 'OUTSIDE' | 'OUT'>('ALL');
+  const [rosterQuery, setRosterQuery] = useState('');
+  const [focusedUserId, setFocusedUserId] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     if (!isSilentRefresh()) setLoading(true);
     try {
@@ -1007,6 +1054,8 @@ export function AttendanceView() {
           todayRecord: AttendanceRow | null;
           records: AttendanceRow[];
           liveBoard?: LiveBoardMember[];
+          googleMapsApiKey?: string;
+          projects?: Array<{ id: string; code: string; name: string }>;
           officeGeofence?: { latitude: number; longitude: number; radiusMeters: number; trackedRadiusMeters?: number };
           rules?: AttendanceRulesPayload;
         }>('/attendance'),
@@ -1014,8 +1063,13 @@ export function AttendanceView() {
         api<{ currency: string; rows: SriLankaPayrollRow[] }>('/workforce/sri-lanka-payroll').catch(() => ({ currency: 'LKR', rows: [] })),
       ]);
       setTodayRecord(res.todayRecord);
+      if (res.todayRecord?.projectId) {
+        setSelectedProjectId(res.todayRecord.projectId);
+      }
       setRecords(res.records);
       setLiveBoard(Array.isArray(res.liveBoard) ? res.liveBoard : []);
+      if (typeof res.googleMapsApiKey === 'string') setGoogleMapsApiKey(res.googleMapsApiKey);
+      if (Array.isArray(res.projects)) setProjectsList(res.projects);
       setPayrollRows(Array.isArray(payroll?.rows) ? payroll.rows : []);
       if (res.officeGeofence) setOfficeGeofence(res.officeGeofence);
       if (res.rules) setRules(res.rules);
@@ -1033,56 +1087,56 @@ export function AttendanceView() {
 
   useLiveSync(load);
 
-  // Real-time continuous GPS tracking while clocked in + 15s live board refresh
   const isClockedInActive = Boolean(todayRecord?.clockInAt && !todayRecord?.clockOutAt);
-  // Interns (and other roles under the attendance rules) are tracked app-wide by the
-  // AttendanceAssistant; this page only tracks everyone else, as before.
   const iAmTracked = Boolean(user?.role && rules?.roles.includes(user.role));
+
+  // Tick Jibble shift clock every second while clocked in and not on break
+  useEffect(() => {
+    if (!isClockedInActive || todayRecord?.onBreak) return;
+    const id = setInterval(() => setClockTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [isClockedInActive, todayRecord?.onBreak]);
+
+  const probeMyGps = useCallback(() => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) return;
+    setGpsPreview((p) => ({ ...p, checking: true, denied: false }));
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = Number(pos.coords.latitude.toFixed(6));
+        const lon = Number(pos.coords.longitude.toFixed(6));
+        const acc = Math.round(pos.coords.accuracy);
+        const dist = calcDistanceMeters(lat, lon, officeGeofence.latitude, officeGeofence.longitude);
+        setGpsPreview({ checking: false, lat, lon, acc, dist, denied: false });
+      },
+      () => {
+        setGpsPreview({ checking: false, denied: true });
+      },
+      { enableHighAccuracy: true, maximumAge: 10_000, timeout: 12_000 },
+    );
+  }, [officeGeofence.latitude, officeGeofence.longitude]);
+
+  useEffect(() => {
+    if (!isClockedInActive && workMode !== 'REMOTE') {
+      probeMyGps();
+    }
+  }, [isClockedInActive, probeMyGps, workMode]);
+
   useEffect(() => {
     const refreshId = setInterval(() => {
-      void api<{ liveBoard?: LiveBoardMember[] }>('/attendance')
+      void api<{ liveBoard?: LiveBoardMember[]; googleMapsApiKey?: string }>('/attendance')
         .then((res) => {
           if (Array.isArray(res?.liveBoard)) setLiveBoard(res.liveBoard);
+          if (typeof res?.googleMapsApiKey === 'string') setGoogleMapsApiKey(res.googleMapsApiKey);
         })
         .catch(() => undefined);
     }, 15_000);
-
-    let watchId: number | null = null;
-    let lastSentAt = 0;
-    if (isClockedInActive && !iAmTracked && typeof navigator !== 'undefined' && navigator.geolocation) {
-      watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          const lat = Number(pos.coords.latitude.toFixed(6));
-          const lon = Number(pos.coords.longitude.toFixed(6));
-          const acc = Math.round(pos.coords.accuracy);
-          const now = Date.now();
-          if (now - lastSentAt >= 15_000) {
-            lastSentAt = now;
-            void post('/attendance/location', {
-              latitude: lat,
-              longitude: lon,
-              accuracyMeters: acc,
-              locationLabel: `${lat.toFixed(4)}, ${lon.toFixed(4)}`,
-            }).catch(() => undefined);
-          }
-        },
-        () => undefined,
-        { enableHighAccuracy: true, maximumAge: 10_000, timeout: 15_000 },
-      );
-    }
-
-    return () => {
-      clearInterval(refreshId);
-      if (watchId !== null && typeof navigator !== 'undefined' && navigator.geolocation) {
-        navigator.geolocation.clearWatch(watchId);
-      }
-    };
-  }, [iAmTracked, isClockedInActive]);
+    return () => clearInterval(refreshId);
+  }, []);
 
   async function doClockIn() {
     setError(null);
     try {
-      const gps = await captureBrowserGps();
+      const gps = workMode === 'REMOTE' && !iAmTracked ? null : await captureBrowserGps();
       if (!gps && iAmTracked) {
         setError('Turn on location for this site, then try again — you must be inside the office area to clock in.');
         return;
@@ -1090,20 +1144,34 @@ export function AttendanceView() {
       await post('/attendance/clock-in', {
         notes,
         workMode,
+        projectId: selectedProjectId || undefined,
         deviceType: typeof navigator !== 'undefined' && /Mobi|Android|iPhone/i.test(navigator.userAgent) ? 'Mobile Web' : 'Desktop Web',
         ...(gps
           ? {
-              latitude: gps.latitude,
-              longitude: gps.longitude,
-              accuracyMeters: gps.accuracyMeters,
-              locationLabel: `${gps.latitude.toFixed(4)}, ${gps.longitude.toFixed(4)}`,
-            }
+            latitude: gps.latitude,
+            longitude: gps.longitude,
+            accuracyMeters: gps.accuracyMeters,
+            locationLabel: `${gps.latitude.toFixed(4)}, ${gps.longitude.toFixed(4)}`,
+          }
           : {}),
       });
       setNotes('');
+      toast.success('Clocked in! Live shift timer started.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? cleanApiMessage(err.message) : 'Could not clock in.');
+    }
+  }
+
+  async function doSwitchActivity(nextProjectId: string) {
+    setSelectedProjectId(nextProjectId);
+    if (!isClockedInActive) return;
+    try {
+      await post('/attendance/switch-activity', { projectId: nextProjectId || null });
+      toast.success('Switched active project.');
+      await load();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not switch project.');
     }
   }
 
@@ -1149,14 +1217,38 @@ export function AttendanceView() {
   }
 
   const isClockedIn = Boolean(todayRecord?.clockInAt && !todayRecord?.clockOutAt);
+  const effectiveZoneRadius = iAmTracked
+    ? (rules?.radiusMeters ?? officeGeofence.trackedRadiusMeters ?? 50)
+    : officeGeofence.radiusMeters;
+
+  const workingCount = liveBoard.filter((m) => !m.onBreak && !m.outsideSince).length;
+  const breakCount = liveBoard.filter((m) => m.onBreak).length;
+  const outsideCount = liveBoard.filter((m) => Boolean(m.outsideSince || m.geofenceStatus === 'OUTSIDE_OFFICE')).length;
+  const clockedInIds = new Set(liveBoard.map((m) => m.userId));
+  const outMembers = employees.filter((e) => !clockedInIds.has(e.id));
+
+  const filteredLiveBoard = liveBoard.filter((m) => {
+    if (rosterFilter === 'IN' && (m.onBreak || m.outsideSince)) return false;
+    if (rosterFilter === 'BREAK' && !m.onBreak) return false;
+    if (rosterFilter === 'OUTSIDE' && !m.outsideSince && m.geofenceStatus !== 'OUTSIDE_OFFICE') return false;
+    if (rosterQuery.trim()) {
+      const q = rosterQuery.trim().toLowerCase();
+      return (
+        m.userName.toLowerCase().includes(q) ||
+        (m.projectName ?? '').toLowerCase().includes(q) ||
+        m.workMode.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
 
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h2 className="font-display text-3xl font-semibold">Attendance &amp; Live Location</h2>
+          <h2 className="font-display text-3xl font-semibold">Time &amp; Live Location (Jibble Mode)</h2>
           <p className="mt-1 text-sm text-muted">
-            Real-time GPS clock-in/out, Office/Remote/Field work modes, Kiosk terminal &amp; live team map.
+            Live digital shift clock, project activity tagging, Google Maps geofence verification &amp; Who&apos;s In/Out roster.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -1171,19 +1263,19 @@ export function AttendanceView() {
             disabled={records.length === 0}
             onClick={() =>
               exportBrandedPdf({
-                title: 'Team Attendance & Live GPS Register',
-                subtitle: 'Clock-in/out, work mode, break duration & GPS check-in coordinates',
+                title: 'Team Attendance & Google Maps GPS Register',
+                subtitle: 'Clock-in/out, project activity, work mode, break duration & GPS check-in coordinates',
                 generatedByEmail: user?.email,
                 generatedByName: user?.fullName,
                 kpis: [
                   { label: 'Live Clocked In', value: String(liveBoard.length) },
                   { label: 'Total Records', value: String(records.length) },
                 ],
-                columns: ['Employee', 'Date', 'Mode', 'Clock In', 'Clock Out', 'Location', 'Breaks'],
+                columns: ['Employee', 'Date', 'Mode / Project', 'Clock In', 'Clock Out', 'Location', 'Breaks'],
                 rows: records.map((r) => [
                   r.userName,
                   r.workDate,
-                  r.workMode ?? 'OFFICE',
+                  `${r.workMode ?? 'OFFICE'}${r.projectName ? ` · ${r.projectName}` : ''}`,
                   r.clockInAt
                     ? new Date(r.clockInAt).toLocaleTimeString('en-LK', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Colombo' })
                     : '—',
@@ -1201,9 +1293,10 @@ export function AttendanceView() {
         </div>
       </header>
 
+      {/* Jibble-Style Live Shift Command Bar */}
       <Card className="p-6">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between">
+          <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <Badge
                 dot
@@ -1218,61 +1311,142 @@ export function AttendanceView() {
                 {todayRecord?.onBreak
                   ? 'On Break'
                   : isClockedIn
-                    ? 'Clocked In'
+                    ? 'Clocked In · Working'
                     : 'Clocked Out'}
               </Badge>
-              {todayRecord?.workMode && (
-                <Badge tone="gold">{todayRecord.workMode}</Badge>
-              )}
+              {todayRecord?.workMode && <Badge tone="gold">{todayRecord.workMode}</Badge>}
+              {todayRecord?.projectName && <Badge tone="info">{todayRecord.projectName}</Badge>}
               {todayRecord?.isLate && <Badge tone="danger">Late</Badge>}
-              <span className="text-xs text-muted">Standard hours: 08:30 – 17:30 (Asia/Colombo)</span>
               {todayRecord?.shortLeaveId && <Badge tone="warning">Short leave (late start)</Badge>}
+              <span className="text-xs text-muted">Shift: 08:30 – 17:30 (Asia/Colombo)</span>
             </div>
-            <h3 className="mt-2 font-display text-xl font-semibold">
-              Today&apos;s Attendance Status
-            </h3>
-            <p className="text-sm text-muted">
-              {todayRecord?.clockInAt
-                ? `Clocked in at ${new Date(todayRecord.clockInAt).toLocaleTimeString('en-LK', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    timeZone: 'Asia/Colombo',
-                  })}`
-                : 'You have not clocked in yet today.'}
-              {todayRecord?.locationLabel ? ` · 📍 ${todayRecord.locationLabel}` : ''}
-            </p>
+
+            <div className="flex flex-wrap items-baseline gap-4">
+              <span
+                className={cn(
+                  'font-mono text-4xl font-bold tracking-tight tabular-nums',
+                  todayRecord?.onBreak
+                    ? 'text-warning'
+                    : isClockedIn
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-ink',
+                )}
+              >
+                {formatShiftHms(todayRecord?.clockInAt, todayRecord?.breakMinutes ?? 0, todayRecord?.clockOutAt)}
+              </span>
+              <div className="text-xs text-muted">
+                {todayRecord?.clockInAt ? (
+                  <>
+                    In at{' '}
+                    <strong className="text-ink">
+                      {new Date(todayRecord.clockInAt).toLocaleTimeString('en-LK', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        timeZone: 'Asia/Colombo',
+                      })}
+                    </strong>
+                    {todayRecord.breakMinutes > 0 && ` · Breaks: ${todayRecord.breakMinutes}m`}
+                    {todayRecord.locationLabel && ` · 📍 ${todayRecord.locationLabel}`}
+                  </>
+                ) : (
+                  'Tap Clock In to start your shift timer and live location check-in.'
+                )}
+              </div>
+            </div>
+
+            {/* Pre-Clock-In Live GPS Zone Readiness Pill */}
+            {!isClockedIn && workMode !== 'REMOTE' && (
+              <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
+                {gpsPreview.checking ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-ink/[0.05] px-3 py-1 text-muted">
+                    <RefreshCw className="h-3 w-3 animate-spin" /> Checking live GPS distance to Office HQ…
+                  </span>
+                ) : gpsPreview.denied ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-danger/10 px-3 py-1 font-medium text-danger">
+                    Location access blocked — allow browser GPS to verify office zone
+                  </span>
+                ) : gpsPreview.dist !== undefined ? (
+                  <span
+                    className={cn(
+                      'inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-medium',
+                      gpsPreview.dist <= effectiveZoneRadius + Math.min(gpsPreview.acc ?? 20, 40)
+                        ? 'bg-success/15 text-success'
+                        : 'bg-warning/15 text-warning',
+                    )}
+                  >
+                    <MapPin className="h-3.5 w-3.5" />
+                    {gpsPreview.dist <= effectiveZoneRadius + Math.min(gpsPreview.acc ?? 20, 40)
+                      ? `Inside Office Zone · ${gpsPreview.dist}m from HQ (±${gpsPreview.acc}m)`
+                      : `${gpsPreview.dist}m from HQ (Office zone is ${effectiveZoneRadius}m)`}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={probeMyGps}
+                  className="inline-flex items-center gap-1 text-[11.5px] font-medium text-muted hover:text-ink"
+                >
+                  <RefreshCw className="h-3 w-3" /> Refresh GPS
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
             {!isClockedIn ? (
               <>
                 {!iAmTracked && (
-                <div className="segmented" role="radiogroup" aria-label="Work mode">
-                  {(['OFFICE', 'REMOTE', 'FIELD'] as const).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      role="radio"
-                      aria-checked={workMode === m}
-                      onClick={() => setWorkMode(m)}
-                    >
-                      {m === 'OFFICE' ? 'Office' : m === 'REMOTE' ? 'Remote' : 'Field'}
-                    </button>
-                  ))}
-                </div>
+                  <div className="segmented" role="radiogroup" aria-label="Work mode">
+                    {(['OFFICE', 'REMOTE', 'FIELD'] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        role="radio"
+                        aria-checked={workMode === m}
+                        onClick={() => setWorkMode(m)}
+                      >
+                        {m === 'OFFICE' ? 'Office' : m === 'REMOTE' ? 'Remote' : 'Field'}
+                      </button>
+                    ))}
+                  </div>
                 )}
+                <Select
+                  aria-label="Project or activity"
+                  value={selectedProjectId}
+                  onChange={(e) => setSelectedProjectId(e.target.value)}
+                  className="w-48"
+                >
+                  <option value="">General Shift / Activity</option>
+                  {projectsList.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.code ? `${p.code} · ` : ''}{p.name}
+                    </option>
+                  ))}
+                </Select>
                 <Input
                   placeholder="Shift note (optional)…"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  className="w-48"
+                  className="w-44"
                 />
                 <Button onClick={doClockIn}>
-                  <LogIn className="h-4 w-4" /> Clock In (GPS)
+                  <LogIn className="h-4 w-4" /> Clock In
                 </Button>
               </>
             ) : (
               <>
+                <Select
+                  aria-label="Switch active project"
+                  value={selectedProjectId}
+                  onChange={(e) => void doSwitchActivity(e.target.value)}
+                  className="w-52"
+                >
+                  <option value="">General Shift / Activity</option>
+                  {projectsList.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.code ? `${p.code} · ` : ''}{p.name}
+                    </option>
+                  ))}
+                </Select>
                 <Button variant="secondary" onClick={doBreak}>
                   <Coffee className="h-4 w-4" />
                   {todayRecord?.onBreak ? 'End Break' : 'Start Break'}
@@ -1284,7 +1458,7 @@ export function AttendanceView() {
             )}
           </div>
         </div>
-        {error && <p className="mt-3 text-xs text-danger">{error}</p>}
+        {error && <p className="mt-3 text-xs font-medium text-danger">{error}</p>}
         {iAmTracked && rules && (
           <div className="mt-4 grid gap-3 rounded-2xl bg-ink/[0.03] p-4 text-[13px] dark:bg-white/[0.04] sm:grid-cols-3">
             <div>
@@ -1318,12 +1492,12 @@ export function AttendanceView() {
         )}
       </Card>
 
-      {/* Yakunex Live Who's In & Interactive GPS Map */}
+      {/* Jibble Live Who's In / Out Board + Interactive Google Maps */}
       <Card>
         <CardHeader
-          title={`Live Who's In & GPS Map (${liveBoard.length})`}
-          description="Real-time team attendance, office geofence zone & continuous GPS locations."
-          badge={<Badge dot tone="success">Live GPS</Badge>}
+          title={`Who's In / Out & Google Maps Live Tracking (${liveBoard.length} In)`}
+          description="Click any person card to focus their live Google Maps pin, trail, and shift timer."
+          badge={<Badge dot tone="success">Google Maps Live</Badge>}
         />
         <div className="px-5 pb-4 sm:px-6">
           <TeamLocationMap
@@ -1331,62 +1505,148 @@ export function AttendanceView() {
             officeLat={officeGeofence.latitude}
             officeLon={officeGeofence.longitude}
             radiusMeters={officeGeofence.trackedRadiusMeters ?? officeGeofence.radiusMeters}
+            apiKey={googleMapsApiKey}
+            focusedUserId={focusedUserId}
+            onSelectMember={setFocusedUserId}
           />
         </div>
-        {liveBoard.length === 0 ? (
+
+        {/* Jibble Status Filter Tabs & Search */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3.5 sm:px-6">
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            {[
+              { key: 'ALL' as const, label: `All In (${liveBoard.length})` },
+              { key: 'IN' as const, label: `Working (${workingCount})` },
+              { key: 'BREAK' as const, label: `On Break (${breakCount})` },
+              { key: 'OUTSIDE' as const, label: `Outside Zone (${outsideCount})` },
+              { key: 'OUT' as const, label: `Out (${outMembers.length})` },
+            ].map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setRosterFilter(tab.key)}
+                className={cn(
+                  'rounded-full px-3 py-1 font-semibold transition',
+                  rosterFilter === tab.key
+                    ? 'bg-gold/20 text-gold-strong dark:text-gold'
+                    : 'bg-ink/[0.05] text-muted hover:text-ink dark:bg-white/[0.06]',
+                )}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          <Input
+            value={rosterQuery}
+            onChange={(e) => setRosterQuery(e.target.value)}
+            placeholder="Filter people or project…"
+            className="h-8 w-52 text-xs"
+          />
+        </div>
+
+        {rosterFilter === 'OUT' ? (
+          outMembers.length === 0 ? (
+            <div className="px-6 pb-6 text-xs text-muted">Everyone in the directory is clocked in right now!</div>
+          ) : (
+            <div className="grid gap-2.5 px-5 pb-5 sm:grid-cols-2 lg:grid-cols-3 sm:px-6">
+              {outMembers
+                .filter((e) => !rosterQuery.trim() || e.fullName.toLowerCase().includes(rosterQuery.trim().toLowerCase()))
+                .map((e) => (
+                  <div
+                    key={e.id}
+                    className="flex items-center justify-between gap-3 rounded-2xl border border-line/60 bg-canvas/40 p-3"
+                  >
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <Avatar name={e.fullName} size="sm" />
+                      <div className="min-w-0">
+                        <p className="truncate text-xs font-semibold text-ink">{e.fullName}</p>
+                        <p className="font-mono text-[10.5px] text-muted">{e.companyId ?? 'Staff'}</p>
+                      </div>
+                    </div>
+                    <Badge tone="neutral">Out</Badge>
+                  </div>
+                ))}
+            </div>
+          )
+        ) : filteredLiveBoard.length === 0 ? (
           <div className="px-6 pb-6 text-xs text-muted">
-            No team members are currently clocked in today.
+            No team members match this live status filter right now.
           </div>
         ) : (
           <div className="grid gap-3 px-5 pb-5 sm:grid-cols-2 lg:grid-cols-3 sm:px-6">
-            {liveBoard.map((m) => (
-              <div
-                key={m.userId}
-                className="flex items-center justify-between gap-3 rounded-2xl bg-ink/[0.04] p-3.5 dark:bg-white/[0.06]"
-              >
-                <div className="flex min-w-0 items-center gap-3">
-                  <Avatar name={m.userName} size="md" />
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-ink">{m.userName}</p>
-                    <p className="text-[11px] text-muted">
-                      In{' '}
-                      {m.clockInAt
-                        ? new Date(m.clockInAt).toLocaleTimeString('en-LK', {
+            {filteredLiveBoard.map((m) => {
+              const selected = focusedUserId === m.userId;
+              return (
+                <div
+                  key={m.userId}
+                  onClick={() => setFocusedUserId(selected ? null : m.userId)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(ev) => {
+                    if (ev.key === 'Enter' || ev.key === ' ') {
+                      ev.preventDefault();
+                      setFocusedUserId(selected ? null : m.userId);
+                    }
+                  }}
+                  className={cn(
+                    'flex cursor-pointer items-center justify-between gap-3 rounded-2xl border p-3.5 transition hover:-translate-y-0.5',
+                    selected
+                      ? 'border-gold bg-gold/10 shadow-sm'
+                      : 'border-transparent bg-ink/[0.04] hover:border-line dark:bg-white/[0.06]',
+                  )}
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <Avatar name={m.userName} size="md" />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-ink">{m.userName}</p>
+                      <p className="text-[11px] text-muted">
+                        In{' '}
+                        {m.clockInAt
+                          ? new Date(m.clockInAt).toLocaleTimeString('en-LK', {
                             hour: '2-digit',
                             minute: '2-digit',
                             timeZone: 'Asia/Colombo',
                           })
-                        : '—'}{' '}
-                      · {m.workMode}
-                    </p>
-                    {m.locationLabel && (
-                      <p className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-muted">
-                        <MapPin className="h-3 w-3 shrink-0 text-gold-strong dark:text-gold" />
-                        {m.latitude !== null && m.longitude !== null ? (
-                          <a
-                            href={`https://maps.google.com/?q=${m.latitude},${m.longitude}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="truncate text-info hover:underline"
-                          >
-                            {m.locationLabel}
-                          </a>
-                        ) : (
-                          <span className="truncate">{m.locationLabel}</span>
-                        )}
+                          : '—'}{' '}
+                        · {m.workMode}
+                        {m.projectName ? ` · ${m.projectName}` : ''}
                       </p>
+                      {m.locationLabel && (
+                        <p className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-muted">
+                          <MapPin className="h-3 w-3 shrink-0 text-gold-strong dark:text-gold" />
+                          {m.latitude !== null && m.longitude !== null ? (
+                            <a
+                              href={`https://www.google.com/maps?q=${m.latitude},${m.longitude}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(ev) => ev.stopPropagation()}
+                              className="truncate text-info hover:underline"
+                            >
+                              {m.locationLabel}
+                              {m.distanceMeters != null ? ` (${m.distanceMeters}m)` : ''}
+                            </a>
+                          ) : (
+                            <span className="truncate">{m.locationLabel}</span>
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <span className="font-mono text-xs font-bold tabular-nums text-ink">
+                      {formatShiftHms(m.clockInAt, m.breakMinutes ?? 0)}
+                    </span>
+                    <Badge tone={m.onBreak ? 'warning' : m.outsideSince ? 'danger' : 'success'}>
+                      {m.onBreak ? 'Break' : m.outsideSince ? 'Outside' : 'Working'}
+                    </Badge>
+                    {(m.unauthorizedToday ?? 0) > 0 && (
+                      <Badge tone="danger">{m.unauthorizedToday} unauthorized</Badge>
                     )}
+                    {m.trackingLost && <Badge tone="warning">Tracking stopped</Badge>}
                   </div>
                 </div>
-                <div className="flex shrink-0 flex-col items-end gap-1">
-                  <Badge tone={m.onBreak ? 'warning' : m.outsideSince ? 'danger' : 'success'}>
-                    {m.onBreak ? 'Break' : m.outsideSince ? 'Outside' : 'In'}
-                  </Badge>
-                  {(m.unauthorizedToday ?? 0) > 0 && <Badge tone="danger">{m.unauthorizedToday} unauthorized</Badge>}
-                  {m.trackingLost && <Badge tone="warning">Tracking stopped</Badge>}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Card>
@@ -1422,74 +1682,74 @@ export function AttendanceView() {
                   </tr>
                 ) : (
                   records.map((rec) => (
-                  <tr key={rec.id} className="hover:bg-canvas/40">
-                    <td className="px-5 py-3.5">
-                      <div className="flex items-center gap-2.5 font-medium">
-                        <Avatar name={rec.userName} size="sm" />
-                        <span>{rec.userName}</span>
-                        {rec.isLate && <Badge tone="danger">Late</Badge>}
-                      </div>
-                    </td>
-                    <td className="px-5 py-3.5 text-xs">
-                      <span className="font-mono">{rec.workDate}</span>
-                      {rec.workMode && (
-                        <Badge tone="neutral" className="ml-2">{rec.workMode}</Badge>
-                      )}
-                    </td>
-                    <td className="px-5 py-3.5 text-xs">
-                      {rec.clockInAt
-                        ? new Date(rec.clockInAt).toLocaleTimeString('en-LK', {
+                    <tr key={rec.id} className="hover:bg-canvas/40">
+                      <td className="px-5 py-3.5">
+                        <div className="flex items-center gap-2.5 font-medium">
+                          <Avatar name={rec.userName} size="sm" />
+                          <span>{rec.userName}</span>
+                          {rec.isLate && <Badge tone="danger">Late</Badge>}
+                        </div>
+                      </td>
+                      <td className="px-5 py-3.5 text-xs">
+                        <span className="font-mono">{rec.workDate}</span>
+                        {rec.workMode && (
+                          <Badge tone="neutral" className="ml-2">{rec.workMode}</Badge>
+                        )}
+                      </td>
+                      <td className="px-5 py-3.5 text-xs">
+                        {rec.clockInAt
+                          ? new Date(rec.clockInAt).toLocaleTimeString('en-LK', {
                             hour: '2-digit',
                             minute: '2-digit',
                             timeZone: 'Asia/Colombo',
                           })
-                        : '—'}
-                    </td>
-                    <td className="px-5 py-3.5 text-xs">
-                      {rec.clockOutAt ? (
-                        new Date(rec.clockOutAt).toLocaleTimeString('en-LK', {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                          timeZone: 'Asia/Colombo',
-                        })
-                      ) : (
-                        <Badge tone="success">Active</Badge>
-                      )}
-                    </td>
-                    <td className="px-5 py-3.5 text-xs">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {rec.latitude != null && rec.longitude != null ? (
-                          <a
-                            href={`https://maps.google.com/?q=${rec.latitude},${rec.longitude}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-info hover:underline"
-                          >
-                            <MapPin className="h-3 w-3" />
-                            {rec.locationLabel ?? `${rec.latitude.toFixed(4)}, ${rec.longitude.toFixed(4)}`}
-                          </a>
+                          : '—'}
+                      </td>
+                      <td className="px-5 py-3.5 text-xs">
+                        {rec.clockOutAt ? (
+                          new Date(rec.clockOutAt).toLocaleTimeString('en-LK', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            timeZone: 'Asia/Colombo',
+                          })
                         ) : (
-                          <span className="text-muted">{rec.locationLabel ?? '—'}</span>
+                          <Badge tone="success">Active</Badge>
                         )}
-                        {rec.geofenceStatus === 'INSIDE_OFFICE' && (
-                          <Badge tone="success">
-                            In Zone{rec.distanceMeters != null ? ` (${rec.distanceMeters}m)` : ''}
-                          </Badge>
-                        )}
-                        {rec.geofenceStatus === 'OUTSIDE_OFFICE' && (
-                          <Badge tone="warning">
-                            Outside Zone{rec.distanceMeters != null ? ` (${rec.distanceMeters}m)` : ''}
-                          </Badge>
-                        )}
-                        {rec.geofenceStatus === 'REMOTE_APPROVED' && (
-                          <Badge tone="info">Remote</Badge>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-5 py-3.5 text-xs text-muted">{rec.breakMinutes}m</td>
-                    <td className="px-5 py-3.5 text-xs text-muted">{rec.notes}</td>
-                  </tr>
-                )))}
+                      </td>
+                      <td className="px-5 py-3.5 text-xs">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {rec.latitude != null && rec.longitude != null ? (
+                            <a
+                              href={`https://maps.google.com/?q=${rec.latitude},${rec.longitude}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-info hover:underline"
+                            >
+                              <MapPin className="h-3 w-3" />
+                              {rec.locationLabel ?? `${rec.latitude.toFixed(4)}, ${rec.longitude.toFixed(4)}`}
+                            </a>
+                          ) : (
+                            <span className="text-muted">{rec.locationLabel ?? '—'}</span>
+                          )}
+                          {rec.geofenceStatus === 'INSIDE_OFFICE' && (
+                            <Badge tone="success">
+                              In Zone{rec.distanceMeters != null ? ` (${rec.distanceMeters}m)` : ''}
+                            </Badge>
+                          )}
+                          {rec.geofenceStatus === 'OUTSIDE_OFFICE' && (
+                            <Badge tone="warning">
+                              Outside Zone{rec.distanceMeters != null ? ` (${rec.distanceMeters}m)` : ''}
+                            </Badge>
+                          )}
+                          {rec.geofenceStatus === 'REMOTE_APPROVED' && (
+                            <Badge tone="info">Remote</Badge>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-5 py-3.5 text-xs text-muted">{rec.breakMinutes}m</td>
+                      <td className="px-5 py-3.5 text-xs text-muted">{rec.notes}</td>
+                    </tr>
+                  )))}
               </tbody>
             </table>
           </div>
@@ -1921,53 +2181,53 @@ export function LeaveView() {
                   </tr>
                 ) : (
                   requests.map((req) => (
-                  <tr key={req.id} className="hover:bg-canvas/40">
-                    <td className="px-5 py-3.5 font-medium">{req.userName}</td>
-                    <td className="px-5 py-3.5">
-                      <Badge tone={req.type === 'SHORT' ? 'warning' : 'neutral'}>{req.type === 'SHORT' ? 'Short leave' : req.type}</Badge>
-                      <p className="mt-1 text-xs text-muted">
-                        {req.startDate} → {req.endDate} ({req.days}d)
-                      </p>
-                    </td>
-                    <td className="px-5 py-3.5 text-xs text-muted">
-                      <p>{req.reason}</p>
-                      {req.approverName && (
-                        <p className="mt-0.5 text-[11px] text-ink">
-                          Decided by {req.approverName}: {req.decisionNote}
+                    <tr key={req.id} className="hover:bg-canvas/40">
+                      <td className="px-5 py-3.5 font-medium">{req.userName}</td>
+                      <td className="px-5 py-3.5">
+                        <Badge tone={req.type === 'SHORT' ? 'warning' : 'neutral'}>{req.type === 'SHORT' ? 'Short leave' : req.type}</Badge>
+                        <p className="mt-1 text-xs text-muted">
+                          {req.startDate} → {req.endDate} ({req.days}d)
                         </p>
-                      )}
-                    </td>
-                    <td className="px-5 py-3.5">
-                      <Badge
-                        tone={
-                          req.status === 'APPROVED'
-                            ? 'success'
-                            : req.status === 'REJECTED'
-                              ? 'danger'
-                              : 'warning'
-                        }
-                      >
-                        {req.status}
-                      </Badge>
-                    </td>
-                    <td className="px-5 py-3.5 text-right">
-                      {canApprove && req.status === 'PENDING' && (
-                        <div className="inline-flex gap-2">
-                          <Button size="sm" onClick={() => decide(req.id, 'APPROVED')}>
-                            Approve
-                          </Button>
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => decide(req.id, 'REJECTED')}
-                          >
-                            Reject
-                          </Button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                )))}
+                      </td>
+                      <td className="px-5 py-3.5 text-xs text-muted">
+                        <p>{req.reason}</p>
+                        {req.approverName && (
+                          <p className="mt-0.5 text-[11px] text-ink">
+                            Decided by {req.approverName}: {req.decisionNote}
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <Badge
+                          tone={
+                            req.status === 'APPROVED'
+                              ? 'success'
+                              : req.status === 'REJECTED'
+                                ? 'danger'
+                                : 'warning'
+                          }
+                        >
+                          {req.status}
+                        </Badge>
+                      </td>
+                      <td className="px-5 py-3.5 text-right">
+                        {canApprove && req.status === 'PENDING' && (
+                          <div className="inline-flex gap-2">
+                            <Button size="sm" onClick={() => decide(req.id, 'APPROVED')}>
+                              Approve
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => decide(req.id, 'REJECTED')}
+                            >
+                              Reject
+                            </Button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )))}
               </tbody>
             </table>
           </div>

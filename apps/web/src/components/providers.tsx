@@ -2,7 +2,15 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ToastProvider } from '@/components/ui/toast';
-import { api, ApiError, clearApiCache, liveGet, post, refreshSession, warmWorkspaceCache } from '@/lib/api';
+import {
+  api,
+  ApiError,
+  liveGet,
+  post,
+  purgeAllClientSessionCaches,
+  refreshSession,
+  warmWorkspaceCache,
+} from '@/lib/api';
 import { translate, type Lang } from '@/lib/i18n';
 import { PERMISSIONS, type Role } from '@/lib/permissions';
 import { setModuleAccessConfig, type ModuleAccessConfig } from '@/lib/nav';
@@ -128,7 +136,13 @@ export interface SessionUser {
   status: string;
   organizationId: string;
   mustChangePassword: boolean;
+  twoFactorEnabled?: boolean;
   avatarUrl?: string | null;
+}
+
+export interface LoginOutcome {
+  requiresTwoFactor?: boolean;
+  message?: string;
 }
 
 type SessionStatus = 'loading' | 'authenticated' | 'anonymous';
@@ -141,7 +155,7 @@ interface AuthContextValue {
   isSuperAdminReal: boolean;
   previewRole: RolePreviewPreset | null;
   setPreviewRole: (preset: RolePreviewPreset | null) => void;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, totpCode?: string) => Promise<LoginOutcome>;
   logout: () => Promise<void>;
   reload: () => Promise<void>;
   /** Super Admin sidebar rules (hide / lock modules per role). */
@@ -229,7 +243,7 @@ function AuthProvider({ children }: { children: ReactNode }) {
       const isExplicitUnauth =
         err instanceof ApiError && (err.status === 401 || err.status === 403);
       if (isExplicitUnauth) {
-        writeCachedSession(null);
+        purgeAllClientSessionCaches();
         setUser(null);
         setPermissions(new Set());
         setStatus('anonymous');
@@ -296,19 +310,27 @@ function AuthProvider({ children }: { children: ReactNode }) {
   }, [status]);
 
   const login = useCallback(
-    async (email: string, password: string) => {
+    async (email: string, password: string, totpCode?: string): Promise<LoginOutcome> => {
       warmedRef.current = false;
-      await post('/auth/login', { email, password });
+      purgeAllClientSessionCaches();
+      const res = await post<{ requiresTwoFactor?: boolean; message?: string }>('/auth/login', {
+        email,
+        password,
+        ...(totpCode ? { totpCode } : {}),
+      });
+      if (res?.requiresTwoFactor) {
+        return { requiresTwoFactor: true, message: res.message };
+      }
       await reload();
+      return { requiresTwoFactor: false };
     },
     [reload],
   );
 
   const logout = useCallback(async () => {
     await post('/auth/logout').catch(() => undefined);
-    writeCachedSession(null);
     setPreviewRole(null);
-    clearApiCache();
+    purgeAllClientSessionCaches();
     setUser(null);
     setPermissions(new Set());
     setStatus('anonymous');

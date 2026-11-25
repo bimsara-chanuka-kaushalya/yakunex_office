@@ -7,6 +7,23 @@ All notable changes to **Yakunex Hub** follow Semantic Versioning (`vMAJOR.MINOR
 
 ---
 
+## [v1.5.0] - 2026-11-25
+### Security (World-Class Zero-Trust Hardening)
+- **HKDF Cryptographic Key Separation (`RFC 5869`)**: Domain-separated signing and encryption keys for Access JWTs, Password-Reset/Invite JWTs, Meeting Guest HMAC tokens, Tamper-Evident Audit Chain HMACs, and AES-256-GCM 2FA secrets.
+- **Zero-Leak Password Recovery & Strict JWT Enforcement**: Removed `resetToken`/`resetUrl` from `POST /api/auth/forgot-password` responses, enforced `typ === 'access'` + session fingerprints in `JwtAuthGuard` (blocking reset/invite token auth bypass and instantly revoking active tokens on password, role, or status change), and enforced `mustChangePassword` at the API guard layer.
+- **Authenticator App Two-Factor Authentication (`RFC 6238 TOTP`) & Step-Up Auth**: Added TOTP 2FA setup, QR/URI provisioning, 8 single-use recovery codes, login OTP challenge, and Super Admin password step-up verification for Data Manager purges.
+- **Global CSRF Shield, XSS Attachment Firewall & Public Rate-Limiting**: Added cookie-mutation Origin/`Sec-Fetch-Site`/`X-Requested-With` CSRF middleware, strict MIME & Data-URL sanitization across Chat, Meetings, Documents, and Avatars, `YH-XXXX-XXXX` high-entropy room codes, guest-verified TURN ICE config, HSTS + CSP headers, and complete `sessionStorage` cache wipe on logout.
+- **GPS Privacy Isolation & Tamper-Evident Audit Chain**: Restricted team live GPS coordinates, trails, and breach counts on `GET /api/attendance` to Super Admin, HR (`ADMIN`), and `PROJECT_MANAGER`, and added HMAC-SHA256 hash chaining (`prevHash` → `hash`) to every `AuditLog` entry.
+
+### Added & Improved
+- **Google Maps Live Tracking Everywhere**: Upgraded `TeamLocationMap`, `AttendanceView`, and `AttendanceRulesSettings` to Google Maps (supporting both dynamic Super Admin `googleMapsApiKey` JS SDK mode with smooth in-place marker movement, Road/Satellite toggle, Auto-Follow, and pin-drop geofencing, plus instant key-free Google Maps live mode).
+- **Jibble-Grade Time & Location UX**: Live ticking `HH:MM:SS` shift clock, pre-clock-in GPS zone distance checker, project/activity tagging & live activity switching on shifts, floating active-shift pill across pages, and interactive `All In / Working / On Break / Outside Zone / Out` roster synced with Google Maps.
+
+### Fixed
+- **Sri Lanka (`Asia/Colombo`) Shift Rollover & Attendance Bugs**: Unified all attendance, live-location, break, clock-out, and geofence sweep dates on `colomboClock().date` (fixing the `05:30 AM` UTC rollover bug), removed the stale `'2026-11-08'` fallback record, accumulated active break minutes on clock-out, and aligned initial clock-in geofence status with tracked role radius (`50m`).
+
+---
+
 ## [v1.4.1] - 2026-11-22
 ### Added
 - **Jibble-Style Intern Geofence & Live Attendance Rules**: Office GPS zone check (`50m` default radius with GPS accuracy hysteresis), 5-minute outside-zone grace window before unauthorized absence + HR/Super Admin alert, automatic late short-leave recording after `08:30`, work-day clock-in reminders (`08:15` & `08:30`), and tracking-lost alerts.

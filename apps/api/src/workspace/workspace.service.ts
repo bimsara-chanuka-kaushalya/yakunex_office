@@ -19,6 +19,12 @@ import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import { EventEmitter } from 'events';
 import { AccessToken, RoomServiceClient, TrackSource } from 'livekit-server-sdk';
 import { AuditService } from '../audit/audit.service';
+import {
+  assertSafeAttachmentUrl,
+  assertSafeAvatarUrl,
+  deriveDomainSecret,
+  generateSecureRoomCode,
+} from '../common/security';
 import type { AuthUser } from '../common/types';
 import { PrismaService } from '../prisma/prisma.service';
 import { deepClone, mergeSnapshots } from './workspace-state-merge';
@@ -193,6 +199,9 @@ export interface AttendanceItem {
   breakMinutes: number;
   isLate: boolean;
   notes: string;
+  projectId?: string | null;
+  projectName?: string | null;
+  workedMinutes?: number;
   workMode?: 'OFFICE' | 'REMOTE' | 'FIELD';
   latitude?: number | null;
   longitude?: number | null;
@@ -467,6 +476,8 @@ export interface OrganizationSettings {
   officeLatitude?: number;
   officeLongitude?: number;
   officeRadiusMeters?: number;
+  /** Optional Google Maps JavaScript API key configured by Super Admin in Settings. */
+  googleMapsApiKey?: string;
   /** Super Admin sidebar rules per role: module key → SHOWN | LOCKED (visible, can't open) | HIDDEN. */
   moduleAccess?: Record<string, Record<string, ModuleAccessState>>;
   /** Geofence / late-start / reminder rules (see attendance-rules.ts). */
@@ -2024,12 +2035,9 @@ export class WorkspaceService implements OnModuleInit {
       throw new BadRequestException('Unsupported or unsafe file MIME type. Upload PDF, Office docs, CSV, or PNG/JPG images.');
     }
     const rawFileDataUrl =
-      typeof body.fileDataUrl === 'string' && body.fileDataUrl.startsWith('data:')
-        ? body.fileDataUrl
+      typeof body.fileDataUrl === 'string' && body.fileDataUrl.trim().length > 0
+        ? assertSafeAttachmentUrl(body.fileDataUrl, 6_000_000)
         : null;
-    if (rawFileDataUrl && /^data:(text\/html|image\/svg|application\/javascript|text\/javascript)/i.test(rawFileDataUrl)) {
-      throw new BadRequestException('Executable or HTML/SVG data URLs are blocked for security.');
-    }
     const project = this.projects.find((p) => p.id === body.projectId) ?? null;
     const created: DocumentItem = {
       id: `doc_${randomUUID().slice(0, 8)}`,
@@ -2339,14 +2347,25 @@ export class WorkspaceService implements OnModuleInit {
     this.notificationBus.emit('notification', { organizationId, notification: item });
   }
 
+  private resolveGoogleMapsApiKey(): string {
+    return (
+      this.settings.googleMapsApiKey?.trim() ||
+      process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY?.trim() ||
+      process.env.GOOGLE_MAPS_API_KEY?.trim() ||
+      ''
+    );
+  }
+
   /** What the signed-in person's attendance rules are today (used for reminders & live tracking). */
   async getMyAttendanceRules(actor: AuthUser) {
     const rules = this.getAttendanceRules();
     const holidays = await this.getHolidayCalendar(actor.organizationId).catch(() => []);
     for (const h of holidays) this.holidayDates.add(h.date);
     const clock = colomboClock();
-    const today = new Date().toISOString().slice(0, 10);
-    const rec = this.attendance.find((a) => a.userId === actor.id && a.workDate === today);
+    const today = clock.date;
+    const rec =
+      this.attendance.find((a) => a.userId === actor.id && a.workDate === today) ??
+      this.attendance.find((a) => a.userId === actor.id && a.clockInAt && !a.clockOutAt);
     const onLeave = this.leaveRequests.some(
       (l) => l.userId === actor.id && l.status === 'APPROVED' && l.type !== 'SHORT' && l.startDate <= clock.date && l.endDate >= clock.date,
     );
@@ -2354,6 +2373,7 @@ export class WorkspaceService implements OnModuleInit {
       appliesToMe: this.rulesApply(actor.role, rules),
       rules,
       office: { ...this.officePoint(), radiusMeters: rules.radiusMeters },
+      googleMapsApiKey: this.resolveGoogleMapsApiKey(),
       today: clock.date,
       now: clock.time,
       isWorkDay: isWorkDay(clock.date, rules, this.holidayDates),
@@ -2361,6 +2381,10 @@ export class WorkspaceService implements OnModuleInit {
       clockedIn: Boolean(rec?.clockInAt && !rec.clockOutAt),
       clockedOut: Boolean(rec?.clockOutAt),
       onBreak: Boolean(rec?.onBreak),
+      workMode: rec?.workMode ?? null,
+      clockInAt: rec?.clockInAt ?? null,
+      breakMinutes: rec?.breakMinutes ?? 0,
+      projectName: rec?.projectName ?? null,
       outsideSince: rec?.geofenceExitAt ?? null,
     };
   }
@@ -2466,7 +2490,7 @@ export class WorkspaceService implements OnModuleInit {
    */
   sweepAttendanceRules(now = new Date()): number {
     const rules = this.getAttendanceRules();
-    const today = now.toISOString().slice(0, 10);
+    const today = colomboClock(now).date;
     let changed = 0;
     for (const rec of this.attendance) {
       if (rec.workDate !== today || !rec.clockInAt || rec.clockOutAt) continue;
@@ -2574,41 +2598,60 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   listAttendance(actor: AuthUser) {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = colomboClock().date;
     const myToday =
       this.attendance.find((a) => a.userId === actor.id && a.workDate === today) ??
-      this.attendance.find((a) => a.userName === actor.fullName && a.workDate === '2026-11-08') ??
+      this.attendance.find((a) => a.userId === actor.id && a.clockInAt && !a.clockOutAt) ??
       null;
-    const records = this.isManagerOrAdmin(actor)
+    const canSeeTeamGps = this.isManagerOrAdmin(actor);
+    const records = canSeeTeamGps
       ? this.attendance
       : this.attendance.filter((a) => a.userId === actor.id || a.userName === actor.fullName);
     const liveBoard = this.attendance
-      .filter((a) => a.workDate === today && a.clockInAt && !a.clockOutAt)
-      .map((a) => ({
-        userId: a.userId,
-        userName: a.userName,
-        userRole: a.userRole,
-        clockInAt: a.clockInAt,
-        onBreak: a.onBreak,
-        workMode: a.workMode ?? 'OFFICE',
-        latitude: a.latitude ?? null,
-        longitude: a.longitude ?? null,
-        accuracyMeters: a.accuracyMeters ?? null,
-        locationLabel: a.locationLabel ?? null,
-        geofenceStatus: a.geofenceStatus ?? 'NO_GPS',
-        distanceMeters: a.distanceMeters ?? null,
-        lastLocationAt: a.lastLocationAt ?? a.clockInAt ?? null,
-        locationTrail: a.locationTrail ?? [],
-        tracked: this.rulesApply(a.userRole) && (a.workMode ?? 'OFFICE') === 'OFFICE',
-        outsideSince: a.geofenceExitAt ?? null,
-        unauthorizedToday: (a.geofenceBreaches ?? []).filter((b) => b.unauthorized).length,
-        exitsToday: (a.geofenceBreaches ?? []).length,
-        trackingLost: Boolean(a.trackingLostAlertedAt),
-      }));
+      .filter((a) => (a.workDate === today || !a.clockOutAt) && a.clockInAt && !a.clockOutAt)
+      .map((a) => {
+        const canSeeThisGps = canSeeTeamGps || a.userId === actor.id;
+        const mode = a.workMode ?? 'OFFICE';
+        return {
+          userId: a.userId,
+          userName: a.userName,
+          userRole: a.userRole,
+          clockInAt: a.clockInAt,
+          onBreak: a.onBreak,
+          breakMinutes: a.breakMinutes ?? 0,
+          projectId: a.projectId ?? null,
+          projectName: a.projectName ?? null,
+          notes: canSeeThisGps ? a.notes : '',
+          deviceType: canSeeThisGps ? (a.deviceType ?? null) : null,
+          workMode: mode,
+          latitude: canSeeThisGps ? (a.latitude ?? null) : null,
+          longitude: canSeeThisGps ? (a.longitude ?? null) : null,
+          accuracyMeters: canSeeThisGps ? (a.accuracyMeters ?? null) : null,
+          locationLabel: canSeeThisGps
+            ? (a.locationLabel ?? null)
+            : mode === 'REMOTE'
+              ? 'Remote'
+              : mode === 'FIELD'
+                ? 'Field'
+                : 'Office',
+          geofenceStatus: canSeeThisGps ? (a.geofenceStatus ?? 'NO_GPS') : 'NO_GPS',
+          distanceMeters: canSeeThisGps ? (a.distanceMeters ?? null) : null,
+          lastLocationAt: canSeeThisGps ? (a.lastLocationAt ?? a.clockInAt ?? null) : null,
+          locationTrail: canSeeThisGps ? (a.locationTrail ?? []) : [],
+          tracked: this.rulesApply(a.userRole) && mode === 'OFFICE',
+          outsideSince: canSeeThisGps ? (a.geofenceExitAt ?? null) : null,
+          unauthorizedToday: canSeeThisGps ? (a.geofenceBreaches ?? []).filter((b) => b.unauthorized).length : 0,
+          exitsToday: canSeeThisGps ? (a.geofenceBreaches ?? []).length : 0,
+          trackingLost: canSeeThisGps ? Boolean(a.trackingLostAlertedAt) : false,
+        };
+      });
     return {
       todayRecord: myToday,
       records,
       liveBoard,
+      canSeeTeamGps,
+      googleMapsApiKey: this.resolveGoogleMapsApiKey(),
+      projects: this.projects.map((p) => ({ id: p.id, code: p.code, name: p.name })),
       officeGeofence: {
         latitude: this.settings.officeLatitude ?? 6.9271,
         longitude: this.settings.officeLongitude ?? 79.8612,
@@ -2620,7 +2663,8 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   clockIn(actor: AuthUser, body: Record<string, unknown>) {
-    const today = new Date().toISOString().slice(0, 10);
+    const clock = colomboClock();
+    const today = clock.date;
     let record = this.attendance.find((a) => a.userId === actor.id && a.workDate === today);
     if (record && record.clockInAt && !record.clockOutAt) {
       throw new BadRequestException('You are already clocked in for today.');
@@ -2634,9 +2678,18 @@ export class WorkspaceService implements OnModuleInit {
       : workModeRaw === 'REMOTE' || workModeRaw === 'FIELD'
         ? workModeRaw
         : 'OFFICE';
-    const latitude = typeof body.latitude === 'number' ? body.latitude : null;
-    const longitude = typeof body.longitude === 'number' ? body.longitude : null;
-    const accuracyMeters = typeof body.accuracyMeters === 'number' ? body.accuracyMeters : null;
+    const latitude =
+      typeof body.latitude === 'number' && Number.isFinite(body.latitude) && Math.abs(body.latitude) <= 90
+        ? body.latitude
+        : null;
+    const longitude =
+      typeof body.longitude === 'number' && Number.isFinite(body.longitude) && Math.abs(body.longitude) <= 180
+        ? body.longitude
+        : null;
+    const accuracyMeters =
+      typeof body.accuracyMeters === 'number' && Number.isFinite(body.accuracyMeters) && body.accuracyMeters >= 0
+        ? body.accuracyMeters
+        : null;
     if (tracked) {
       if (latitude === null || longitude === null) {
         throw new BadRequestException('LOCATION_REQUIRED: Turn on location for this site to clock in.');
@@ -2650,29 +2703,35 @@ export class WorkspaceService implements OnModuleInit {
       }
     }
     const locationLabel = body.locationLabel
-      ? String(body.locationLabel).trim()
+      ? String(body.locationLabel).trim().slice(0, 140)
       : latitude !== null && longitude !== null
         ? `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
         : workMode === 'OFFICE'
           ? 'Colombo HQ'
           : 'Remote';
-    const deviceType = body.deviceType ? String(body.deviceType).trim() : 'Web Workspace';
+    const deviceType = body.deviceType ? String(body.deviceType).trim().slice(0, 80) : 'Web Workspace';
+    const selectedProject = body.projectId
+      ? (this.projects.find((p) => p.id === String(body.projectId)) ?? null)
+      : null;
 
-    // Geofence check against configured office coordinates
+    // Geofence check against configured office coordinates (uses tracked radius for tracked roles)
     let distanceMeters: number | null = null;
     let geofenceStatus: AttendanceItem['geofenceStatus'] = 'NO_GPS';
     if (workMode === 'REMOTE') {
       geofenceStatus = 'REMOTE_APPROVED';
     } else if (latitude !== null && longitude !== null) {
-      const officeLat = this.settings.officeLatitude ?? 6.9271;
-      const officeLon = this.settings.officeLongitude ?? 79.8612;
-      const radius = this.settings.officeRadiusMeters ?? 250;
-      distanceMeters = Math.round(this.haversineMeters(latitude, longitude, officeLat, officeLon));
-      geofenceStatus = distanceMeters <= radius ? 'INSIDE_OFFICE' : 'OUTSIDE_OFFICE';
+      const office = this.officePoint();
+      const radius = tracked ? rules.radiusMeters : (this.settings.officeRadiusMeters ?? 250);
+      distanceMeters = Math.round(geoDistance(latitude, longitude, office.lat, office.lon));
+      if (tracked) {
+        const z = readZone(distanceMeters, accuracyMeters, radius);
+        geofenceStatus = z === 'OUTSIDE' ? 'OUTSIDE_OFFICE' : 'INSIDE_OFFICE';
+      } else {
+        geofenceStatus = distanceMeters <= radius ? 'INSIDE_OFFICE' : 'OUTSIDE_OFFICE';
+      }
     }
 
     // Check Colombo local time against the late time (rules for tracked roles, else workDayStart)
-    const clock = colomboClock();
     const nowColombo = clock.time;
     const lateAfter = tracked ? rules.lateAfter : this.settings.workDayStart || '08:30';
     const workDayToday = isWorkDay(clock.date, rules, this.holidayDates);
@@ -2690,7 +2749,9 @@ export class WorkspaceService implements OnModuleInit {
         onBreak: false,
         breakMinutes: 0,
         isLate,
-        notes: String(body.notes ?? '').trim() || 'Clocked in from web workspace.',
+        notes: String(body.notes ?? '').trim().slice(0, 300) || 'Clocked in from web workspace.',
+        projectId: selectedProject?.id ?? null,
+        projectName: selectedProject?.name ?? null,
         workMode,
         latitude,
         longitude,
@@ -2709,6 +2770,11 @@ export class WorkspaceService implements OnModuleInit {
     } else {
       record.clockOutAt = null;
       record.workMode = workMode;
+      record.projectId = selectedProject?.id ?? record.projectId ?? null;
+      record.projectName = selectedProject?.name ?? record.projectName ?? null;
+      if (body.notes && String(body.notes).trim()) {
+        record.notes = String(body.notes).trim().slice(0, 300);
+      }
       record.latitude = latitude;
       record.longitude = longitude;
       record.accuracyMeters = accuracyMeters;
@@ -2791,9 +2857,10 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   toggleBreak(actor: AuthUser) {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = colomboClock().date;
     const record =
-      this.attendance.find((a) => a.userId === actor.id && a.workDate === today) ??
+      this.attendance.find((a) => a.userId === actor.id && a.workDate === today && !a.clockOutAt) ??
+      this.attendance.find((a) => a.userId === actor.id && !a.clockOutAt) ??
       this.attendance.find((a) => a.userName === actor.fullName && !a.clockOutAt);
     if (!record) throw new BadRequestException('Clock in first before starting a break.');
     if (record.onBreak) {
@@ -2811,19 +2878,47 @@ export class WorkspaceService implements OnModuleInit {
     return record;
   }
 
-  clockOut(actor: AuthUser) {
-    const today = new Date().toISOString().slice(0, 10);
+  switchAttendanceActivity(actor: AuthUser, body: Record<string, unknown>) {
+    const today = colomboClock().date;
     const record =
-      this.attendance.find((a) => a.userId === actor.id && a.workDate === today) ??
+      this.attendance.find((a) => a.userId === actor.id && a.workDate === today && !a.clockOutAt) ??
+      this.attendance.find((a) => a.userId === actor.id && !a.clockOutAt);
+    if (!record) throw new BadRequestException('Clock in first before switching activity.');
+    const proj = body.projectId
+      ? (this.projects.find((p) => p.id === String(body.projectId)) ?? null)
+      : null;
+    record.projectId = proj?.id ?? null;
+    record.projectName = proj?.name ?? null;
+    if (typeof body.notes === 'string' && body.notes.trim()) {
+      record.notes = body.notes.trim().slice(0, 300);
+    }
+    this.persistState(actor.organizationId);
+    return record;
+  }
+
+  clockOut(actor: AuthUser) {
+    const today = colomboClock().date;
+    const record =
+      this.attendance.find((a) => a.userId === actor.id && a.workDate === today && !a.clockOutAt) ??
+      this.attendance.find((a) => a.userId === actor.id && !a.clockOutAt) ??
       this.attendance.find((a) => a.userName === actor.fullName && !a.clockOutAt);
     if (!record) throw new BadRequestException('No active clock-in record found.');
+    const now = new Date();
+    if (record.onBreak && record.breakStartedAt) {
+      record.breakMinutes += Math.max(1, minutesBetween(record.breakStartedAt, now));
+      record.breakStartedAt = null;
+    }
     record.onBreak = false;
-    record.clockOutAt = new Date().toISOString();
+    record.clockOutAt = now.toISOString();
+    if (record.clockInAt) {
+      const grossMin = minutesBetween(record.clockInAt, now);
+      record.workedMinutes = Math.max(0, grossMin - (record.breakMinutes ?? 0));
+    }
     if (record.geofenceExitAt) {
       const open = [...(record.geofenceBreaches ?? [])].reverse().find((b) => !b.returnAt);
       if (open) {
         open.returnAt = record.clockOutAt;
-        open.minutesOutside = minutesBetween(record.geofenceExitAt, new Date());
+        open.minutesOutside = minutesBetween(record.geofenceExitAt, now);
       }
       record.geofenceExitAt = null;
     }
@@ -3185,7 +3280,9 @@ export class WorkspaceService implements OnModuleInit {
       throw new ForbiddenException('You do not have permission to post in this channel.');
     }
     const text = String(body.body ?? '').trim();
-    if (!text && !body.attachmentUrl) throw new BadRequestException('Message cannot be empty.');
+    const safeAttachmentUrl = assertSafeAttachmentUrl(body.attachmentUrl, 4_500_000);
+    if (!text && !safeAttachmentUrl) throw new BadRequestException('Message cannot be empty.');
+    if (text.length > 4000) throw new BadRequestException('Message is too long (max 4000 characters).');
     const replyTo = body.replyToId ? this.messages.find((m) => m.id === body.replyToId) : null;
     const msg: ChatMessageItem = {
       id: `msg_${randomUUID().slice(0, 8)}`,
@@ -3201,8 +3298,8 @@ export class WorkspaceService implements OnModuleInit {
       pinned: false,
       editedAt: null,
       deleted: false,
-      attachmentUrl: body.attachmentUrl ? String(body.attachmentUrl) : null,
-      attachmentName: body.attachmentName ? String(body.attachmentName) : null,
+      attachmentUrl: safeAttachmentUrl,
+      attachmentName: body.attachmentName ? String(body.attachmentName).trim().slice(0, 200) : null,
       reactions: {},
       createdAt: new Date().toISOString(),
     };
@@ -3662,11 +3759,7 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   private getGuestTokenSecret(): string {
-    return (
-      process.env.JWT_ACCESS_SECRET ||
-      process.env.JWT_SECRET ||
-      'yakunex-hub-guest-meeting-secret-2026'
-    );
+    return deriveDomainSecret('guest-meeting-hmac');
   }
 
   private signGuestToken(payload: {
@@ -3948,9 +4041,9 @@ export class WorkspaceService implements OnModuleInit {
       : 'APPROVAL_REQUIRED';
 
     const project = this.projects.find((p) => p.id === body.projectId) ?? null;
-    let roomCode = `YH-ROOM-${Math.floor(100 + Math.random() * 900)}`;
+    let roomCode = generateSecureRoomCode();
     while (this.meetings.some((m) => m.roomCode === roomCode)) {
-      roomCode = `YH-ROOM-${Math.floor(100 + Math.random() * 900)}`;
+      roomCode = generateSecureRoomCode();
     }
     const instant = Boolean(body.instant);
     const micOn = body.micOn !== undefined ? Boolean(body.micOn) : true;
@@ -4359,9 +4452,9 @@ export class WorkspaceService implements OnModuleInit {
           const prevEnd = new Date(mtg.endsAt).getTime();
           const dur = Math.max(15 * 60_000, prevEnd - prevStart);
           const nextStart = new Date(Math.max(Date.now(), prevStart) + stepDays * 86400_000);
-          let nextCode = `YH-ROOM-${Math.floor(100 + Math.random() * 900)}`;
+          let nextCode = generateSecureRoomCode();
           while (this.meetings.some((m) => m.roomCode === nextCode)) {
-            nextCode = `YH-ROOM-${Math.floor(100 + Math.random() * 900)}`;
+            nextCode = generateSecureRoomCode();
           }
           const alreadySpawned = this.meetings.some(
             (m) =>
@@ -5827,18 +5920,12 @@ export class WorkspaceService implements OnModuleInit {
     }
 
     const text = String(body.body ?? '').trim();
-    const attachmentUrl =
-      typeof body.attachmentUrl === 'string' && body.attachmentUrl.startsWith('data:')
-        ? body.attachmentUrl
-        : null;
+    const attachmentUrl = assertSafeAttachmentUrl(body.attachmentUrl, MAX_MEETING_ATTACHMENT_CHARS);
     const attachmentName =
       typeof body.attachmentName === 'string' && body.attachmentName.trim()
-        ? body.attachmentName.trim()
+        ? body.attachmentName.trim().slice(0, 200)
         : null;
     if (!text && !attachmentUrl) throw new BadRequestException('Message cannot be empty.');
-    if (attachmentUrl && attachmentUrl.length > MAX_MEETING_ATTACHMENT_CHARS) {
-      throw new BadRequestException('Attachment is too large (max ~1.5 MB).');
-    }
     if (text.length > 4000) throw new BadRequestException('Message is too long (max 4000 characters).');
     const replyToId = body.replyToId ? String(body.replyToId) : null;
     const replyTarget = replyToId ? mtg.chatMessages.find((m) => m.id === replyToId) : null;
@@ -6001,7 +6088,10 @@ export class WorkspaceService implements OnModuleInit {
   // ─── Settings & Role Permission Matrix ────────────────────────────────────
   getSettings() {
     return {
-      settings: this.settings,
+      settings: {
+        ...this.settings,
+        googleMapsApiKey: this.resolveGoogleMapsApiKey(),
+      },
       roleMatrix: this.roleMatrix,
       permissionCatalog: ALL_PERMISSION_KEYS,
       tierAccessMatrix: TIER_ACCESS_MATRIX,
@@ -6010,6 +6100,7 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   async updateSettings(actor: AuthUser, body: Partial<OrganizationSettings>) {
+    const canSetGoogleKey = actor.role === Role.SUPER_ADMIN && body.googleMapsApiKey !== undefined;
     this.settings = {
       ...this.settings,
       ...(body.name ? { name: String(body.name).trim() } : {}),
@@ -6026,6 +6117,7 @@ export class WorkspaceService implements OnModuleInit {
       ...(body.officeRadiusMeters !== undefined
         ? { officeRadiusMeters: Math.max(25, Number(body.officeRadiusMeters) || 250) }
         : {}),
+      ...(canSetGoogleKey ? { googleMapsApiKey: String(body.googleMapsApiKey ?? '').trim().slice(0, 200) } : {}),
     };
     this.persistState(actor.organizationId);
     void this.prisma.organization?.update?.({
@@ -6893,11 +6985,7 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   async updateOwnDp(actor: AuthUser, avatarUrl: string) {
-    const clean = String(avatarUrl ?? '').trim();
-    if (!clean) throw new BadRequestException('Profile picture data or URL is required.');
-    if (clean.length > 2_000_000) {
-      throw new BadRequestException('Profile image is too large (max ~1.5 MB).');
-    }
+    const clean = assertSafeAvatarUrl(avatarUrl, 2_000_000);
     if (!this.isHrOrSuperAdmin(actor)) {
       await this.syncSnapshotFromSupabase(actor.organizationId, true);
       this.approvals = this.approvals.filter(
@@ -7120,10 +7208,7 @@ export class WorkspaceService implements OnModuleInit {
     }
     if (body.phone !== undefined) dbPatch.phone = String(body.phone).trim() || null;
     if (body.avatarUrl !== undefined && String(body.avatarUrl).trim().length > 0) {
-      const avatar = String(body.avatarUrl).trim();
-      if (avatar.length > 2_000_000) {
-        throw new BadRequestException('Profile image is too large (max ~1.5 MB).');
-      }
+      const avatar = assertSafeAvatarUrl(body.avatarUrl, 2_000_000);
       dbPatch.avatarUrl = avatar;
       this.avatarCache.set(targetUserId, avatar);
     }
@@ -7662,21 +7747,32 @@ export class WorkspaceService implements OnModuleInit {
   }
 
   updateLiveLocation(actor: AuthUser, body: Record<string, unknown>) {
-    const today = new Date().toISOString().slice(0, 10);
-    const record = this.attendance.find(
-      (a) => a.userId === actor.id && a.workDate === today && a.clockInAt && !a.clockOutAt,
-    );
+    const today = colomboClock().date;
+    const record =
+      this.attendance.find(
+        (a) => a.userId === actor.id && a.workDate === today && a.clockInAt && !a.clockOutAt,
+      ) ??
+      this.attendance.find((a) => a.userId === actor.id && a.clockInAt && !a.clockOutAt);
     if (!record) {
       return { ok: false, reason: 'Not currently clocked in.' };
     }
-    const latitude = typeof body.latitude === 'number' ? body.latitude : null;
-    const longitude = typeof body.longitude === 'number' ? body.longitude : null;
+    const latitude =
+      typeof body.latitude === 'number' && Number.isFinite(body.latitude) && Math.abs(body.latitude) <= 90
+        ? body.latitude
+        : null;
+    const longitude =
+      typeof body.longitude === 'number' && Number.isFinite(body.longitude) && Math.abs(body.longitude) <= 180
+        ? body.longitude
+        : null;
     if (latitude === null || longitude === null) {
       throw new BadRequestException('Valid latitude and longitude are required.');
     }
-    const accuracyMeters = typeof body.accuracyMeters === 'number' ? body.accuracyMeters : null;
+    const accuracyMeters =
+      typeof body.accuracyMeters === 'number' && Number.isFinite(body.accuracyMeters) && body.accuracyMeters >= 0
+        ? body.accuracyMeters
+        : null;
     const locationLabel = body.locationLabel
-      ? String(body.locationLabel).trim()
+      ? String(body.locationLabel).trim().slice(0, 140)
       : `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
 
     let distanceMeters: number | null = null;
@@ -8065,7 +8161,7 @@ export class WorkspaceService implements OnModuleInit {
     const client = this.clients.find((c) => c.id === clientId);
     if (!client) throw new NotFoundException('Client not found.');
     if (!client.portalToken) {
-      client.portalToken = `cp_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+      client.portalToken = `cp_${randomUUID().replace(/-/g, '')}`;
       await this.persistStateNow(actor.organizationId);
     }
     return { clientId: client.id, clientName: client.name, portalToken: client.portalToken };
@@ -8075,7 +8171,7 @@ export class WorkspaceService implements OnModuleInit {
     await this.syncSnapshotFromSupabase(actor.organizationId, true);
     const client = this.clients.find((c) => c.id === clientId);
     if (!client) throw new NotFoundException('Client not found.');
-    client.portalToken = `cp_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+    client.portalToken = `cp_${randomUUID().replace(/-/g, '')}`;
     await this.persistStateNow(actor.organizationId);
     await this.audit.log({
       organizationId: actor.organizationId,

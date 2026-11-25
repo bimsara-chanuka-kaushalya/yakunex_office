@@ -1647,6 +1647,7 @@ interface SettingsPayload {
     officeLatitude?: number;
     officeLongitude?: number;
     officeRadiusMeters?: number;
+    googleMapsApiKey?: string;
   };
   roleMatrix: Record<Role, string[]>;
   permissionCatalog: string[];
@@ -1677,6 +1678,7 @@ export function SettingsView() {
   const [officeLatitude, setOfficeLatitude] = useState('6.9271');
   const [officeLongitude, setOfficeLongitude] = useState('79.8612');
   const [officeRadiusMeters, setOfficeRadiusMeters] = useState('250');
+  const [googleMapsApiKey, setGoogleMapsApiKey] = useState('');
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -1690,6 +1692,7 @@ export function SettingsView() {
     setOfficeLatitude(String(res.settings.officeLatitude ?? 6.9271));
     setOfficeLongitude(String(res.settings.officeLongitude ?? 79.8612));
     setOfficeRadiusMeters(String(res.settings.officeRadiusMeters ?? 250));
+    setGoogleMapsApiKey(res.settings.googleMapsApiKey ?? '');
   }, []);
 
   useEffect(() => {
@@ -1728,6 +1731,7 @@ export function SettingsView() {
         officeLatitude: Number(officeLatitude),
         officeLongitude: Number(officeLongitude),
         officeRadiusMeters: Number(officeRadiusMeters),
+        ...(isSuperAdminReal ? { googleMapsApiKey: googleMapsApiKey.trim() } : {}),
       });
       setSavedNotice('Organization profile, working policies, and office geofence saved.');
       toast.success('Organization settings saved.');
@@ -1873,6 +1877,31 @@ export function SettingsView() {
                 />
               </Field>
             </div>
+            {isSuperAdminReal && (
+              <div className="mt-3 border-t border-line/70 pt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-1.5">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-wider text-ink">
+                      Google Maps Live Tracking API Key (Optional · Super Admin)
+                    </p>
+                    <p className="text-[11.5px] text-muted">
+                      Works immediately without a key using Google Maps Live View. Paste a Google Maps JavaScript API key anytime to unlock multi-pin trails &amp; drag-to-pin geofencing.
+                    </p>
+                  </div>
+                  <Badge tone={googleMapsApiKey.trim() ? 'success' : 'gold'}>
+                    {googleMapsApiKey.trim() ? 'JS SDK Key Configured' : 'Key-Free Google Maps Active'}
+                  </Badge>
+                </div>
+                <Input
+                  id="st-gmaps-key"
+                  type="password"
+                  autoComplete="off"
+                  value={googleMapsApiKey}
+                  onChange={(e) => setGoogleMapsApiKey(e.target.value)}
+                  placeholder="AIzaSy... (leave blank to use built-in key-free Google Maps)"
+                />
+              </div>
+            )}
           </div>
           <div className="flex justify-end">
             <Button type="submit">Save settings</Button>

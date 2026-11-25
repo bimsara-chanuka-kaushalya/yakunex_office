@@ -1,23 +1,37 @@
 import {
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { Reflector } from '@nestjs/core';
-import type { Request } from 'express';
-import { IS_PUBLIC_KEY } from '../common/decorators';
-import { AuthUser } from '../common/types';
-import { config } from '../config/config';
-import { PrismaService } from '../prisma/prisma.service';
+import { JwtService } from '@nestjs/jwt';
 import { UserStatus } from '@prisma/client';
+import type { Request } from 'express';
+import { ALLOW_PASSWORD_CHANGE_KEY, IS_PUBLIC_KEY } from '../common/decorators';
+import {
+  JWT_ACCESS_AUDIENCE,
+  JWT_ISSUER,
+  computeSessionFingerprint,
+  deriveDomainSecret,
+  isTokenRevokedByEpoch,
+} from '../common/security';
+import { AuthUser } from '../common/types';
+import { PrismaService } from '../prisma/prisma.service';
 
 type AuthenticatedRequest = Request & { cookies?: Record<string, string>; user?: AuthUser };
 
+interface AccessTokenClaims {
+  sub: string;
+  typ?: string;
+  fp?: string;
+  iat?: number;
+}
+
 /**
- * Global guard. Every route requires a valid access token unless marked @Public().
- * The user is reloaded on each request so suspended or deleted accounts lose access immediately.
+ * Global guard. Every route requires a domain-separated `typ: 'access'` JWT unless marked @Public().
+ * Verifies user status, password/role fingerprint, instant revocation epoch, and mustChangePassword.
  */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -40,19 +54,45 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Please sign in.');
     }
 
-    let subject: string;
+    let payload: AccessTokenClaims;
     try {
-      const payload = await this.jwt.verifyAsync<{ sub: string }>(token, {
-        secret: config.jwtAccessSecret,
+      payload = await this.jwt.verifyAsync<AccessTokenClaims>(token, {
+        secret: deriveDomainSecret('access-jwt'),
+        issuer: JWT_ISSUER,
+        audience: JWT_ACCESS_AUDIENCE,
       });
-      subject = payload.sub;
     } catch {
       throw new UnauthorizedException('Your session has expired.');
     }
 
-    const user = await this.prisma.findActiveUserCached(subject);
+    // Block token purpose confusion (e.g. reset or invite JWTs)
+    if (payload.typ !== 'access' || !payload.sub) {
+      throw new UnauthorizedException('Invalid session token.');
+    }
+
+    if (isTokenRevokedByEpoch(payload.sub, payload.iat)) {
+      throw new UnauthorizedException('Your session was signed out. Please sign in again.');
+    }
+
+    const user = await this.prisma.findActiveUserCached(payload.sub);
     if (!user || user.status !== UserStatus.ACTIVE) {
       throw new UnauthorizedException('Your account is not active.');
+    }
+
+    if (!payload.fp || payload.fp !== computeSessionFingerprint(user)) {
+      throw new UnauthorizedException('Your credentials or permissions changed. Please sign in again.');
+    }
+
+    if (user.mustChangePassword) {
+      const allowPasswordChange = this.reflector.getAllAndOverride<boolean>(
+        ALLOW_PASSWORD_CHANGE_KEY,
+        [context.getHandler(), context.getClass()],
+      );
+      if (!allowPasswordChange) {
+        throw new ForbiddenException(
+          'PASSWORD_CHANGE_REQUIRED: Please set a new personal password before accessing the workspace.',
+        );
+      }
     }
 
     request.user = {
@@ -64,6 +104,7 @@ export class JwtAuthGuard implements CanActivate {
       status: user.status,
       organizationId: user.organizationId,
       mustChangePassword: user.mustChangePassword,
+      twoFactorEnabled: Boolean(user.twoFactorEnabled),
       avatarUrl: user.avatarUrl ?? null,
     };
     return true;

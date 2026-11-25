@@ -16,7 +16,7 @@ import {
   type RawBodyRequest,
   type MessageEvent,
 } from '@nestjs/common';
-import { SkipThrottle } from '@nestjs/throttler';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { Role } from '@prisma/client';
 import type { Request } from 'express';
 import { Observable } from 'rxjs';
@@ -238,6 +238,11 @@ export class WorkspaceController {
     return this.workspace.clockOut(actor);
   }
 
+  @Post('attendance/switch-activity')
+  switchAttendanceActivity(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
+    return this.workspace.switchAttendanceActivity(actor, body ?? {});
+  }
+
   @Post('attendance/location')
   @SkipThrottle()
   updateLiveLocation(@CurrentUser() actor: AuthUser, @Body() body: Record<string, unknown>) {
@@ -421,21 +426,22 @@ export class WorkspaceController {
 
   @Get('meetings/public/ice-config')
   @Public()
-  @SkipThrottle()
-  getPublicIceConfig() {
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  getPublicIceConfig(@Headers('x-meeting-guest-token') guestToken?: string) {
+    this.workspace.verifyGuestToken(String(guestToken ?? ''));
     return this.workspace.getMeetingIceConfig();
   }
 
   @Get('meetings/public/:code')
   @Public()
-  @SkipThrottle()
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   getPublicMeetingInfo(@Param('code') code: string) {
     return this.workspace.getPublicMeetingInfo(code);
   }
 
   @Post('meetings/public/:code/join')
   @Public()
-  @SkipThrottle()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   joinPublicMeetingAsGuest(
     @Param('code') code: string,
     @Body() body: { fullName: string; passcode?: string; micOn?: boolean; camOn?: boolean },
@@ -1219,7 +1225,7 @@ export class WorkspaceController {
 
   @Get('clients/portal/:token')
   @Public()
-  @SkipThrottle()
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   getPublicClientPortal(@Param('token') token: string) {
     return this.workspace.getPublicClientPortal(token);
   }

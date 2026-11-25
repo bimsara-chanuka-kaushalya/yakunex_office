@@ -225,9 +225,10 @@ export function DataManager() {
   const activeLabel = collections?.find((c) => c.key === active)?.label ?? active;
   const allOnPage = rows && rows.length > 0 && rows.every((r) => selected.has(r.id));
 
-  async function doDelete(ids: string[]) {
+  async function doDelete(ids: string[], stepUpPassword: string) {
     setBusy(true);
     try {
+      await post('/auth/verify-password', { password: stepUpPassword });
       const res = await post<{ deleted: number; skipped: Array<{ id: string; reason: string }> }>(`/admin/data/${active}/delete`, { ids });
       if (res.deleted) toast.success(`${res.deleted} ${activeLabel.toLowerCase()} deleted.`);
       if (res.skipped.length) toast.error(`${res.skipped.length} skipped: ${res.skipped[0].reason}`);
@@ -367,20 +368,20 @@ export function DataManager() {
       <ConfirmDialog
         open={confirm !== null}
         title={confirm && confirm.length > 1 ? `Delete ${confirm.length} ${activeLabel.toLowerCase()}?` : `Delete this ${activeLabel.toLowerCase().replace(/s$/, '')}?`}
-        description={`${CASCADE_NOTE[active] ? `${CASCADE_NOTE[active]} ` : ''}This is permanent and cannot be undone. Type DELETE to confirm.`}
-        confirmLabel="Delete permanently"
+        description={`${CASCADE_NOTE[active] ? `${CASCADE_NOTE[active]} ` : ''}This is permanent and written to the hash-chained audit log. Enter your Super Admin password to confirm.`}
+        confirmLabel="Verify & Delete Permanently"
         tone="danger"
-        inputLabel="Type DELETE"
-        inputPlaceholder="DELETE"
+        inputLabel="Super Admin Password"
+        inputPlaceholder="Enter your password to authorize purge"
         inputRequired
         busy={busy}
         onClose={() => setConfirm(null)}
-        onConfirm={(typed) => {
-          if (typed.trim().toUpperCase() !== 'DELETE') {
-            toast.error('Type DELETE to confirm.');
+        onConfirm={(typedPassword) => {
+          if (typedPassword.trim().length < 8) {
+            toast.error('Enter your Super Admin password to confirm.');
             return;
           }
-          if (confirm) void doDelete(confirm);
+          if (confirm) void doDelete(confirm, typedPassword);
         }}
       />
     </Card>

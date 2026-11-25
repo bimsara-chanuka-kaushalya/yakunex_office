@@ -10,8 +10,13 @@ import { JwtService } from '@nestjs/jwt';
 import { Prisma, Role, User, UserStatus } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { createHash, randomBytes } from 'crypto';
-import { config } from '../config/config';
 import { AuditService } from '../audit/audit.service';
+import {
+  JWT_ISSUER,
+  JWT_RESET_AUDIENCE,
+  deriveDomainSecret,
+  revokeUserSessionsNow,
+} from '../common/security';
 import type { AuthUser } from '../common/types';
 import { PrismaService } from '../prisma/prisma.service';
 import { RbacService } from '../rbac/rbac.service';
@@ -76,10 +81,13 @@ export class UsersService {
         sub: user.id,
         email: user.email,
         fp,
+        typ: 'password-reset',
         purpose: 'password-reset',
       },
       {
-        secret: config.jwtAccessSecret,
+        secret: deriveDomainSecret('password-reset-jwt'),
+        issuer: JWT_ISSUER,
+        audience: JWT_RESET_AUDIENCE,
         expiresIn: '72h',
       },
     );
@@ -344,6 +352,7 @@ export class UsersService {
     });
     this.prisma.upsertUserInCache?.({ ...target, role: dto.role, updatedAt: new Date() });
     this.rbac.invalidateCache?.(target.id);
+    revokeUserSessionsNow(target.id);
 
     await this.audit.log({
       organizationId: actor.organizationId,
@@ -376,6 +385,7 @@ export class UsersService {
       select: publicUserSelect,
     });
     if (status !== UserStatus.ACTIVE) {
+      revokeUserSessionsNow(target.id);
       void this.prisma.refreshToken
         .updateMany({
           where: { userId: target.id, revokedAt: null },
@@ -424,6 +434,7 @@ export class UsersService {
       where: { userId: target.id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    revokeUserSessionsNow(target.id);
     this.rbac.invalidateCache(target.id);
 
     await this.audit.log({
@@ -554,6 +565,7 @@ export class UsersService {
     ]);
 
     this.prisma.upsertUserInCache?.({ ...target, status: UserStatus.DEACTIVATED, mustChangePassword: true });
+    revokeUserSessionsNow(target.id);
     this.rbac.invalidateCache?.(target.id);
 
     await this.audit.log({
@@ -590,6 +602,7 @@ export class UsersService {
       },
       select: publicUserSelect,
     });
+    revokeUserSessionsNow(target.id);
     this.rbac.invalidateCache?.(target.id);
     await this.audit.log({
       organizationId: actor.organizationId,

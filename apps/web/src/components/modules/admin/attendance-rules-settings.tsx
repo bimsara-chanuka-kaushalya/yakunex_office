@@ -28,23 +28,50 @@ const ROLE_OPTIONS = [
 ];
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-/** HR / Super Admin: geofence, late-start and reminder rules + the office location. */
+/** Extracts lat,lon from a pasted Google Maps URL or "lat, lon" string. */
+function parseLatLonInput(raw: string): { lat: number; lon: number } | null {
+  const atMatch = raw.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+  if (atMatch) {
+    return { lat: Number(atMatch[1]), lon: Number(atMatch[2]) };
+  }
+  const qMatch = raw.match(/(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/);
+  if (qMatch) {
+    const lat = Number(qMatch[1]);
+    const lon = Number(qMatch[2]);
+    if (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) return { lat, lon };
+  }
+  return null;
+}
+
+/** HR / Super Admin: geofence, late-start and reminder rules + Google Maps office zone picker. */
 export function AttendanceRulesSettings() {
   const toast = useToast();
   const [rules, setRules] = useState<Rules | null>(null);
   const [office, setOffice] = useState<{ lat: string; lon: string }>({ lat: '', lon: '' });
+  const [googleMapsApiKey, setGoogleMapsApiKey] = useState<string>('');
+  const [pasteBox, setPasteBox] = useState('');
   const [reminders, setReminders] = useState('');
   const [saving, setSaving] = useState(false);
   const [locating, setLocating] = useState(false);
 
   useEffect(() => {
-    api<{ rules?: Rules; officeGeofence?: { latitude: number; longitude: number } }>('/attendance')
+    api<{
+      rules?: Rules;
+      googleMapsApiKey?: string;
+      officeGeofence?: { latitude: number; longitude: number };
+    }>('/attendance')
       .then((res) => {
         if (res.rules) {
           setRules(res.rules);
           setReminders(res.rules.reminderTimes.join(', '));
         }
-        if (res.officeGeofence) setOffice({ lat: String(res.officeGeofence.latitude), lon: String(res.officeGeofence.longitude) });
+        if (res.googleMapsApiKey) setGoogleMapsApiKey(res.googleMapsApiKey);
+        if (res.officeGeofence) {
+          setOffice({
+            lat: String(res.officeGeofence.latitude),
+            lon: String(res.officeGeofence.longitude),
+          });
+        }
       })
       .catch(() => undefined);
   }, []);
@@ -82,11 +109,13 @@ export function AttendanceRulesSettings() {
       const res = await put<{ rules: Rules }>('/attendance/rules', {
         ...rules,
         reminderTimes: reminders.split(/[,\s]+/).filter(Boolean),
-        ...(Number.isFinite(lat) && Number.isFinite(lon) && office.lat && office.lon ? { officeLatitude: lat, officeLongitude: lon } : {}),
+        ...(Number.isFinite(lat) && Number.isFinite(lon) && office.lat && office.lon
+          ? { officeLatitude: lat, officeLongitude: lon }
+          : {}),
       });
       setRules(res.rules);
       setReminders(res.rules.reminderTimes.join(', '));
-      toast.success('Attendance rules saved.');
+      toast.success('Attendance & Google Maps geofence rules saved.');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not save.');
     } finally {
@@ -100,25 +129,29 @@ export function AttendanceRulesSettings() {
   return (
     <Card>
       <CardHeader
-        title="Attendance & location rules"
-        description="Office zone, live-location alerts, late start (short leave) and the morning reminders."
+        title="Jibble-Style Attendance & Google Maps Geofence Rules"
+        description="Office geofence zone, live-location grace timer, late start (short leave) and morning reminders."
         badge={<Badge tone="gold">HR · Super Admin</Badge>}
         action={
           <Button size="sm" onClick={save} disabled={saving}>
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? 'Saving…' : 'Save Rules'}
           </Button>
         }
       />
       <div className="grid gap-5 px-5 pb-6 sm:px-6 lg:grid-cols-2">
         <div className="space-y-4">
           <div>
-            <p className="mb-1.5 text-[12px] font-medium text-muted">Applies to</p>
+            <p className="mb-1.5 text-[12px] font-medium text-muted">Strict office geofence applies to</p>
             <div className="flex flex-wrap gap-2">
               {ROLE_OPTIONS.map((r) => {
                 const on = rules.roles.includes(r.key);
                 return (
                   <label key={r.key} className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line px-3 py-1 text-[13px]">
-                    <input type="checkbox" checked={on} onChange={() => set('roles', on ? rules.roles.filter((x) => x !== r.key) : [...rules.roles, r.key])} />
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() => set('roles', on ? rules.roles.filter((x) => x !== r.key) : [...rules.roles, r.key])}
+                    />
                     {r.label}
                   </label>
                 );
@@ -127,16 +160,37 @@ export function AttendanceRulesSettings() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Office zone (metres)" htmlFor="ar-radius">
-              <Input id="ar-radius" type="number" min={20} max={2000} value={rules.radiusMeters} onChange={(e) => set('radiusMeters', Number(e.target.value))} />
+              <Input
+                id="ar-radius"
+                type="number"
+                min={20}
+                max={2000}
+                value={rules.radiusMeters}
+                onChange={(e) => set('radiusMeters', Number(e.target.value))}
+              />
             </Field>
             <Field label="Allowed time outside (min)" htmlFor="ar-grace">
-              <Input id="ar-grace" type="number" min={1} max={120} value={rules.graceMinutes} onChange={(e) => set('graceMinutes', Number(e.target.value))} />
+              <Input
+                id="ar-grace"
+                type="number"
+                min={1}
+                max={120}
+                value={rules.graceMinutes}
+                onChange={(e) => set('graceMinutes', Number(e.target.value))}
+              />
             </Field>
             <Field label="Late after (short leave)" htmlFor="ar-late">
               <Input id="ar-late" type="time" value={rules.lateAfter} onChange={(e) => set('lateAfter', e.target.value)} />
             </Field>
             <Field label="Tracking-lost alert after (min)" htmlFor="ar-lost">
-              <Input id="ar-lost" type="number" min={3} max={120} value={rules.trackingLostMinutes} onChange={(e) => set('trackingLostMinutes', Number(e.target.value))} />
+              <Input
+                id="ar-lost"
+                type="number"
+                min={3}
+                max={120}
+                value={rules.trackingLostMinutes}
+                onChange={(e) => set('trackingLostMinutes', Number(e.target.value))}
+              />
             </Field>
           </div>
           <Field label="Reminder pop-ups (HH:MM, comma separated)" htmlFor="ar-rem">
@@ -174,16 +228,43 @@ export function AttendanceRulesSettings() {
               <Crosshair className="h-3.5 w-3.5" /> {locating ? 'Locating…' : 'Use my location'}
             </Button>
           </div>
+
+          <Field label="Quick paste Google Maps URL or coordinates" htmlFor="ar-gmap-paste">
+            <Input
+              id="ar-gmap-paste"
+              value={pasteBox}
+              placeholder="Paste Google Maps link or e.g. 6.927079, 79.861244"
+              onChange={(e) => {
+                const val = e.target.value;
+                setPasteBox(val);
+                const parsed = parseLatLonInput(val);
+                if (parsed) {
+                  setOffice({ lat: parsed.lat.toFixed(6), lon: parsed.lon.toFixed(6) });
+                  toast.success('Coordinates extracted from Google Maps! Click Save Rules to apply.');
+                }
+              }}
+            />
+          </Field>
+
           {Number.isFinite(lat) && Number.isFinite(lon) && office.lat && office.lon ? (
-            <TeamLocationMap members={[]} officeLat={lat} officeLon={lon} radiusMeters={rules.radiusMeters} />
+            <TeamLocationMap
+              members={[]}
+              officeLat={lat}
+              officeLon={lon}
+              radiusMeters={rules.radiusMeters}
+              apiKey={googleMapsApiKey}
+              editableOffice
+              onPickOfficeLocation={(pickedLat, pickedLon) => {
+                setOffice({ lat: pickedLat.toFixed(6), lon: pickedLon.toFixed(6) });
+                toast.info('Office pin moved on Google Maps. Press Save Rules to save.');
+              }}
+              className="h-72"
+            />
           ) : (
             <p className="flex items-center gap-1.5 text-[12px] text-muted">
-              <MapPin className="h-3.5 w-3.5" /> Set the office location to see the zone on the map.
+              <MapPin className="h-3.5 w-3.5" /> Set the office location to see the zone on Google Maps.
             </p>
           )}
-          <p className="text-[11.5px] text-muted">
-            Tip: stand in the middle of the office and press “Use my location”. Phones are far more accurate than laptops.
-          </p>
         </div>
       </div>
     </Card>

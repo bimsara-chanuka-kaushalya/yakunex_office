@@ -1,12 +1,20 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Post, Req, Res } from '@nestjs/common';
-import { SkipThrottle, Throttle } from '@nestjs/throttler';
+import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
-import { CurrentUser, Public } from '../common/decorators';
+import { AllowWhenPasswordChangeRequired, CurrentUser, Public } from '../common/decorators';
 import type { AuthUser, RequestMeta } from '../common/types';
 import { config } from '../config/config';
 import { RbacService } from '../rbac/rbac.service';
 import { AuthService, TokenPair } from './auth.service';
-import { ChangePasswordDto, ForgotPasswordDto, LoginDto, ResetPasswordDto } from './dto/auth.dto';
+import {
+  ChangePasswordDto,
+  ForgotPasswordDto,
+  LoginDto,
+  ResetPasswordDto,
+  TwoFactorDisableDto,
+  TwoFactorVerifyDto,
+  VerifyPasswordDto,
+} from './dto/auth.dto';
 
 const ACCESS_COOKIE = 'access_token';
 const REFRESH_COOKIE = 'refresh_token';
@@ -54,13 +62,16 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { user, tokens } = await this.auth.login(dto.email, dto.password, metaOf(req));
-    setAuthCookies(res, tokens);
-    return { user };
+    const result = await this.auth.login(dto.email, dto.password, metaOf(req), dto.totpCode);
+    if (result.requiresTwoFactor) {
+      return { requiresTwoFactor: true, message: result.message };
+    }
+    setAuthCookies(res, result.tokens);
+    return { user: result.user };
   }
 
   @Public()
-  @SkipThrottle()
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
@@ -78,6 +89,7 @@ export class AuthController {
     return { ok: true };
   }
 
+  @AllowWhenPasswordChangeRequired()
   @Get('me')
   async me(@CurrentUser() user: AuthUser) {
     // Effective permissions let the UI hide controls. The server still enforces every route.
@@ -90,6 +102,7 @@ export class AuthController {
     return this.auth.listActiveSessions(user.id);
   }
 
+  @AllowWhenPasswordChangeRequired()
   @Post('logout-all')
   @HttpCode(HttpStatus.OK)
   async logoutAll(
@@ -102,6 +115,7 @@ export class AuthController {
     return result;
   }
 
+  @AllowWhenPasswordChangeRequired()
   @Post('change-password')
   @HttpCode(HttpStatus.OK)
   async changePassword(
@@ -113,6 +127,39 @@ export class AuthController {
     await this.auth.changePassword(user.id, dto.currentPassword, dto.newPassword, metaOf(req));
     clearAuthCookies(res);
     return { ok: true, message: 'Password changed. Please sign in again.' };
+  }
+
+  @Get('2fa/status')
+  getTwoFactorStatus(@CurrentUser() user: AuthUser) {
+    return this.auth.getTwoFactorStatus(user.id);
+  }
+
+  @Throttle({ default: { limit: 6, ttl: 60_000 } })
+  @Post('2fa/setup')
+  @HttpCode(HttpStatus.OK)
+  setupTwoFactor(@CurrentUser() user: AuthUser, @Req() req: Request) {
+    return this.auth.setupTwoFactor(user, metaOf(req));
+  }
+
+  @Throttle({ default: { limit: 8, ttl: 60_000 } })
+  @Post('2fa/enable')
+  @HttpCode(HttpStatus.OK)
+  enableTwoFactor(@CurrentUser() user: AuthUser, @Body() dto: TwoFactorVerifyDto, @Req() req: Request) {
+    return this.auth.enableTwoFactor(user, dto.code, metaOf(req));
+  }
+
+  @Throttle({ default: { limit: 6, ttl: 60_000 } })
+  @Post('2fa/disable')
+  @HttpCode(HttpStatus.OK)
+  disableTwoFactor(@CurrentUser() user: AuthUser, @Body() dto: TwoFactorDisableDto, @Req() req: Request) {
+    return this.auth.disableTwoFactor(user, dto.password, dto.code, metaOf(req));
+  }
+
+  @Throttle({ default: { limit: 8, ttl: 60_000 } })
+  @Post('verify-password')
+  @HttpCode(HttpStatus.OK)
+  verifyPassword(@CurrentUser() user: AuthUser, @Body() dto: VerifyPasswordDto, @Req() req: Request) {
+    return this.auth.verifyStepUpPassword(user, dto.password, metaOf(req));
   }
 
   @Public()

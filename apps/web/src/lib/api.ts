@@ -94,6 +94,24 @@ export function clearApiCache(): void {
   liveInflight?.clear();
 }
 
+/** Wipes all in-memory and sessionStorage caches on logout or account switch so data never leaks across users. */
+export function purgeAllClientSessionCaches(): void {
+  getCache.clear();
+  staleCache.clear();
+  inflightGets.clear();
+  liveInflight?.clear();
+  storageHydrated = false;
+  if (typeof window !== 'undefined') {
+    try {
+      window.sessionStorage.removeItem(STORAGE_CACHE_KEY);
+      window.sessionStorage.removeItem('yh-session-cache-v1');
+      window.sessionStorage.removeItem('yh-sa-preview-role');
+    } catch {
+      // ignore storage errors
+    }
+  }
+}
+
 const TRANSIENT_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 function isRetryableRequest(path: string, method: string): boolean {
@@ -129,6 +147,7 @@ async function rawFetch(
         cache: 'no-store',
         headers: {
           Accept: 'application/json',
+          'X-Requested-With': 'YakunexHub',
           ...(init.body ? { 'Content-Type': 'application/json' } : {}),
           ...(init.headers ?? {}),
         },
