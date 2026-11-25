@@ -69,13 +69,13 @@ export function PollsQaPanel({
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <div className="flex border-b border-white/10 p-2">
+      <div className="mx-3 mt-2.5 flex gap-1.5 rounded-full border border-white/12 bg-white/[0.04] p-1">
         <button
           type="button"
           onClick={() => setSubTab('polls')}
           className={cn(
-            'flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition',
-            subTab === 'polls' ? 'bg-[#D4A843]/20 text-[#D4A843]' : 'text-white/60 hover:text-white',
+            'flex flex-1 items-center justify-center gap-1.5 rounded-full py-1.5 text-xs font-semibold transition',
+            subTab === 'polls' ? 'liquid-orb-gold' : 'text-white/65 hover:text-white',
           )}
         >
           <BarChart3 className="h-3.5 w-3.5" /> Polls ({polls.length})
@@ -84,8 +84,8 @@ export function PollsQaPanel({
           type="button"
           onClick={() => setSubTab('qa')}
           className={cn(
-            'flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition',
-            subTab === 'qa' ? 'bg-[#D4A843]/20 text-[#D4A843]' : 'text-white/60 hover:text-white',
+            'flex flex-1 items-center justify-center gap-1.5 rounded-full py-1.5 text-xs font-semibold transition',
+            subTab === 'qa' ? 'liquid-orb-gold' : 'text-white/65 hover:text-white',
           )}
         >
           <HelpCircle className="h-3.5 w-3.5" /> Q&amp;A ({qaItems.length})
@@ -95,20 +95,19 @@ export function PollsQaPanel({
       {subTab === 'polls' ? (
         <div className="flex-1 space-y-3 overflow-y-auto p-3">
           {canHostControl && !creating && (
-            <Button
-              size="sm"
-              variant="primary"
-              className="w-full"
+            <button
+              type="button"
+              className="liquid-orb-gold flex w-full items-center justify-center gap-1.5 rounded-full py-2 text-xs font-bold"
               onClick={() => setCreating(true)}
             >
-              <Plus className="h-3.5 w-3.5" /> Create Live Poll
-            </Button>
+              <Plus className="h-3.5 w-3.5" /> Launch Spatial Poll
+            </button>
           )}
 
           {creating && (
             <form
               onSubmit={submitPoll}
-              className="space-y-2.5 rounded-xl border border-[#D4A843]/30 bg-white/5 p-3"
+              className="liquid-orb space-y-2.5 rounded-2xl p-3"
             >
               <input
                 value={question}
@@ -334,20 +333,22 @@ export function PollsQaPanel({
                 })
             )}
           </div>
-          <form onSubmit={submitQuestion} className="flex gap-1.5 border-t border-white/10 p-2.5">
-            <input
-              value={qaInput}
-              onChange={(e) => setQaInput(e.target.value)}
-              placeholder="Ask a question..."
-              className="flex-1 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs text-white placeholder:text-white/40 focus:border-[#D4A843] focus:outline-none"
-            />
-            <button
-              type="submit"
-              disabled={busy || !qaInput.trim()}
-              className="rounded-xl bg-[#D4A843] px-3 py-2 text-slate-950 transition hover:bg-[#e5ba52] disabled:opacity-40"
-            >
-              <Send className="h-3.5 w-3.5" />
-            </button>
+          <form onSubmit={submitQuestion} className="p-2.5 pt-0">
+            <div className="liquid-orb flex items-center gap-1.5 rounded-full p-1.5 pl-3.5">
+              <input
+                value={qaInput}
+                onChange={(e) => setQaInput(e.target.value)}
+                placeholder="Ask the studio a question..."
+                className="flex-1 bg-transparent py-1 text-xs text-white placeholder:text-white/40 focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={busy || !qaInput.trim()}
+                className="liquid-orb-gold flex h-7 w-7 shrink-0 items-center justify-center rounded-full disabled:opacity-40"
+              >
+                <Send className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </form>
         </div>
       )}

@@ -365,8 +365,11 @@ function StandaloneMeetContent() {
 
   if (authLoading || loadingRoom) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-[#070B12] text-sm text-white/75">
-        Connecting to Yakunex Meeting Studio...
+      <div className="liquid-spatial-canvas flex h-screen w-screen items-center justify-center p-6 text-white">
+        <div className="liquid-glass flex items-center gap-3.5 rounded-full px-6 py-3.5 text-sm font-medium text-white/90">
+          <span className="h-2.5 w-2.5 animate-ping rounded-full bg-[#F5D06F]" />
+          <span>Preparing Yakunex Spatial Studio…</span>
+        </div>
       </div>
     );
   }
@@ -388,66 +391,66 @@ function StandaloneMeetContent() {
     };
 
     return (
-      <div className="flex min-h-screen w-screen items-center justify-center bg-[#070B12] p-4 text-white">
+      <div className="liquid-spatial-canvas flex min-h-screen w-screen items-center justify-center p-4 text-white">
         <form
           onSubmit={onGuestContinue}
-          className="w-full max-w-md space-y-5 rounded-3xl border border-white/10 bg-[#0F1522] p-7 shadow-2xl"
+          className="liquid-glass w-full max-w-md space-y-5 rounded-[32px] p-7"
         >
-          <div className="flex items-center gap-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#D4A843]/15 text-[#D4A843]">
+          <div className="flex items-center gap-3.5">
+            <div className="liquid-orb-gold flex h-12 w-12 items-center justify-center rounded-2xl">
               <Globe className="h-6 w-6" />
             </div>
             <div>
-              <p className="text-[11px] font-bold uppercase tracking-wider text-[#D4A843]">
-                Yakunex Hub Meet · External Guest Access
+              <p className="text-[10.5px] font-bold uppercase tracking-[0.16em] text-[#F5D06F]">
+                Yakunex Spatial Meet · Guest Lounge
               </p>
-              <h1 className="font-display text-lg font-semibold">{publicMeta.title}</h1>
+              <h1 className="font-display text-xl font-bold tracking-tight">{publicMeta.title}</h1>
             </div>
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-xs text-white/70">
+          <div className="rounded-2xl border border-white/15 bg-white/[0.05] p-3.5 text-xs text-white/75">
             <p>
-              Host: <strong className="text-white">{publicMeta.organizerName}</strong> · Room:{' '}
-              <span className="font-mono text-[#D4A843]">{publicMeta.roomCode}</span>
+              Host: <strong className="text-white">{publicMeta.organizerName}</strong> · Studio ID:{' '}
+              <span className="font-mono font-semibold text-[#F5D06F]">{publicMeta.roomCode}</span>
             </p>
             {publicMeta.waitingRoomEnabled && (
-              <p className="mt-1 flex items-center gap-1 text-amber-300">
-                <Shield className="h-3.5 w-3.5" /> Waiting Room enabled — Host will admit you.
+              <p className="mt-1.5 flex items-center gap-1.5 text-amber-200">
+                <Shield className="h-3.5 w-3.5 text-[#F5D06F]" /> Waiting Lounge enabled — Host will admit you.
               </p>
             )}
           </div>
 
           {error && (
-            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+            <div className="rounded-2xl border border-rose-400/35 bg-rose-500/15 px-3.5 py-2.5 text-xs text-rose-200">
               {error}
             </div>
           )}
 
-          <div className="space-y-3">
+          <div className="space-y-3.5">
             <div>
-              <label className="mb-1 block text-xs font-semibold text-white/75">
-                Your Full Name
+              <label className="mb-1.5 block text-xs font-semibold text-white/80">
+                Your Display Name
               </label>
               <input
                 required
                 value={guestName}
                 onChange={(e) => setGuestName(e.target.value)}
                 placeholder="e.g. Kasun Perera (Client)"
-                className="w-full rounded-xl border border-white/15 bg-black/30 px-3.5 py-2.5 text-sm text-white placeholder:text-white/35 focus:border-[#D4A843] focus:outline-none"
+                className="w-full rounded-2xl border border-white/15 bg-white/[0.06] px-4 py-3 text-sm text-white placeholder:text-white/35 focus:border-[#F5D06F] focus:outline-none"
               />
             </div>
 
             {publicMeta.requiresPasscode && (
               <div>
-                <label className="mb-1 flex items-center gap-1 text-xs font-semibold text-white/75">
-                  <Lock className="h-3 w-3 text-[#D4A843]" /> Meeting Passcode
+                <label className="mb-1.5 flex items-center gap-1 text-xs font-semibold text-white/80">
+                  <Lock className="h-3 w-3 text-[#F5D06F]" /> Studio Passcode
                 </label>
                 <input
                   required
                   value={passcodeInput}
                   onChange={(e) => setPasscodeInput(e.target.value)}
                   placeholder="Enter passcode from invite"
-                  className="w-full rounded-xl border border-white/15 bg-black/30 px-3.5 py-2.5 font-mono text-sm text-white placeholder:text-white/35 focus:border-[#D4A843] focus:outline-none"
+                  className="w-full rounded-2xl border border-white/15 bg-white/[0.06] px-4 py-3 font-mono text-sm text-white placeholder:text-white/35 focus:border-[#F5D06F] focus:outline-none"
                 />
               </div>
             )}
@@ -456,22 +459,22 @@ function StandaloneMeetContent() {
           <button
             type="submit"
             disabled={publicMeta.isLocked}
-            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#D4A843] px-4 py-3 text-sm font-bold text-slate-950 transition hover:bg-[#e5ba52] disabled:opacity-50"
+            className="liquid-orb-gold flex w-full items-center justify-center gap-2 rounded-full px-5 py-3.5 text-sm font-bold disabled:opacity-50"
           >
             <Video className="h-4 w-4" />
-            {publicMeta.isLocked ? 'Meeting Locked by Host' : 'Continue to Camera & Mic Preview'}
+            {publicMeta.isLocked ? 'Studio Locked by Host' : 'Continue to Mirror & Mic Check'}
           </button>
 
-          <p className="text-center text-[11px] text-white/45">
-            Yakunex employee?{' '}
+          <p className="text-center text-[11px] text-white/50">
+            Yakunex team member?{' '}
             <button
               type="button"
               onClick={() =>
                 router.replace(`/login?next=${encodeURIComponent(`${window.location.pathname}${window.location.search}`)}`)
               }
-              className="font-semibold text-[#D4A843] hover:underline"
+              className="font-semibold text-[#F5D06F] hover:underline"
             >
-              Sign in with company account
+              Sign in with workspace ID
             </button>
           </p>
         </form>
@@ -481,30 +484,35 @@ function StandaloneMeetContent() {
 
   if (waitingSession) {
     return (
-      <div className="flex h-screen w-screen flex-col items-center justify-center bg-[#070B12] p-6 text-center text-white">
-        <div className="w-full max-w-md space-y-4 rounded-3xl border border-white/10 bg-[#0F1522] p-8 shadow-2xl">
-          <div className="mx-auto flex h-14 w-14 animate-pulse items-center justify-center rounded-full border border-[#D4A843]/40 bg-[#D4A843]/15 text-[#D4A843]">
-            <span className="h-3 w-3 rounded-full bg-[#D4A843]" />
+      <div className="liquid-spatial-canvas flex h-screen w-screen flex-col items-center justify-center p-6 text-center text-white">
+        <div className="liquid-glass w-full max-w-md space-y-5 rounded-[34px] p-8">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-[#F5D06F]/45 bg-[#D4A843]/15 shadow-[0_0_40px_rgba(212,168,67,0.3)]">
+            <span className="h-3.5 w-3.5 animate-ping rounded-full bg-[#F5D06F]" />
           </div>
-          <h2 className="font-display text-xl font-semibold">Waiting Room</h2>
+          <div>
+            <p className="text-[10.5px] font-bold uppercase tracking-[0.18em] text-[#F5D06F]">
+              Spatial Waiting Lounge
+            </p>
+            <h2 className="mt-1 font-display text-2xl font-bold">{waitingSession.room.title}</h2>
+          </div>
           <p className="text-sm text-white/70">
-            Please wait — the host of <strong>{waitingSession.room.title}</strong> will admit you shortly.
+            You&apos;re in the glass lounge — the host has been notified and will bring you onto the stage shortly.
           </p>
           {waitingSession.room.waitingRoomMessage && (
-            <div className="rounded-2xl border border-[#D4A843]/35 bg-[#D4A843]/10 p-3 text-left text-xs text-amber-100">
-              <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[#D4A843]">
-                <Megaphone className="h-3.5 w-3.5" /> Message from Host
+            <div className="rounded-2xl border border-[#F5D06F]/35 bg-[#D4A843]/12 p-3.5 text-left text-xs text-amber-100">
+              <p className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-[#F5D06F]">
+                <Megaphone className="h-3.5 w-3.5" /> Live Note from Host
               </p>
-              <p className="mt-1">{waitingSession.room.waitingRoomMessage}</p>
+              <p className="mt-1 leading-relaxed">{waitingSession.room.waitingRoomMessage}</p>
             </div>
           )}
-          <p className="font-mono text-xs text-white/45">Room: {waitingSession.room.roomCode}</p>
+          <p className="font-mono text-xs text-white/50">Studio Code · {waitingSession.room.roomCode}</p>
           <button
             type="button"
             onClick={handleExit}
-            className="mt-2 rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/20"
+            className="liquid-orb rounded-full px-5 py-2.5 text-xs font-semibold text-white/90"
           >
-            Leave Waiting Room
+            Leave Lounge
           </button>
         </div>
       </div>
@@ -551,17 +559,19 @@ function StandaloneMeetContent() {
 
   if (error && !targetRoom && !publicMeta && (!isInstant || user?.role === 'INTERN')) {
     return (
-      <div className="flex h-screen w-screen flex-col items-center justify-center gap-4 bg-[#070B12] p-6 text-center text-white">
-        <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
-          {error}
-        </p>
-        <button
-          type="button"
-          onClick={handleExit}
-          className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/20"
-        >
-          Back to Meetings
-        </button>
+      <div className="liquid-spatial-canvas flex h-screen w-screen flex-col items-center justify-center gap-4 p-6 text-center text-white">
+        <div className="liquid-glass max-w-md space-y-4 rounded-[30px] p-7">
+          <p className="rounded-2xl border border-rose-400/35 bg-rose-500/15 px-4 py-3 text-sm text-rose-200">
+            {error}
+          </p>
+          <button
+            type="button"
+            onClick={handleExit}
+            className="liquid-orb rounded-full px-5 py-2.5 text-xs font-semibold text-white"
+          >
+            Return to Spatial Hub
+          </button>
+        </div>
       </div>
     );
   }
@@ -573,22 +583,22 @@ function StandaloneMeetContent() {
     : `${guestName.trim() || 'Guest'} (Guest)`;
 
   return (
-    <div className="flex min-h-screen w-screen items-center justify-center bg-[#070B12] p-4">
-      <div className="w-full max-w-4xl space-y-4">
+    <div className="liquid-spatial-canvas flex min-h-screen w-screen items-center justify-center p-4 md:p-8">
+      <div className="w-full max-w-5xl space-y-4">
         {error && (
-          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-300">
+          <div className="liquid-glass rounded-2xl border-rose-400/35 bg-rose-500/15 px-4 py-3 text-sm text-rose-200">
             {error}
           </div>
         )}
         {passcodeNeeded && user && (
-          <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-[#D4A843]/35 bg-[#0F1522] px-4 py-3 text-white">
-            <Lock className="h-4 w-4 text-[#D4A843]" />
-            <span className="text-xs font-semibold">This meeting requires a passcode:</span>
+          <div className="liquid-glass flex flex-wrap items-center gap-3 rounded-full px-5 py-3 text-white">
+            <Lock className="h-4 w-4 text-[#F5D06F]" />
+            <span className="text-xs font-semibold">Studio Passcode Required:</span>
             <input
               value={passcodeInput}
               onChange={(e) => setPasscodeInput(e.target.value)}
               placeholder="Enter passcode"
-              className="flex-1 rounded-xl border border-white/15 bg-black/30 px-3 py-1.5 font-mono text-xs text-white focus:border-[#D4A843] focus:outline-none"
+              className="flex-1 rounded-full border border-white/15 bg-white/[0.07] px-4 py-1.5 font-mono text-xs text-white focus:border-[#F5D06F] focus:outline-none"
             />
           </div>
         )}
@@ -596,9 +606,9 @@ function StandaloneMeetContent() {
           meetingTitle={
             targetRoom?.title ??
             publicMeta?.title ??
-            (titleParam || `${user?.fullName ?? 'Team'}'s Instant Meeting`)
+            (titleParam || `${user?.fullName ?? 'Team'}'s Spatial Session`)
           }
-          roomCode={targetRoom?.roomCode ?? publicMeta?.roomCode ?? (roomParam || 'NEW ROOM')}
+          roomCode={targetRoom?.roomCode ?? publicMeta?.roomCode ?? (roomParam || 'NEW STUDIO')}
           organizerName={targetRoom?.organizerName ?? publicMeta?.organizerName ?? user?.fullName ?? 'Host'}
           userName={displayName}
           joining={joining}
@@ -619,8 +629,8 @@ export default function StandaloneMeetPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex h-screen w-screen items-center justify-center bg-[#070B12] text-sm text-white/75">
-          Loading Meeting Studio...
+        <div className="liquid-spatial-canvas flex h-screen w-screen items-center justify-center text-sm text-white/80">
+          Opening Yakunex Spatial Studio…
         </div>
       }
     >

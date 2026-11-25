@@ -516,23 +516,22 @@ export function MeetingsView() {
 
   return (
     <div className="space-y-6">
-      {/* Zoom Workplace × Apple Ultra Pro Max Launch Deck */}
-      <section className="relative overflow-hidden rounded-[28px] border border-white/10 bg-gradient-to-br from-[#0F1219] via-[#131722] to-[#090B10] p-6 text-white shadow-2xl md:p-7">
-        <div className="pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full bg-[#2D8CFF]/15 blur-[100px]" />
-        <div className="pointer-events-none absolute -bottom-24 left-12 h-64 w-64 rounded-full bg-[#F97316]/10 blur-[100px]" />
+      {/* Yakunex Spatial Meet — 3D Liquid Glass Command Deck */}
+      <section className="liquid-spatial-canvas relative overflow-hidden rounded-[32px] border border-white/15 p-6 text-white shadow-2xl md:p-8">
+        <div className="pointer-events-none absolute -right-20 -top-20 h-72 w-72 rounded-full bg-[#D4A843]/20 blur-[105px]" />
+        <div className="pointer-events-none absolute -bottom-24 left-12 h-64 w-64 rounded-full bg-sky-400/12 blur-[110px]" />
 
         <div className="relative flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-          {/* Left: Zoom Iconic Squircle Launch Tiles */}
           <div className="space-y-4">
             <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#2D8CFF]">
-                Yakunex Workplace · Zoom Studio
+              <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-[#F5D06F]">
+                Yakunex Spatial Studio · 3D Liquid Glass
               </p>
               <h2 className="mt-1 font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
-                Meetings &amp; Live Video
+                Spatial Meetings &amp; Live Collaboration
               </h2>
-              <p className="mt-1 text-xs text-white/60 sm:text-sm">
-                Every session launches in a dedicated full-screen browser tab with end-to-end controls.
+              <p className="mt-1 text-xs text-white/65 sm:text-sm">
+                Bespoke spatial audio-video pods, live screen presentation, breakout pods &amp; DTLS-SRTP security.
               </p>
             </div>
 
@@ -544,10 +543,10 @@ export function MeetingsView() {
                     onClick={() => openCreateModal('instant')}
                     className="group flex flex-col items-center gap-2 focus:outline-none"
                   >
-                    <span className="flex h-16 w-16 items-center justify-center rounded-[20px] bg-gradient-to-b from-[#FF7A2F] to-[#EA580C] text-white shadow-[0_12px_28px_-6px_rgba(234,88,12,0.55)] ring-1 ring-inset ring-white/25 transition duration-200 group-hover:-translate-y-0.5 group-hover:brightness-110 group-active:scale-95">
+                    <span className="liquid-orb-gold flex h-16 w-16 items-center justify-center rounded-[22px]">
                       <Video className="h-7 w-7" />
                     </span>
-                    <span className="text-xs font-semibold text-white/90">New Meeting</span>
+                    <span className="text-xs font-semibold text-white/90">Instant Studio</span>
                   </button>
 
                   <button
@@ -555,7 +554,7 @@ export function MeetingsView() {
                     onClick={() => openCreateModal('schedule')}
                     className="group flex flex-col items-center gap-2 focus:outline-none"
                   >
-                    <span className="flex h-16 w-16 items-center justify-center rounded-[20px] bg-gradient-to-b from-[#2D8CFF] to-[#0E71EB] text-white shadow-[0_12px_28px_-6px_rgba(14,113,235,0.5)] ring-1 ring-inset ring-white/25 transition duration-200 group-hover:-translate-y-0.5 group-hover:brightness-110 group-active:scale-95">
+                    <span className="liquid-orb flex h-16 w-16 items-center justify-center rounded-[22px] text-[#F5D06F]">
                       <Calendar className="h-7 w-7" />
                     </span>
                     <span className="text-xs font-semibold text-white/90">Schedule</span>
@@ -563,44 +562,44 @@ export function MeetingsView() {
                 </>
               )}
 
-              {/* Direct Join by Code Apple Frosted Capsule */}
+              {/* 3D Liquid Glass Join-by-Code Capsule */}
               <form
                 onSubmit={onJoinByCode}
-                className="flex flex-1 flex-wrap items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.06] p-2 backdrop-blur-xl sm:min-w-[300px]"
+                className="liquid-glass flex flex-1 flex-wrap items-center gap-2 rounded-full p-2 sm:min-w-[320px]"
               >
                 <div className="relative flex-1">
-                  <KeyRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/45" />
+                  <KeyRound className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[#F5D06F]/80" />
                   <input
                     value={roomCodeInput}
                     onChange={(e) => setRoomCodeInput(e.target.value)}
-                    placeholder="Enter room code (YH-ROOM-...)"
-                    className="h-11 w-full rounded-xl bg-black/35 pl-9 pr-3 font-mono text-xs uppercase text-white placeholder:text-white/40 focus:outline-none focus:ring-1 focus:ring-[#2D8CFF]"
+                    placeholder="Studio code (YH-XXXX-XXXX)"
+                    className="h-10 w-full rounded-full bg-black/35 pl-10 pr-3 font-mono text-xs uppercase text-white placeholder:text-white/45 focus:outline-none focus:ring-1 focus:ring-[#F5D06F]"
                   />
                 </div>
                 <button
                   type="submit"
                   disabled={joining || !roomCodeInput.trim()}
-                  className="h-11 rounded-xl bg-[#2D8CFF] px-5 text-xs font-bold text-white shadow-lg shadow-[#2D8CFF]/25 transition hover:bg-[#3B96FF] disabled:opacity-40"
+                  className="liquid-orb-gold h-10 rounded-full px-5 text-xs font-bold disabled:opacity-40"
                 >
-                  Join in New Tab
+                  Enter Studio
                 </button>
               </form>
             </div>
           </div>
 
-          {/* Right: Live Apple Frosted Telemetry Pill Grid */}
-          <div className="grid grid-cols-3 gap-2.5 lg:w-[320px]">
-            <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3.5 backdrop-blur-xl">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-white/45">Live Now</p>
-              <p className="mt-1 font-display text-2xl font-bold tabular-nums text-emerald-400">{liveCount}</p>
+          {/* Right: 3D Liquid Glass Telemetry Pods */}
+          <div className="grid grid-cols-3 gap-2.5 lg:w-[330px]">
+            <div className="liquid-glass rounded-[22px] p-3.5">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-white/55">Live Studios</p>
+              <p className="mt-1 font-display text-2xl font-bold tabular-nums text-emerald-300">{liveCount}</p>
             </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3.5 backdrop-blur-xl">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-white/45">In Call</p>
+            <div className="liquid-glass rounded-[22px] p-3.5">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-white/55">On Stage</p>
               <p className="mt-1 font-display text-2xl font-bold tabular-nums text-white">{activePeople}</p>
             </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.05] p-3.5 backdrop-blur-xl">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-white/45">Upcoming</p>
-              <p className="mt-1 font-display text-2xl font-bold tabular-nums text-[#2D8CFF]">
+            <div className="liquid-glass rounded-[22px] p-3.5">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-white/55">Scheduled</p>
+              <p className="mt-1 font-display text-2xl font-bold tabular-nums text-[#F5D06F]">
                 {meetings.filter((m) => m.status === 'SCHEDULED').length}
               </p>
             </div>
@@ -668,7 +667,7 @@ export function MeetingsView() {
             const canDelete = isSuperAdmin && !(isLive && inCallCount > 0);
 
             return (
-              <Card key={mtg.id} className="flex flex-col justify-between p-5">
+              <div key={mtg.id} className="liquid-surface-adaptive flex flex-col justify-between rounded-[26px] p-5 transition hover:-translate-y-0.5">
                 <div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -768,14 +767,14 @@ export function MeetingsView() {
                         target="_blank"
                         rel="noopener noreferrer"
                         className={cn(
-                          'inline-flex h-8 items-center gap-1.5 rounded-xl px-3.5 text-xs font-semibold transition',
+                          'inline-flex h-8.5 items-center gap-1.5 rounded-full px-4 text-xs font-bold transition',
                           isLive
-                            ? 'bg-[#2D8CFF] text-white shadow-sm shadow-[#2D8CFF]/30 hover:bg-[#3B96FF]'
-                            : 'border border-line bg-surface text-ink hover:bg-canvas',
+                            ? 'liquid-orb-gold'
+                            : 'border border-line bg-surface/80 text-ink hover:border-gold',
                         )}
                       >
                         <Video className="h-3.5 w-3.5" />
-                        Join Meeting
+                        {isLive ? 'Enter Live Studio' : 'Open Studio'}
                       </a>
                     )}
                     <Button
@@ -824,7 +823,7 @@ export function MeetingsView() {
                     )}
                   </div>
                 </div>
-              </Card>
+              </div>
             );
           })}
         </div>

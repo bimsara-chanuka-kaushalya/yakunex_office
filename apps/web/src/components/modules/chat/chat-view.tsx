@@ -669,11 +669,16 @@ export function ChatView() {
 
   return (
     <div className="-mx-1 sm:mx-0">
-      <div className="grid h-[calc(100dvh-8.5rem)] min-h-[520px] overflow-hidden rounded-[20px] bg-surface shadow-card md:grid-cols-[340px_1fr]">
-        {/* ── Conversation list ───────────────────────────────────────────── */}
-        <aside className={cn('min-h-0 flex-col border-line/70 md:flex md:border-r', mobileShowConversation ? 'hidden' : 'flex')}>
-          <div className="flex items-center justify-between px-4 pb-2 pt-4">
-            <h2 className="font-display text-[22px] font-bold tracking-tight text-ink">Chats</h2>
+      <div className="liquid-surface-adaptive grid h-[calc(100dvh-8.5rem)] min-h-[520px] overflow-hidden rounded-[28px] md:grid-cols-[348px_1fr]">
+        {/* ── Conversation list (3D Frosted Glass Sidebar) ─────────────────── */}
+        <aside className={cn('min-h-0 flex-col border-line/60 bg-surface/45 backdrop-blur-2xl dark:bg-white/[0.02] md:flex md:border-r', mobileShowConversation ? 'hidden' : 'flex')}>
+          <div className="flex items-center justify-between px-4 pb-2.5 pt-4">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-gold-strong dark:text-gold">
+                Yakunex Spatial
+              </p>
+              <h2 className="font-display text-[22px] font-bold tracking-tight text-ink">Messages</h2>
+            </div>
             <div className="flex items-center gap-1.5">
               <IconButton title="New chat with a person" onClick={() => setDmModal(true)}>
                 <MessageSquarePlus className="h-4 w-4" />
@@ -683,7 +688,7 @@ export function ChatView() {
                 onClick={() => setGroupModal(true)}
                 title="New group"
                 aria-label="New group"
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-gold text-gold-ink shadow-2xs transition hover:brightness-105 active:scale-95"
+                className="liquid-orb-gold flex h-9 w-9 items-center justify-center rounded-full"
               >
                 <Plus className="h-4 w-4" />
               </button>
@@ -787,8 +792,8 @@ export function ChatView() {
           </ul>
         </aside>
 
-        {/* ── Conversation ────────────────────────────────────────────────── */}
-        <section className={cn('min-h-0 flex-col bg-[#f4f1ec] dark:bg-[#0d1418] md:flex', mobileShowConversation ? 'flex' : 'hidden')}>
+        {/* ── Spatial Liquid Glass Conversation Canvas ────────────────────── */}
+        <section className={cn('liquid-chat-canvas min-h-0 flex-col md:flex', mobileShowConversation ? 'flex' : 'hidden')}>
           {!activeChannel ? (
             <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">
               <MessagesSquare className="mb-3 h-10 w-10 text-gold" />
@@ -990,8 +995,8 @@ export function ChatView() {
                 </div>
               )}
 
-              {/* Composer */}
-              <form onSubmit={onSubmit} className="material flex items-end gap-2 border-t border-line/70 px-2 py-2 sm:px-3">
+              {/* Floating 3D Liquid Glass Composer */}
+              <form onSubmit={onSubmit} className="material flex items-end gap-2 border-t border-line/60 px-3 py-2.5 sm:px-4">
                 <input
                   ref={fileRef}
                   type="file"
@@ -1013,15 +1018,15 @@ export function ChatView() {
                   onChange={(e) => setText(e.target.value)}
                   onKeyDown={onComposerKey}
                   onPaste={onPaste}
-                  placeholder={editing ? 'Edit your message' : `Message ${channelTitle(activeChannel)}`}
+                  placeholder={editing ? 'Edit your message' : `Message ${channelTitle(activeChannel)}…`}
                   aria-label="Message"
-                  className="max-h-40 min-h-[40px] flex-1 resize-none rounded-[20px] bg-surface px-4 py-2.5 text-[14px] leading-5 text-ink shadow-2xs ring-1 ring-line/60 placeholder:text-muted/80 focus:outline-none focus:ring-2 focus:ring-gold/50 dark:bg-raised"
+                  className="max-h-40 min-h-[42px] flex-1 resize-none rounded-[22px] border border-line/70 bg-surface/85 px-4 py-2.5 text-[14px] leading-5 text-ink shadow-[inset_0_1px_0.5px_rgba(255,255,255,0.65)] backdrop-blur-xl placeholder:text-muted/80 focus:outline-none focus:ring-2 focus:ring-gold/50 dark:border-white/15 dark:bg-white/[0.06] dark:shadow-[inset_0_1px_0.5px_rgba(255,255,255,0.2)]"
                 />
                 <button
                   type="submit"
                   aria-label={editing ? 'Save edit' : 'Send'}
                   disabled={!text.trim() && !attachment}
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gold text-gold-ink shadow-xs transition active:scale-95 disabled:opacity-40"
+                  className="liquid-orb-gold flex h-10 w-10 shrink-0 items-center justify-center rounded-full disabled:opacity-40"
                 >
                   {editing ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
                 </button>
@@ -1234,9 +1239,9 @@ function MessageBubble({
       <div className={cn('relative flex max-w-[85%] flex-col sm:max-w-[68%]', own ? 'items-end' : 'items-start')}>
         <div
           className={cn(
-            'relative rounded-[18px] px-3 py-1.5 shadow-2xs',
-            own ? 'bg-[#d9fdd3] text-[#111b21] dark:bg-[#005c4b] dark:text-[#e9edef]' : 'bg-surface text-ink',
-            own ? (grouped ? 'rounded-tr-[18px]' : 'rounded-tr-[6px]') : grouped ? 'rounded-tl-[18px]' : 'rounded-tl-[6px]',
+            'relative rounded-[22px] px-3.5 py-2 transition',
+            own ? 'liquid-bubble-own' : 'liquid-bubble-peer',
+            own ? (grouped ? 'rounded-tr-[22px]' : 'rounded-tr-[7px]') : grouped ? 'rounded-tl-[22px]' : 'rounded-tl-[7px]',
             m.localState === 'failed' && 'ring-1 ring-danger',
           )}
         >

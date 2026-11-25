@@ -10,10 +10,8 @@ import {
 } from 'react';
 import {
   Activity,
-  BarChart3,
   Camera,
   CameraOff,
-  Captions,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -61,8 +59,6 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/field';
 import {
   Room,
   RoomEvent,
@@ -560,26 +556,29 @@ function ParticipantTile({
 
   const virtualBackdropClass =
     isSelf && videoEffect === 'bg-yakunex'
-      ? 'ring-2 ring-[#D4A843]/50 bg-gradient-to-br from-[#1C160A] via-[#2B200B] to-[#0B0F17]'
+      ? 'ring-2 ring-[#F5D06F]/50 bg-gradient-to-br from-[#1C160A] via-[#2B200B] to-[#0B0F17]'
       : isSelf && videoEffect === 'bg-studio'
         ? 'bg-gradient-to-br from-indigo-950 via-slate-900 to-cyan-950'
         : isSelf && videoEffect === 'bg-slate'
           ? 'bg-gradient-to-br from-zinc-800 to-zinc-950'
-          : 'bg-[#111827]';
+          : '';
 
   return (
     <div
       className={cn(
-        'group relative overflow-hidden rounded-[20px] border transition-all duration-200 ring-1 ring-inset ring-white/[0.07]',
+        'liquid-video-pod group relative overflow-hidden rounded-[26px] transition-all duration-300',
         virtualBackdropClass,
         fillStage ? 'h-full w-full min-h-[360px]' : compact ? 'aspect-video w-full shrink-0' : 'aspect-video w-full',
         isSpotlight
-          ? 'border-[#F5C451] ring-2 ring-[#F5C451]/60 shadow-[0_0_32px_rgba(245,196,81,0.28)]'
+          ? '!border-[#F5D06F]/80 ring-2 ring-[#F5D06F]/60 shadow-[0_0_44px_-4px_rgba(245,208,111,0.45)]'
           : isSpeaking && participant.micOn
-            ? 'border-[#22C55E] ring-2 ring-[#22C55E]/55 shadow-[0_0_24px_rgba(34,197,94,0.25)]'
-            : 'border-white/[0.08]',
+            ? '!border-emerald-400/75 ring-2 ring-emerald-400/55 shadow-[0_0_38px_-4px_rgba(52,211,153,0.42)]'
+            : '',
       )}
     >
+      {/* Top optical specular sheen across video pod */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-12 bg-gradient-to-b from-white/[0.09] to-transparent" />
+
       {hasLiveVideo ? (
         <div className="relative h-full w-full">
           <VideoCanvas
@@ -602,46 +601,56 @@ function ParticipantTile({
           {isSelf && (videoEffect === 'bg-yakunex' || videoEffect === 'bg-studio' || videoEffect === 'bg-slate') && (
             <div className="pointer-events-none absolute inset-0 border-[6px] border-black/25">
               {videoEffect === 'bg-yakunex' && (
-                <span className="absolute right-3 bottom-11 rounded-md border border-[#D4A843]/40 bg-black/55 px-2 py-0.5 text-[9px] font-bold tracking-widest text-[#D4A843] uppercase backdrop-blur">
-                  YAKUNEX HQ
+                <span className="liquid-glass absolute right-3 bottom-12 rounded-full px-2.5 py-0.5 text-[9px] font-bold tracking-widest text-[#F5D06F] uppercase">
+                  YAKUNEX SPATIAL
                 </span>
               )}
             </div>
           )}
         </div>
       ) : (
-        <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-[#161F30] via-[#111827] to-[#0B0F17] p-4">
+        <div className="relative flex h-full w-full flex-col items-center justify-center overflow-hidden bg-[radial-gradient(ellipse_at_top,rgba(212,168,67,0.14),transparent_60%),radial-gradient(ellipse_at_bottom,rgba(56,189,248,0.1),transparent_65%)] p-4">
+          {/* Concentric 3D glass aura rings */}
+          {!compact && (
+            <div
+              className={cn(
+                'pointer-events-none absolute rounded-full border border-white/[0.07] transition-transform duration-500',
+                'h-36 w-36',
+                isSpeaking && participant.micOn && 'scale-110 border-emerald-400/30',
+              )}
+            />
+          )}
           <div
             className={cn(
-              'flex items-center justify-center rounded-full font-display font-bold text-white shadow-lg ring-4',
+              'relative flex items-center justify-center rounded-full font-display font-bold shadow-2xl transition-transform duration-300',
               compact ? 'h-12 w-12 text-base' : 'h-20 w-20 text-2xl',
               isSpeaking && participant.micOn
-                ? 'bg-gradient-to-br from-[#10B981] to-[#059669] ring-[#10B981]/30'
-                : 'bg-gradient-to-br from-[#D4A843] to-[#9A7222] ring-white/10',
+                ? 'scale-105 bg-gradient-to-b from-emerald-300 via-emerald-500 to-teal-700 text-slate-950 ring-4 ring-emerald-400/35 shadow-[0_12px_30px_rgba(16,185,129,0.45)]'
+                : 'liquid-orb-gold ring-4 ring-white/10',
             )}
           >
             {getInitials(participant.fullName)}
           </div>
           {!compact && (
-            <div className="mt-2.5 flex flex-col items-center gap-1.5 text-center">
-              <p className="text-xs font-medium text-white/60">
+            <div className="mt-3 flex flex-col items-center gap-1.5 text-center">
+              <p className="text-[11.5px] font-medium text-white/55">
                 {!participant.camOn
-                  ? 'Camera is off'
+                  ? 'Spatial Avatar Mode'
                   : !isSelf && connectionStatus === 'failed'
                     ? iceTurnConfigured
                       ? 'Network blocked video (ICE failed)'
                       : 'Network/NAT blocked video (TURN relay needed)'
                     : !isSelf && connectionStatus === 'reconnecting'
-                      ? 'Reconnecting camera...'
-                      : 'Connecting camera...'}
+                      ? 'Reconnecting video stream…'
+                      : 'Opening camera lens…'}
               </p>
               {participant.camOn && !isSelf && connectionStatus === 'failed' && onRetryConnection && (
                 <button
                   type="button"
                   onClick={() => onRetryConnection(participant.userId)}
-                  className="rounded-lg bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white/90 hover:bg-white/20"
+                  className="liquid-orb rounded-full px-3 py-1 text-[11px] font-semibold text-white"
                 >
-                  Retry Connection
+                  Reconnect Lens
                 </button>
               )}
             </div>
@@ -649,37 +658,37 @@ function ParticipantTile({
         </div>
       )}
 
-      {/* Hand raised / Screen sharing / Spotlight badges */}
-      <div className="absolute left-3 top-3 flex flex-wrap items-center gap-1.5">
+      {/* Hand raised / Screen sharing / Spotlight 3D badges */}
+      <div className="absolute left-3.5 top-3.5 z-20 flex flex-wrap items-center gap-1.5">
         {isSpotlight && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-[#D4A843] px-2.5 py-1 text-[11px] font-bold text-slate-950 shadow">
+          <span className="liquid-orb-gold inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold">
             <Star className="h-3 w-3" /> Spotlight
           </span>
         )}
         {participant.handRaised && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-amber-400 px-2.5 py-1 text-[11px] font-bold text-slate-950 shadow">
+          <span className="liquid-orb-gold inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold">
             <Hand className="h-3 w-3" /> Hand Raised
           </span>
         )}
         {participant.screenSharing && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500 px-2.5 py-1 text-[11px] font-semibold text-white shadow">
+          <span className="liquid-glass inline-flex items-center gap-1 rounded-full border-emerald-400/40 px-2.5 py-1 text-[11px] font-semibold text-emerald-300">
             <MonitorUp className="h-3 w-3" /> Presenting
           </span>
         )}
       </div>
 
       {/* Pin / Spotlight / Host quick controls / Individual Volume */}
-      <div className="absolute right-3 top-3 flex flex-wrap items-center justify-end gap-1.5">
+      <div className="absolute right-3.5 top-3.5 z-20 flex flex-wrap items-center justify-end gap-1.5">
         {!isSelf && onVolumeChange && !compact && (
           <button
             type="button"
             title={remoteVolume === 0 ? 'Unmute locally' : 'Mute participant locally'}
             onClick={() => onVolumeChange(participant.userId, remoteVolume === 0 ? 1 : 0)}
             className={cn(
-              'items-center gap-1 rounded-full px-2 py-1 text-[11px] font-semibold shadow transition',
+              'items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition',
               remoteVolume === 0
-                ? 'inline-flex bg-rose-600/90 text-white'
-                : 'hidden bg-black/65 text-white/85 backdrop-blur hover:bg-black/85 group-hover:inline-flex',
+                ? 'liquid-orb-ruby inline-flex'
+                : 'liquid-orb hidden text-white/90 group-hover:inline-flex',
             )}
           >
             {remoteVolume === 0 ? <VolumeX className="h-3 w-3" /> : <Volume2 className="h-3 w-3" />}
@@ -689,12 +698,12 @@ function ParticipantTile({
           <button
             type="button"
             onClick={() => onToggleSpotlight(participant.userId)}
-            title={isSpotlight ? 'Remove Spotlight for Everyone' : 'Spotlight for Everyone'}
+            title={isSpotlight ? 'Remove Spotlight' : 'Spotlight on Stage'}
             className={cn(
-              'items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold shadow transition',
+              'items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition',
               isSpotlight
-                ? 'inline-flex bg-[#D4A843] text-slate-950'
-                : 'hidden bg-black/65 text-amber-200 backdrop-blur hover:bg-black/85 group-hover:inline-flex',
+                ? 'liquid-orb-gold inline-flex'
+                : 'liquid-orb hidden text-[#F5D06F] group-hover:inline-flex',
             )}
           >
             <Star className="h-3 w-3" /> {isSpotlight ? 'Unspot' : 'Spotlight'}
@@ -704,17 +713,17 @@ function ParticipantTile({
           <button
             type="button"
             onClick={() => onTogglePin(participant.userId)}
-            title={isPinned ? 'Unpin from Main Screen' : 'Pin to Main Screen'}
+            title={isPinned ? 'Unpin Pod' : 'Pin Pod to Stage'}
             className={cn(
-              'items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold shadow transition',
+              'items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition',
               isPinned
-                ? 'inline-flex bg-[#D4A843] text-slate-950 hover:bg-[#e3b955]'
-                : 'hidden bg-black/65 text-white/90 backdrop-blur hover:bg-black/85 group-hover:inline-flex',
+                ? 'liquid-orb-gold inline-flex'
+                : 'liquid-orb hidden text-white/95 group-hover:inline-flex',
             )}
           >
             {isPinned ? (
               <>
-                <PinOff className="h-3 w-3" /> Main
+                <PinOff className="h-3 w-3" /> Pinned
               </>
             ) : (
               <>
@@ -727,7 +736,7 @@ function ParticipantTile({
           <button
             type="button"
             onClick={() => onHostMute(participant.userId)}
-            className="hidden items-center gap-1 rounded-full bg-rose-600/90 px-2.5 py-1 text-[11px] font-semibold text-white shadow transition hover:bg-rose-500 group-hover:inline-flex"
+            className="liquid-orb-ruby hidden items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold group-hover:inline-flex"
           >
             <MicOff className="h-3 w-3" /> Mute
           </button>
@@ -736,7 +745,7 @@ function ParticipantTile({
           <button
             type="button"
             onClick={() => onHostStopVideo(participant.userId)}
-            className="hidden items-center gap-1 rounded-full bg-slate-800/90 px-2 py-1 text-[11px] font-semibold text-rose-200 shadow transition hover:bg-rose-600 hover:text-white group-hover:inline-flex"
+            className="liquid-orb hidden items-center gap-1 rounded-full px-2 py-1 text-[11px] font-semibold text-rose-200 hover:text-white group-hover:inline-flex"
           >
             <CameraOff className="h-3 w-3" />
           </button>
@@ -745,29 +754,31 @@ function ParticipantTile({
 
       {/* Floating emoji reaction */}
       {reaction && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <span className="animate-bounce text-5xl drop-shadow-lg">{reaction}</span>
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+          <span className="liquid-glass animate-bounce rounded-full px-4 py-2 text-4xl shadow-2xl">{reaction}</span>
         </div>
       )}
 
-      {/* Zoom Bottom-Left Compact Frosted Nameplate Pill */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between p-2.5">
-        <div className="inline-flex max-w-[82%] items-center gap-1.5 rounded-lg border border-white/10 bg-black/60 px-2.5 py-1 backdrop-blur-md">
+      {/* Floating visionOS 3D Liquid Glass Identity Capsule */}
+      <div className="pointer-events-none absolute inset-x-3 bottom-3 z-20 flex items-center justify-between gap-2">
+        <div className="liquid-glass inline-flex max-w-[80%] items-center gap-2 rounded-full px-3 py-1">
           <span
             className={cn(
-              'flex h-4 w-4 shrink-0 items-center justify-center rounded-full',
-              participant.micOn ? 'text-[#30D158]' : 'text-[#FF453A]',
+              'flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-full',
+              participant.micOn
+                ? 'bg-emerald-400/20 text-emerald-300'
+                : 'bg-rose-500/25 text-rose-300',
             )}
           >
-            {participant.micOn ? <Mic className="h-3 w-3" /> : <MicOff className="h-3 w-3" />}
+            {participant.micOn ? <Mic className="h-2.5 w-2.5" /> : <MicOff className="h-2.5 w-2.5" />}
           </span>
-          <span className="truncate text-[11px] font-semibold tracking-tight text-white">
+          <span className="truncate text-[11.5px] font-semibold tracking-tight text-white">
             {formatParticipantDisplay(participant)}
-            {isSelf ? ' (You)' : ''}
+            {isSelf ? ' · You' : ''}
           </span>
         </div>
         {!compact && (
-          <span className="rounded-md border border-white/10 bg-black/50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-white/70 backdrop-blur-md">
+          <span className="liquid-glass rounded-full px-2.5 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-[#F5D06F]">
             {participant.isGuest ? 'GUEST' : participant.role}
           </span>
         )}
@@ -5039,13 +5050,16 @@ export function MeetingStudio({
       onTouchStart={isFullscreen ? resetFullscreenAutoHide : undefined}
       onKeyDown={isFullscreen ? resetFullscreenAutoHide : undefined}
       className={cn(
-        'relative flex flex-col overflow-hidden bg-[#08090C] text-white shadow-2xl',
+        'liquid-spatial-canvas relative flex flex-col overflow-hidden text-white shadow-2xl',
         standalone || isFullscreen
           ? 'fixed inset-0 z-50 h-screen w-screen rounded-none border-0'
-          : 'h-[calc(100vh-110px)] min-h-[640px] rounded-[28px] border border-white/[0.08]',
+          : 'h-[calc(100vh-110px)] min-h-[640px] rounded-[32px] border border-white/15',
         isFullscreen && controlsHidden && 'cursor-none',
       )}
     >
+      {/* Ambient spatial aurora light wells */}
+      <div className="pointer-events-none absolute -left-28 -top-28 h-80 w-80 rounded-full bg-[#D4A843]/14 blur-[120px]" />
+      <div className="pointer-events-none absolute -right-28 top-1/4 h-80 w-80 rounded-full bg-sky-400/10 blur-[125px]" />
       {/* Hidden video element powering Picture-in-Picture floating window */}
       <video
         ref={pipVideoRef}
@@ -5078,115 +5092,126 @@ export function MeetingStudio({
           </div>
         ))}
 
-      {/* ─── TOP ZOOM × APPLE ULTRA PRO MAX FROSTED BAR ──────────────────── */}
+      {/* ─── FLOATING YAKUNEX SPATIAL 3D LIQUID GLASS TOP HUD ─────────────── */}
       <header
         className={cn(
-          'relative z-30 flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.08] bg-[#0A0C11]/90 px-4 py-2 backdrop-blur-2xl transition-all duration-300',
-          isFullscreen && controlsHidden && 'pointer-events-none h-0 overflow-hidden border-0 py-0 opacity-0',
+          'relative z-30 flex flex-wrap items-center justify-between gap-2.5 px-4 pb-1 pt-3.5 transition-all duration-300',
+          isFullscreen && controlsHidden && 'pointer-events-none h-0 overflow-hidden py-0 opacity-0',
         )}
       >
-        {/* Left: Zoom Green Shield Info Popover + Title + Tabular Timer + Live Status Pills */}
-        <div className="flex min-w-0 items-center gap-2.5">
+        {/* Left Floating 3D Liquid Glass Identity Capsule */}
+        <div className="liquid-glass flex min-w-0 items-center gap-2.5 rounded-full px-2.5 py-1.5">
           <div className="relative">
             <button
               type="button"
               onClick={() => setShowMeetingInfo((v) => !v)}
-              title="Meeting Information & Encryption"
-              className="flex h-8 w-8 items-center justify-center rounded-xl border border-emerald-400/25 bg-emerald-500/15 text-[#30D158] transition hover:bg-emerald-500/25"
+              title="Spatial Studio Details & DTLS-SRTP Encryption"
+              className="liquid-orb-gold flex h-8 w-8 items-center justify-center rounded-full"
             >
               <Shield className="h-4 w-4" />
             </button>
             {showMeetingInfo && (
-              <div className="absolute left-0 top-10 z-50 w-72 space-y-2.5 rounded-2xl border border-white/15 bg-[#121620]/95 p-4 text-xs text-white shadow-2xl backdrop-blur-2xl">
+              <div className="liquid-glass-popover absolute left-0 top-11 z-50 w-76 space-y-3 rounded-[26px] p-4 text-xs text-white">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-white">{room.title}</span>
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-[#F5D06F]">
+                      Yakunex Spatial Studio
+                    </p>
+                    <p className="mt-0.5 font-semibold text-white">{room.title}</p>
+                  </div>
                   <button
                     type="button"
                     onClick={() => setShowMeetingInfo(false)}
-                    className="rounded-lg p-1 text-white/50 hover:bg-white/10 hover:text-white"
+                    className="liquid-orb rounded-full p-1 text-white/70 hover:text-white"
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
-                <div className="space-y-1.5 border-t border-white/10 pt-2 text-[11px]">
+                <div className="space-y-1.5 border-t border-white/10 pt-2.5 text-[11px]">
                   <div className="flex justify-between">
-                    <span className="text-white/50">Meeting ID</span>
-                    <span className="font-mono font-semibold text-white">{room.roomCode}</span>
+                    <span className="text-white/55">Studio Code</span>
+                    <span className="font-mono font-semibold text-[#F5D06F]">{room.roomCode}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-white/50">Host</span>
+                    <span className="text-white/55">Host</span>
                     <span className="font-medium text-white">{room.organizerName}</span>
                   </div>
                   {room.passcode && canHostControl && (
                     <div className="flex justify-between">
-                      <span className="text-white/50">Passcode</span>
-                      <span className="font-mono font-semibold text-[#F5C451]">{room.passcode}</span>
+                      <span className="text-white/55">Passcode</span>
+                      <span className="font-mono font-semibold text-[#F5D06F]">{room.passcode}</span>
                     </div>
                   )}
                   <div className="flex justify-between">
-                    <span className="text-white/50">Encryption</span>
-                    <span className="font-semibold text-[#30D158]">DTLS-SRTP Verified</span>
+                    <span className="text-white/55">Media Security</span>
+                    <span className="font-semibold text-emerald-300">DTLS-SRTP Verified</span>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => void copyInviteLink()}
-                  className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#2D8CFF] py-2 text-xs font-semibold text-white transition hover:bg-[#3B96FF]"
+                  className="liquid-orb-gold flex w-full items-center justify-center gap-1.5 rounded-full py-2 text-xs font-bold"
                 >
                   {copiedCode ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                  {copiedCode ? 'Invite Link Copied!' : 'Copy Invite Link'}
+                  {copiedCode ? 'Studio Invite Copied!' : 'Copy Studio Invite'}
                 </button>
               </div>
             )}
           </div>
 
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="max-w-[200px] truncate font-display text-sm font-semibold tracking-tight text-white sm:max-w-[300px]">
-                {room.title}
-              </h2>
-              <span className="rounded-lg border border-white/[0.08] bg-white/[0.05] px-2 py-0.5 font-mono text-[11px] tabular-nums text-white/80">
-                {formatDuration(elapsedSec)}
+          <div className="flex min-w-0 flex-wrap items-center gap-2 pr-1.5">
+            <h2 className="max-w-[180px] truncate font-display text-sm font-semibold tracking-tight text-white sm:max-w-[260px]">
+              {room.title}
+            </h2>
+            <button
+              type="button"
+              onClick={() => void copyInviteLink()}
+              title="Click to copy studio invite link"
+              className="liquid-orb hidden items-center gap-1 rounded-full px-2.5 py-0.5 font-mono text-[10.5px] font-semibold text-[#F5D06F] sm:inline-flex"
+            >
+              <span>{copiedCode ? 'COPIED!' : room.roomCode}</span>
+            </button>
+            <span className="rounded-full border border-white/15 bg-white/[0.06] px-2.5 py-0.5 font-mono text-[11px] tabular-nums text-white/90">
+              {formatDuration(elapsedSec)}
+            </span>
+            {room.isLocked && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-rose-400/35 bg-rose-500/20 px-2.5 py-0.5 text-[10px] font-semibold text-rose-200">
+                <Lock className="h-3 w-3" /> Locked
               </span>
-              {room.isLocked && (
-                <span className="inline-flex items-center gap-1 rounded-lg bg-[#FF453A]/20 px-2 py-0.5 text-[10px] font-semibold text-[#FF6961]">
-                  <Lock className="h-3 w-3" /> Locked
-                </span>
-              )}
-              {sfuActive && (
-                <span className="hidden rounded-lg border border-[#30D158]/25 bg-[#30D158]/10 px-2 py-0.5 text-[10px] font-semibold text-[#30D158] md:inline-block">
-                  HD · SFU
-                </span>
-              )}
-              {(recording || room.recordingActive) && (
-                <span className="inline-flex items-center gap-1.5 rounded-lg bg-[#FF453A]/90 px-2.5 py-0.5 text-[10px] font-bold tracking-wide text-white shadow">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
-                  {recording
-                    ? `${recordingPaused ? 'PAUSED' : 'REC'} ${formatDuration(recordingSec)}`
-                    : `REC · ${room.recordingByName || 'Host'}`}
-                </span>
-              )}
-              {bandwidthSaver && (
-                <span className="inline-flex items-center gap-1 rounded-lg bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
-                  <Wifi className="h-3 w-3" /> Audio-Only
-                </span>
-              )}
-            </div>
+            )}
+            {sfuActive && (
+              <span className="hidden rounded-full border border-emerald-400/35 bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-200 md:inline-block">
+                Spatial SFU
+              </span>
+            )}
+            {(recording || room.recordingActive) && (
+              <span className="liquid-orb-ruby inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-bold tracking-wide">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />
+                {recording
+                  ? `${recordingPaused ? 'PAUSED' : 'REC'} ${formatDuration(recordingSec)}`
+                  : `REC · ${room.recordingByName || 'Host'}`}
+              </span>
+            )}
+            {bandwidthSaver && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/35 bg-amber-500/20 px-2.5 py-0.5 text-[10px] font-semibold text-amber-200">
+                <Wifi className="h-3 w-3" /> 3G Voice
+              </span>
+            )}
           </div>
         </div>
 
-        {/* Right: Apple Signal Meter + Zoom View Segmented Control + PiP + Fullscreen */}
-        <div className="flex flex-wrap items-center gap-1.5">
+        {/* Right Floating 3D Liquid Glass Stage Capsule */}
+        <div className="liquid-glass flex flex-wrap items-center gap-1.5 rounded-full px-2 py-1.5">
           <button
             type="button"
             onClick={() => setShowStatsModal(true)}
-            title="Live Network Statistics"
-            className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-white/[0.05] px-2.5 py-1.5 text-[11px] font-medium tabular-nums text-white/80 transition hover:bg-white/10"
+            title="Spatial Stream Telemetry"
+            className="liquid-orb inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium tabular-nums text-white/90"
           >
             <Activity
               className={cn(
                 'h-3.5 w-3.5',
-                networkStats.bars >= 3 ? 'text-[#30D158]' : networkStats.bars === 2 ? 'text-amber-400' : 'text-[#FF453A]',
+                networkStats.bars >= 3 ? 'text-emerald-300' : networkStats.bars === 2 ? 'text-amber-300' : 'text-rose-300',
               )}
             />
             <span className="hidden sm:inline">{networkStats.rttMs}ms</span>
@@ -5196,33 +5221,33 @@ export function MeetingStudio({
             <button
               type="button"
               onClick={unlockRoomAudio}
-              className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 px-3 py-1.5 text-xs font-bold text-slate-950 shadow-lg transition hover:bg-amber-300"
+              className="liquid-orb-gold inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold"
             >
-              <Volume2 className="h-3.5 w-3.5" /> Enable Audio
+              <Volume2 className="h-3.5 w-3.5" /> Enable Sound
             </button>
           )}
 
           {!activeScreenShare && (
-            <div className="inline-flex rounded-xl border border-white/[0.08] bg-white/[0.05] p-0.5 text-[11px] backdrop-blur-md">
+            <div className="inline-flex rounded-full border border-white/15 bg-black/25 p-0.5 text-[11px]">
               <button
                 type="button"
                 onClick={() => setLayoutMode('gallery')}
                 className={cn(
-                  'inline-flex items-center gap-1 rounded-lg px-2.5 py-1 font-semibold transition',
-                  layoutMode === 'gallery' ? 'bg-white/20 text-white shadow-sm' : 'text-white/60 hover:text-white',
+                  'inline-flex items-center gap-1 rounded-full px-3 py-1 font-semibold transition',
+                  layoutMode === 'gallery' ? 'liquid-orb-gold' : 'text-white/70 hover:text-white',
                 )}
               >
-                <LayoutGrid className="h-3.5 w-3.5" /> Gallery
+                <LayoutGrid className="h-3 w-3" /> Orbital
               </button>
               <button
                 type="button"
                 onClick={() => setLayoutMode('speaker')}
                 className={cn(
-                  'inline-flex items-center gap-1 rounded-lg px-2.5 py-1 font-semibold transition',
-                  layoutMode === 'speaker' ? 'bg-white/20 text-white shadow-sm' : 'text-white/60 hover:text-white',
+                  'inline-flex items-center gap-1 rounded-full px-3 py-1 font-semibold transition',
+                  layoutMode === 'speaker' ? 'liquid-orb-gold' : 'text-white/70 hover:text-white',
                 )}
               >
-                <Sparkles className="h-3.5 w-3.5" /> Speaker
+                <Sparkles className="h-3 w-3" /> Cinema
               </button>
             </div>
           )}
@@ -5230,12 +5255,10 @@ export function MeetingStudio({
           <button
             type="button"
             onClick={() => void togglePictureInPicture()}
-            title={isPip ? 'Exit Picture-in-Picture' : 'Picture-in-Picture'}
+            title={isPip ? 'Exit Picture-in-Picture' : 'Floating Window (PiP)'}
             className={cn(
-              'inline-flex h-8 items-center gap-1 rounded-xl border px-2.5 text-[11px] font-semibold transition',
-              isPip
-                ? 'border-[#30D158]/40 bg-[#30D158]/15 text-[#30D158]'
-                : 'border-white/[0.08] bg-white/[0.05] text-white/80 hover:bg-white/10 hover:text-white',
+              'inline-flex h-7.5 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold transition',
+              isPip ? 'liquid-orb-gold' : 'liquid-orb text-white/85',
             )}
           >
             <PictureInPicture2 className="h-3.5 w-3.5" />
@@ -5245,16 +5268,14 @@ export function MeetingStudio({
           <button
             type="button"
             onClick={() => void toggleFullscreen()}
-            title={isFullscreen ? 'Exit Fullscreen (Esc)' : 'Enter Fullscreen'}
+            title={isFullscreen ? 'Exit Full Immersion (Esc)' : 'Full Immersion'}
             className={cn(
-              'inline-flex h-8 items-center gap-1 rounded-xl border px-2.5 text-[11px] font-semibold transition',
-              isFullscreen
-                ? 'border-[#2D8CFF]/40 bg-[#2D8CFF]/20 text-[#6BB0FF]'
-                : 'border-white/[0.08] bg-white/[0.05] text-white/80 hover:bg-white/10 hover:text-white',
+              'inline-flex h-7.5 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold transition',
+              isFullscreen ? 'liquid-orb-gold' : 'liquid-orb text-white/85',
             )}
           >
             {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
-            <span className="hidden md:inline">{isFullscreen ? 'Exit' : 'Full'}</span>
+            <span className="hidden md:inline">{isFullscreen ? 'Exit' : 'Immerse'}</span>
           </button>
         </div>
       </header>
@@ -5795,11 +5816,11 @@ export function MeetingStudio({
           )}
         </div>
 
-        {/* Collapsible Right Inspector Panel: Participants | Chat | Polls & Q&A | Notes */}
+        {/* Floating 3D Liquid Glass Spatial Inspector: People | Chat | Polls | Notes */}
         {sideTab !== 'closed' && (
-          <aside className="flex w-full max-w-[348px] shrink-0 flex-col border-l border-white/[0.08] bg-[#0D1017]/95 backdrop-blur-2xl">
-            <div className="flex items-center justify-between border-b border-white/[0.08] px-3 py-2.5">
-              <div className="flex flex-wrap gap-0.5 rounded-xl bg-white/[0.05] p-0.5">
+          <aside className="liquid-glass m-3 ml-0 flex w-full max-w-[364px] shrink-0 flex-col overflow-hidden rounded-[30px]">
+            <div className="flex items-center justify-between border-b border-white/12 px-3.5 py-3">
+              <div className="flex flex-wrap gap-1 rounded-full border border-white/12 bg-black/25 p-1">
                 {(
                   [
                     ['participants', `People (${room.participants.length})`],
@@ -5813,10 +5834,10 @@ export function MeetingStudio({
                     type="button"
                     onClick={() => setSideTab(tabKey)}
                     className={cn(
-                      'rounded-lg px-2 py-1 text-[11px] font-semibold transition',
+                      'rounded-full px-2.5 py-1 text-[11px] font-semibold transition',
                       sideTab === tabKey
-                        ? 'bg-[#2D8CFF] text-white shadow-sm'
-                        : 'text-white/60 hover:text-white',
+                        ? 'liquid-orb-gold'
+                        : 'text-white/65 hover:text-white',
                     )}
                   >
                     {label}
@@ -5826,7 +5847,7 @@ export function MeetingStudio({
               <button
                 type="button"
                 onClick={() => setSideTab('closed')}
-                className="rounded-lg p-1 text-white/60 hover:bg-white/10 hover:text-white"
+                className="liquid-orb rounded-full p-1.5 text-white/70 hover:text-white"
                 aria-label="Close panel"
               >
                 <X className="h-4 w-4" />
@@ -6149,15 +6170,19 @@ export function MeetingStudio({
 
             {sideTab === 'chat' && (
               <div className="flex flex-1 flex-col overflow-hidden">
-                <div className="flex-1 space-y-2.5 overflow-y-auto p-3.5">
+                <div className="flex-1 space-y-3 overflow-y-auto p-4">
                   {room.chatMessages.filter(
                     (msg) =>
                       !msg.recipientId ||
                       msg.senderId === currentUser.id ||
                       msg.recipientId === currentUser.id,
                   ).length === 0 ? (
-                    <div className="mt-10 text-center text-xs text-white/45">
-                      In-meeting messages appear here for everyone or as private direct messages.
+                    <div className="mt-10 rounded-3xl border border-white/10 bg-white/[0.04] p-6 text-center text-xs text-white/60">
+                      <MessagesSquare className="mx-auto mb-2 h-6 w-6 text-[#F5D06F]" />
+                      <p className="font-semibold text-white/90">Spatial Studio Chat</p>
+                      <p className="mt-1 text-[11px] text-white/50">
+                        Share notes, links, or private whispers with participants in real time.
+                      </p>
                     </div>
                   ) : (
                     room.chatMessages
@@ -6177,31 +6202,31 @@ export function MeetingStudio({
                           >
                             <div
                               className={cn(
-                                'max-w-[85%] rounded-2xl px-3 py-2 text-xs leading-relaxed',
+                                'max-w-[86%] rounded-[22px] px-3.5 py-2.5 text-xs leading-relaxed transition',
                                 isMine
-                                  ? 'rounded-br-sm bg-[#D4A843] text-slate-950 font-medium'
-                                  : 'rounded-bl-sm bg-white/10 text-white',
+                                  ? 'liquid-orb-gold rounded-br-[6px] font-medium'
+                                  : 'rounded-bl-[6px] border border-white/18 bg-white/[0.09] text-white shadow-[inset_0_1px_0.5px_rgba(255,255,255,0.28)] backdrop-blur-xl',
                               )}
                             >
                               {!isMine && (
-                                <p className="mb-0.5 text-[10px] font-bold text-[#D4A843]">
+                                <p className="mb-0.5 text-[10.5px] font-bold text-[#F5D06F]">
                                   {msg.senderName}
                                 </p>
                               )}
                               {msg.recipientId && (
                                 <p className={cn(
-                                  'mb-1 inline-block rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider',
-                                  isMine ? 'bg-black/15 text-slate-900' : 'bg-sky-500/25 text-sky-300',
+                                  'mb-1 inline-block rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider',
+                                  isMine ? 'bg-black/15 text-slate-950' : 'bg-sky-400/20 text-sky-200',
                                 )}>
-                                  Direct · {isMine ? `To ${msg.recipientName ?? 'Host'}` : 'Private to You'}
+                                  Whisper · {isMine ? `To ${msg.recipientName ?? 'Host'}` : 'Private to You'}
                                 </p>
                               )}
                               {msg.replyPreview && (
                                 <div className={cn(
-                                  'mb-1.5 rounded-lg border-l-2 px-2 py-1 text-[10px]',
+                                  'mb-1.5 rounded-xl border-l-2 px-2.5 py-1 text-[10px]',
                                   isMine
-                                    ? 'border-slate-900/50 bg-black/10 text-slate-900/80'
-                                    : 'border-[#D4A843] bg-white/10 text-white/75',
+                                    ? 'border-slate-900/50 bg-black/10 text-slate-900/85'
+                                    : 'border-[#F5D06F] bg-white/10 text-white/80',
                                 )}>
                                   {msg.replyPreview}
                                 </div>
@@ -6212,19 +6237,19 @@ export function MeetingStudio({
                                     <a
                                       href={msg.attachmentUrl}
                                       download={msg.attachmentName || 'image.png'}
-                                      className="block overflow-hidden rounded-xl border border-white/15"
+                                      className="block overflow-hidden rounded-2xl border border-white/20"
                                     >
                                       <img
                                         src={msg.attachmentUrl}
                                         alt={msg.attachmentName || 'Attachment'}
-                                        className="max-h-40 w-auto rounded-xl object-cover"
+                                        className="max-h-40 w-auto rounded-2xl object-cover"
                                       />
                                     </a>
                                   ) : (
                                     <a
                                       href={msg.attachmentUrl}
                                       download={msg.attachmentName || 'attachment'}
-                                      className="inline-flex items-center gap-1.5 rounded-lg bg-black/20 px-2.5 py-1 text-[11px] font-semibold underline"
+                                      className="inline-flex items-center gap-1.5 rounded-full bg-black/20 px-3 py-1 text-[11px] font-semibold underline"
                                     >
                                       <Download className="h-3 w-3" />
                                       <span className="max-w-[160px] truncate">
@@ -6236,7 +6261,7 @@ export function MeetingStudio({
                               )}
                               <p className="whitespace-pre-wrap break-words">{msg.body}</p>
                             </div>
-                            <div className="mt-1 flex items-center gap-2 text-[10px] text-white/35">
+                            <div className="mt-1 flex items-center gap-2 px-1 text-[10px] text-white/45">
                               <span>
                                 {new Date(msg.createdAt).toLocaleTimeString('en-LK', {
                                   hour: '2-digit',
@@ -6251,7 +6276,7 @@ export function MeetingStudio({
                                     setChatRecipientId(msg.senderId);
                                   }
                                 }}
-                                className="opacity-70 transition hover:text-[#D4A843] hover:opacity-100"
+                                className="font-medium opacity-75 transition hover:text-[#F5D06F] hover:opacity-100"
                               >
                                 Reply
                               </button>
@@ -6262,26 +6287,26 @@ export function MeetingStudio({
                   )}
                   <div ref={chatBottomRef} />
                 </div>
-                <div className="border-t border-white/10 px-3 pt-2">
-                  <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px]">
-                    <span className="text-white/50">To:</span>
+                <div className="border-t border-white/12 px-3.5 pt-2.5">
+                  <div className="mb-2 flex items-center justify-between gap-2 text-[11px]">
+                    <span className="font-medium text-white/55">Audience:</span>
                     <select
                       value={chatRecipientId}
                       onChange={(e) => setChatRecipientId(e.target.value)}
-                      className="flex-1 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-[11px] text-white focus:outline-none"
+                      className="flex-1 rounded-full border border-white/15 bg-white/[0.07] px-3 py-1 text-[11px] text-white focus:border-[#F5D06F] focus:outline-none"
                     >
-                      <option value="ALL" className="bg-[#0F1522]">Everyone in meeting</option>
+                      <option value="ALL" className="bg-[#0F1522]">Everyone in studio</option>
                       {directMessageRecipients.map((h) => (
                         <option key={h.userId} value={h.userId} className="bg-[#0F1522]">
-                          Direct: {h.fullName} ({h.role})
+                          Whisper: {h.fullName} ({h.role})
                         </option>
                       ))}
                     </select>
                   </div>
                   {chatReplyTo && (
-                    <div className="mb-1.5 flex items-center justify-between gap-2 rounded-lg bg-white/10 px-2.5 py-1 text-[11px] text-white/80">
+                    <div className="mb-2 flex items-center justify-between gap-2 rounded-2xl border border-white/12 bg-white/[0.08] px-3 py-1.5 text-[11px] text-white/85">
                       <span className="truncate">
-                        Replying to <strong>{chatReplyTo.senderName}</strong>: {chatReplyTo.body}
+                        Replying to <strong className="text-[#F5D06F]">{chatReplyTo.senderName}</strong>: {chatReplyTo.body}
                       </span>
                       <button
                         type="button"
@@ -6293,7 +6318,7 @@ export function MeetingStudio({
                     </div>
                   )}
                   {chatAttachment && (
-                    <div className="mb-1.5 flex items-center justify-between gap-2 rounded-lg bg-white/10 px-2.5 py-1 text-[11px] text-white/80">
+                    <div className="mb-2 flex items-center justify-between gap-2 rounded-2xl border border-white/12 bg-white/[0.08] px-3 py-1.5 text-[11px] text-white/85">
                       <span className="truncate">📎 {chatAttachment.name}</span>
                       <button
                         type="button"
@@ -6307,12 +6332,12 @@ export function MeetingStudio({
                 </div>
                 {!canHostControl && (room.chatPermission === 'DISABLED' || room.suspendedActivities) ? (
                   <div className="border-t border-white/10 px-3 py-3 text-center text-xs text-rose-300">
-                    Chat is currently disabled by the meeting host.
+                    Chat is currently muted by the studio host.
                   </div>
                 ) : (
                 <form
                   onSubmit={sendChat}
-                  className="flex items-center gap-1.5 px-3 pb-3 pt-1"
+                  className="flex items-center gap-2 px-3.5 pb-3.5 pt-1"
                 >
                   <input
                     ref={chatFileRef}
@@ -6325,21 +6350,25 @@ export function MeetingStudio({
                     type="button"
                     onClick={() => chatFileRef.current?.click()}
                     title="Attach image or file"
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/15 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
+                    className="liquid-orb flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/80 hover:text-white"
                   >
                     <Paperclip className="h-3.5 w-3.5" />
                   </button>
-                  <Input
+                  <input
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     placeholder={
-                      chatRecipientId === 'ALL' ? 'Message everyone...' : 'Direct private message...'
+                      chatRecipientId === 'ALL' ? 'Drop a message in studio…' : 'Send private whisper…'
                     }
-                    className="h-9 border-white/15 bg-white/5 text-xs text-white placeholder:text-white/40"
+                    className="h-9 flex-1 rounded-full border border-white/15 bg-white/[0.07] px-3.5 text-xs text-white placeholder:text-white/45 focus:border-[#F5D06F] focus:outline-none"
                   />
-                  <Button type="submit" size="sm" variant="primary" className="h-9 px-3">
+                  <button
+                    type="submit"
+                    aria-label="Send message"
+                    className="liquid-orb-gold flex h-9 w-9 shrink-0 items-center justify-center rounded-full"
+                  >
                     <Send className="h-3.5 w-3.5" />
-                  </Button>
+                  </button>
                 </form>
                 )}
               </div>
@@ -6405,42 +6434,43 @@ export function MeetingStudio({
         )}
       </div>
 
-      {/* ─── 1000% ZOOM DESKTOP × APPLE LIQUID GLASS BOTTOM CONTROL DOCK ─── */}
+      {/* ─── FLOATING YAKUNEX VISION-OS 3D LIQUID GLASS CONTROL DOCK ───────── */}
       <footer
         className={cn(
-          'relative z-30 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.08] bg-[#0A0C11]/95 px-4 py-2 backdrop-blur-2xl transition-all duration-300',
-          isFullscreen && controlsHidden && 'pointer-events-none h-0 overflow-hidden border-0 py-0 opacity-0',
+          'relative z-30 flex justify-center px-3 pb-3.5 pt-1 transition-all duration-300',
+          isFullscreen && controlsHidden && 'pointer-events-none h-0 overflow-hidden py-0 opacity-0',
         )}
       >
-        {/* Left: Zoom Exact Split Audio & Video Controls (Icon Above Label + Up-Chevron) */}
+        <div className="liquid-glass-dock flex max-w-full flex-wrap items-center justify-center gap-1.5 rounded-[30px] px-3 py-2 sm:gap-2 sm:px-4">
+        {/* Left Pod: Tactile 3D Liquid Glass Audio & Lens Orbs */}
         <div className="flex items-center gap-1.5">
-          <div className="relative flex items-stretch rounded-2xl border border-white/[0.06] bg-white/[0.03]">
+          <div className="relative flex items-stretch rounded-full border border-white/18 bg-white/[0.06] shadow-[inset_0_1px_0.5px_rgba(255,255,255,0.3)]">
             <button
               type="button"
               onClick={() => void toggleMic()}
-              title="Mute / Unmute (Alt+A · Hold Space for Push-to-Talk)"
+              title="Microphone (Alt+A · Hold Space for Push-to-Talk)"
               className={cn(
-                'flex min-w-[60px] flex-col items-center justify-center gap-1 rounded-l-2xl px-3 py-2 text-[11px] font-medium transition active:scale-95',
+                'flex items-center gap-1.5 rounded-l-full px-3.5 py-2 text-xs font-semibold transition active:scale-95',
                 micOn
-                  ? 'text-white/90 hover:bg-white/[0.08]'
-                  : 'bg-[#FF453A]/15 text-[#FF6961] hover:bg-[#FF453A]/25',
+                  ? 'text-white hover:bg-white/10'
+                  : 'bg-rose-500/25 text-rose-200 hover:bg-rose-500/35',
               )}
             >
-              {micOn ? <Mic className="h-[18px] w-[18px]" /> : <MicOff className="h-[18px] w-[18px]" />}
-              <span className="hidden text-[10px] tracking-tight sm:inline">{micOn ? 'Mute' : 'Unmute'}</span>
+              {micOn ? <Mic className="h-4 w-4 text-emerald-300" /> : <MicOff className="h-4 w-4 text-rose-300" />}
+              <span className="hidden sm:inline">{micOn ? 'Mic' : 'Muted'}</span>
             </button>
             <button
               type="button"
               onClick={() => setDeviceMenu((m) => (m === 'mic' ? null : 'mic'))}
               title="Audio, Speaker & Mic Settings"
-              className="flex items-center rounded-r-2xl border-l border-white/[0.06] px-1.5 text-white/55 transition hover:bg-white/[0.08] hover:text-white"
+              className="flex items-center rounded-r-full border-l border-white/12 px-2 text-white/65 transition hover:bg-white/10 hover:text-white"
             >
               <ChevronUp className="h-3.5 w-3.5" />
             </button>
             {deviceMenu === 'mic' && (
-              <div className="absolute bottom-16 left-0 z-50 max-h-[70vh] w-72 overflow-y-auto rounded-2xl border border-white/15 bg-[#121620]/95 p-2.5 shadow-2xl backdrop-blur-2xl">
-                <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white/45">
-                  Select a Microphone
+              <div className="liquid-glass-popover absolute bottom-16 left-0 z-50 max-h-[70vh] w-72 overflow-y-auto rounded-[26px] p-3">
+                <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-[#F5D06F]">
+                  Microphone Input
                 </p>
                 {audioDevices.length === 0 ? (
                   <p className="px-2 py-1.5 text-xs text-white/50">Default microphone</p>
@@ -6450,25 +6480,25 @@ export function MeetingStudio({
                       key={d.deviceId}
                       type="button"
                       onClick={() => void switchDevice('audio', d.deviceId)}
-                      className="flex w-full items-center justify-between rounded-xl px-2 py-1.5 text-left text-xs text-white hover:bg-white/10"
+                      className="flex w-full items-center justify-between rounded-2xl px-2.5 py-1.5 text-left text-xs text-white hover:bg-white/10"
                     >
                       <span className="truncate">{d.label || 'Microphone'}</span>
-                      {selectedMicId === d.deviceId && <Check className="h-3.5 w-3.5 text-[#30D158]" />}
+                      {selectedMicId === d.deviceId && <Check className="h-3.5 w-3.5 text-[#F5D06F]" />}
                     </button>
                   ))
                 )}
 
                 <div className="my-2 border-t border-white/10" />
                 <div className="flex items-center justify-between px-2 py-1">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-white/45">
-                    Select a Speaker
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#F5D06F]">
+                    Speaker Output
                   </p>
                   <button
                     type="button"
                     onClick={() => void playSpeakerTestTone(selectedSpeakerId || undefined)}
-                    className="rounded-lg bg-[#2D8CFF]/20 px-2 py-0.5 text-[10px] font-bold text-[#6BB0FF] hover:bg-[#2D8CFF]/30"
+                    className="liquid-orb rounded-full px-2.5 py-0.5 text-[10px] font-bold text-[#F5D06F]"
                   >
-                    Test Speaker
+                    Test Tone
                   </button>
                 </div>
                 {speakerDevices.length === 0 ? (
@@ -6482,30 +6512,31 @@ export function MeetingStudio({
                         setSelectedSpeakerId(d.deviceId);
                         showToast(`Speaker switched to ${d.label || 'selected output'}.`);
                       }}
-                      className="flex w-full items-center justify-between rounded-xl px-2 py-1.5 text-left text-xs text-white hover:bg-white/10"
+                      className="flex w-full items-center justify-between rounded-2xl px-2.5 py-1.5 text-left text-xs text-white hover:bg-white/10"
                     >
                       <span className="truncate">{d.label || 'Speaker'}</span>
-                      {selectedSpeakerId === d.deviceId && <Check className="h-3.5 w-3.5 text-[#30D158]" />}
+                      {selectedSpeakerId === d.deviceId && <Check className="h-3.5 w-3.5 text-[#F5D06F]" />}
                     </button>
                   ))
                 )}
 
                 <div className="my-2 border-t border-white/10" />
-                <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white/45">
-                  Audio Processing
+                <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-white/45">
+                  Acoustic Studio
                 </p>
                 <div className="space-y-1 px-1 text-xs">
-                  <label className="flex cursor-pointer items-center justify-between rounded-xl px-2 py-1 hover:bg-white/5">
-                    <span>Noise Suppression</span>
+                  <label className="flex cursor-pointer items-center justify-between rounded-2xl px-2.5 py-1.5 hover:bg-white/5">
+                    <span>Voice Isolation</span>
                     <input
                       type="checkbox"
                       checked={!audioProfile.originalSound && audioProfile.noiseSuppression}
                       onChange={(e) =>
                         void updateAudioProfile({ noiseSuppression: e.target.checked, originalSound: false })
                       }
+                      className="accent-[#D4A843]"
                     />
                   </label>
-                  <label className="flex cursor-pointer items-center justify-between rounded-xl px-2 py-1 hover:bg-white/5">
+                  <label className="flex cursor-pointer items-center justify-between rounded-2xl px-2.5 py-1.5 hover:bg-white/5">
                     <span>Echo Cancellation</span>
                     <input
                       type="checkbox"
@@ -6513,14 +6544,16 @@ export function MeetingStudio({
                       onChange={(e) =>
                         void updateAudioProfile({ echoCancellation: e.target.checked, originalSound: false })
                       }
+                      className="accent-[#D4A843]"
                     />
                   </label>
-                  <label className="flex cursor-pointer items-center justify-between rounded-xl px-2 py-1 hover:bg-white/5">
-                    <span>Original Sound (Studio)</span>
+                  <label className="flex cursor-pointer items-center justify-between rounded-2xl px-2.5 py-1.5 hover:bg-white/5">
+                    <span>Original Studio Sound</span>
                     <input
                       type="checkbox"
                       checked={audioProfile.originalSound}
                       onChange={(e) => void updateAudioProfile({ originalSound: e.target.checked })}
+                      className="accent-[#D4A843]"
                     />
                   </label>
                 </div>
@@ -6528,35 +6561,33 @@ export function MeetingStudio({
             )}
           </div>
 
-          <div className="relative flex items-stretch rounded-2xl border border-white/[0.06] bg-white/[0.03]">
+          <div className="relative flex items-stretch rounded-full border border-white/18 bg-white/[0.06] shadow-[inset_0_1px_0.5px_rgba(255,255,255,0.3)]">
             <button
               type="button"
               onClick={() => void toggleCam()}
-              title="Start / Stop Video (Alt+V)"
+              title="Camera Lens (Alt+V)"
               className={cn(
-                'flex min-w-[68px] flex-col items-center justify-center gap-1 rounded-l-2xl px-3 py-2 text-[11px] font-medium transition active:scale-95',
+                'flex items-center gap-1.5 rounded-l-full px-3.5 py-2 text-xs font-semibold transition active:scale-95',
                 camOn
-                  ? 'text-white/90 hover:bg-white/[0.08]'
-                  : 'bg-[#FF453A]/15 text-[#FF6961] hover:bg-[#FF453A]/25',
+                  ? 'text-white hover:bg-white/10'
+                  : 'bg-rose-500/25 text-rose-200 hover:bg-rose-500/35',
               )}
             >
-              {camOn ? <Camera className="h-[18px] w-[18px]" /> : <CameraOff className="h-[18px] w-[18px]" />}
-              <span className="hidden text-[10px] tracking-tight sm:inline">
-                {camOn ? 'Stop Video' : 'Start Video'}
-              </span>
+              {camOn ? <Camera className="h-4 w-4 text-emerald-300" /> : <CameraOff className="h-4 w-4 text-rose-300" />}
+              <span className="hidden sm:inline">{camOn ? 'Lens' : 'Cam Off'}</span>
             </button>
             <button
               type="button"
               onClick={() => setDeviceMenu((m) => (m === 'cam' ? null : 'cam'))}
-              title="Camera & Virtual Background Settings"
-              className="flex items-center rounded-r-2xl border-l border-white/[0.06] px-1.5 text-white/55 transition hover:bg-white/[0.08] hover:text-white"
+              title="Camera Studio & Depth Blur"
+              className="flex items-center rounded-r-full border-l border-white/12 px-2 text-white/65 transition hover:bg-white/10 hover:text-white"
             >
               <ChevronUp className="h-3.5 w-3.5" />
             </button>
             {deviceMenu === 'cam' && (
-              <div className="absolute bottom-16 left-0 z-50 w-64 rounded-2xl border border-white/15 bg-[#121620]/95 p-2.5 shadow-2xl backdrop-blur-2xl">
-                <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-white/45">
-                  Select a Camera
+              <div className="liquid-glass-popover absolute bottom-16 left-0 z-50 w-64 rounded-[26px] p-3">
+                <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-[#F5D06F]">
+                  Camera Lens
                 </p>
                 {videoDevices.length === 0 ? (
                   <p className="px-2 py-1.5 text-xs text-white/50">Default camera</p>
@@ -6566,10 +6597,10 @@ export function MeetingStudio({
                       key={d.deviceId}
                       type="button"
                       onClick={() => void switchDevice('video', d.deviceId)}
-                      className="flex w-full items-center justify-between rounded-xl px-2 py-1.5 text-left text-xs text-white hover:bg-white/10"
+                      className="flex w-full items-center justify-between rounded-2xl px-2.5 py-1.5 text-left text-xs text-white hover:bg-white/10"
                     >
                       <span className="truncate">{d.label || 'Camera'}</span>
-                      {selectedCamId === d.deviceId && <Check className="h-3.5 w-3.5 text-[#30D158]" />}
+                      {selectedCamId === d.deviceId && <Check className="h-3.5 w-3.5 text-[#F5D06F]" />}
                     </button>
                   ))
                 )}
@@ -6580,16 +6611,17 @@ export function MeetingStudio({
                     setDeviceMenu(null);
                     setShowEffectsModal(true);
                   }}
-                  className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left text-xs font-semibold text-[#6BB0FF] hover:bg-white/10"
+                  className="flex w-full items-center gap-2 rounded-2xl px-2.5 py-1.5 text-left text-xs font-semibold text-[#F5D06F] hover:bg-white/10"
                 >
-                  <Sparkles className="h-3.5 w-3.5" /> Choose Virtual Background...
+                  <Sparkles className="h-3.5 w-3.5" /> Camera Studio &amp; Blur…
                 </button>
-                <label className="mt-1 flex cursor-pointer items-center justify-between rounded-xl px-2 py-1 text-xs hover:bg-white/5">
+                <label className="mt-1 flex cursor-pointer items-center justify-between rounded-2xl px-2.5 py-1.5 text-xs hover:bg-white/5">
                   <span>Mirror My Video</span>
                   <input
                     type="checkbox"
                     checked={mirrorVideo}
                     onChange={() => setMirrorVideo((v) => !v)}
+                    className="accent-[#D4A843]"
                   />
                 </label>
               </div>
@@ -6597,24 +6629,151 @@ export function MeetingStudio({
           </div>
         </div>
 
-        {/* Center: Exact Zoom Icon-Above-Label Ergonomics */}
-        <div className="flex flex-wrap items-center justify-center gap-1">
+        <span className="hidden h-6 w-px bg-white/15 sm:inline-block" />
+
+        {/* Center Pod: Spatial Studio Orbs */}
+        <div className="flex flex-wrap items-center justify-center gap-1.5">
+          {/* Signature Yakunex 3D Liquid Gold Present Button */}
+          <button
+            type="button"
+            onClick={() => void toggleScreenShare()}
+            title="Present Screen (Alt+S)"
+            className={cn(
+              'flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold transition',
+              screenOn
+                ? 'liquid-orb-gold'
+                : 'liquid-orb text-[#F5D06F]',
+            )}
+          >
+            <MonitorUp className="h-4 w-4" />
+            <span className="hidden sm:inline">
+              {screenOn ? 'Stop Presenting' : isScreenShareLockedForSelf ? 'Request Stage' : 'Present'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setSideTab((s) => (s === 'chat' ? 'closed' : 'chat'))}
+            title="Spatial Chat (Alt+H)"
+            className={cn(
+              'relative flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-semibold transition',
+              sideTab === 'chat' ? 'liquid-orb-gold' : 'liquid-orb text-white/90',
+            )}
+          >
+            <MessagesSquare className="h-4 w-4" />
+            <span className="hidden md:inline">Chat</span>
+            {unreadChat > 0 && (
+              <span className="liquid-orb-ruby ml-0.5 rounded-full px-1.5 py-0.2 text-[10px] font-bold">
+                {unreadChat}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setSideTab((s) => (s === 'participants' ? 'closed' : 'participants'))}
+            title="People & Waiting Lounge (Alt+U)"
+            className={cn(
+              'relative flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-semibold transition',
+              sideTab === 'participants' ? 'liquid-orb-gold' : 'liquid-orb text-white/90',
+            )}
+          >
+            <Users className="h-4 w-4" />
+            <span className="hidden md:inline">People</span>
+            <span className="rounded-full bg-white/15 px-1.5 text-[10px] font-bold tabular-nums">
+              {room.participants.length}
+            </span>
+            {canHostControl && (room.waitingRoom?.length ?? 0) > 0 && (
+              <span className="h-2 w-2 animate-ping rounded-full bg-amber-300" />
+            )}
+          </button>
+
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowReactionTray((v) => !v)}
+              title="Spatial Reactions & Hand Raise (Alt+Y)"
+              className={cn(
+                'flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-semibold transition',
+                handRaised ? 'liquid-orb-gold' : 'liquid-orb text-white/90',
+              )}
+            >
+              <Smile className="h-4 w-4" />
+              <span className="hidden lg:inline">{handRaised ? 'Hand Up' : 'React'}</span>
+            </button>
+            {showReactionTray && (
+              <div className="liquid-glass-popover absolute bottom-16 left-1/2 z-50 flex -translate-x-1/2 flex-col gap-2 rounded-[28px] p-3">
+                <div className="flex items-center gap-1">
+                  {QUICK_REACTIONS.map((emoji) => (
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => void sendReaction(emoji)}
+                      className="rounded-full p-2 text-xl transition hover:-translate-y-1 hover:scale-125 hover:bg-white/10"
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void toggleHandRaise()}
+                  className={cn(
+                    'flex w-full items-center justify-center gap-1.5 rounded-full px-3 py-2 text-xs font-bold transition',
+                    handRaised
+                      ? 'liquid-orb-gold'
+                      : 'liquid-orb text-white',
+                  )}
+                >
+                  <Hand className="h-3.5 w-3.5" /> {handRaised ? 'Lower Hand' : 'Raise Hand'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {canRecord && (
+            <div className="hidden items-center gap-1 xl:flex">
+              <button
+                type="button"
+                onClick={toggleRecording}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-semibold transition',
+                  recording ? 'liquid-orb-ruby' : 'liquid-orb text-white/90',
+                )}
+              >
+                <Radio className={cn('h-4 w-4', recording && !recordingPaused && 'animate-pulse')} />
+                <span>{recording ? 'Stop Rec' : 'Record'}</span>
+              </button>
+              {recording && (
+                <button
+                  type="button"
+                  onClick={togglePauseRecording}
+                  title={recordingPaused ? 'Resume Recording' : 'Pause Recording'}
+                  className="liquid-orb rounded-full p-2 text-amber-300"
+                >
+                  {recordingPaused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+                </button>
+              )}
+            </div>
+          )}
+
           {canHostControl && (
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setShowSecurityMenu((v) => !v)}
+                title="Spatial Shield Controls"
                 className={cn(
-                  'flex min-w-[58px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95',
+                  'flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-semibold transition',
                   room.isLocked || room.suspendedActivities
-                    ? 'bg-[#FF453A]/20 text-[#FF6961]'
+                    ? 'liquid-orb-ruby'
                     : showSecurityMenu
-                      ? 'bg-white/15 text-white'
-                      : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
+                      ? 'liquid-orb-gold'
+                      : 'liquid-orb text-white/90',
                 )}
               >
-                <Shield className="h-[18px] w-[18px]" />
-                <span className="hidden text-[10px] font-medium md:inline">Security</span>
+                <Shield className="h-4 w-4" />
+                <span className="hidden lg:inline">Shield</span>
               </button>
               {showSecurityMenu && (
                 <SecurityPopover
@@ -6627,204 +6786,18 @@ export function MeetingStudio({
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={() => setSideTab((s) => (s === 'participants' ? 'closed' : 'participants'))}
-            title="Participants (Alt+U)"
-            className={cn(
-              'relative flex min-w-[64px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95',
-              sideTab === 'participants'
-                ? 'bg-white/15 text-white'
-                : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
-            )}
-          >
-            <div className="relative">
-              <Users className="h-[18px] w-[18px]" />
-              <span className="absolute -right-3 -top-1.5 rounded-full bg-white/15 px-1 text-[9px] font-bold tabular-nums text-white">
-                {room.participants.length}
-              </span>
-              {canHostControl && (room.waitingRoom?.length ?? 0) > 0 && (
-                <span className="absolute -left-1.5 -top-1 h-2 w-2 rounded-full bg-amber-400" />
-              )}
-            </div>
-            <span className="hidden text-[10px] font-medium md:inline">Participants</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setSideTab((s) => (s === 'chat' ? 'closed' : 'chat'))}
-            title="Chat (Alt+H)"
-            className={cn(
-              'relative flex min-w-[54px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95',
-              sideTab === 'chat'
-                ? 'bg-white/15 text-white'
-                : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
-            )}
-          >
-            <div className="relative">
-              <MessagesSquare className="h-[18px] w-[18px]" />
-              {unreadChat > 0 && (
-                <span className="absolute -right-2.5 -top-1.5 rounded-full bg-[#FF453A] px-1.5 text-[9px] font-bold text-white">
-                  {unreadChat}
-                </span>
-              )}
-            </div>
-            <span className="hidden text-[10px] font-medium md:inline">Chat</span>
-          </button>
-
-          {/* Zoom Signature Vibrant Emerald Share Screen */}
-          <button
-            type="button"
-            onClick={() => void toggleScreenShare()}
-            title="Share Screen (Alt+S)"
-            className={cn(
-              'flex min-w-[74px] flex-col items-center justify-center gap-1 rounded-2xl px-3 py-2 transition active:scale-95',
-              screenOn
-                ? 'bg-[#0EBA64] text-white shadow-[0_8px_22px_-4px_rgba(14,186,100,0.55)] hover:bg-[#12CC6F]'
-                : 'bg-[#0EBA64]/12 text-[#2EE588] hover:bg-[#0EBA64]/20',
-            )}
-          >
-            <MonitorUp className="h-[18px] w-[18px]" />
-            <span className="hidden text-[10px] font-semibold sm:inline">
-              {screenOn ? 'Stop Share' : isScreenShareLockedForSelf ? 'Request' : 'Share'}
-            </span>
-          </button>
-
-          {/* Policy-gated Record with Pause/Resume */}
-          {canRecord && (
-            <div className="hidden items-center gap-0.5 md:flex">
-              <button
-                type="button"
-                onClick={toggleRecording}
-                className={cn(
-                  'flex min-w-[56px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95',
-                  recording
-                    ? 'bg-[#FF453A]/20 text-[#FF6961]'
-                    : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
-                )}
-              >
-                <Radio className={cn('h-[18px] w-[18px]', recording && !recordingPaused && 'animate-pulse')} />
-                <span className="text-[10px] font-medium">{recording ? 'Stop Rec' : 'Record'}</span>
-              </button>
-              {recording && (
-                <button
-                  type="button"
-                  onClick={togglePauseRecording}
-                  title={recordingPaused ? 'Resume Recording' : 'Pause Recording'}
-                  className="flex flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2 text-amber-300 hover:bg-white/[0.08]"
-                >
-                  {recordingPaused ? <Play className="h-[18px] w-[18px]" /> : <Pause className="h-[18px] w-[18px]" />}
-                  <span className="text-[10px] font-medium">{recordingPaused ? 'Resume' : 'Pause'}</span>
-                </button>
-              )}
-            </div>
-          )}
-
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowReactionTray((v) => !v)}
-              title="Reactions & Raise Hand (Alt+Y)"
-              className={cn(
-                'flex min-w-[56px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95',
-                handRaised
-                  ? 'bg-amber-400/20 text-amber-300'
-                  : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
-              )}
-            >
-              <Smile className="h-[18px] w-[18px]" />
-              <span className="hidden text-[10px] font-medium md:inline">React</span>
-            </button>
-            {showReactionTray && (
-              <div className="absolute bottom-16 left-1/2 z-50 flex -translate-x-1/2 flex-col gap-2 rounded-2xl border border-white/15 bg-[#121620]/95 p-2.5 shadow-2xl backdrop-blur-2xl">
-                <div className="flex items-center gap-1">
-                  {QUICK_REACTIONS.map((emoji) => (
-                    <button
-                      key={emoji}
-                      type="button"
-                      onClick={() => void sendReaction(emoji)}
-                      className="rounded-xl p-1.5 text-xl transition hover:scale-125 hover:bg-white/10"
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void toggleHandRaise()}
-                  className={cn(
-                    'flex w-full items-center justify-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition',
-                    handRaised
-                      ? 'bg-amber-400 text-slate-950'
-                      : 'bg-white/10 text-white hover:bg-white/20',
-                  )}
-                >
-                  <Hand className="h-3.5 w-3.5" /> {handRaised ? 'Lower Hand' : 'Raise Hand'}
-                </button>
-              </div>
-            )}
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setSideTab((s) => (s === 'polls' ? 'closed' : 'polls'))}
-            className={cn(
-              'hidden min-w-[56px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95 lg:flex',
-              sideTab === 'polls'
-                ? 'bg-white/15 text-white'
-                : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
-            )}
-          >
-            <BarChart3 className="h-[18px] w-[18px]" />
-            <span className="text-[10px] font-medium">Polls</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() =>
-              setWhiteboardMode((m) => (m === 'whiteboard' ? 'closed' : 'whiteboard'))
-            }
-            className={cn(
-              'hidden min-w-[66px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95 xl:flex',
-              whiteboardMode === 'whiteboard'
-                ? 'bg-[#2D8CFF]/25 text-[#6BB0FF]'
-                : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
-            )}
-          >
-            <PenTool className="h-[18px] w-[18px]" />
-            <span className="text-[10px] font-medium">Whiteboard</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setCaptionsOn((v) => !v)}
-            title="Live Captions (Alt+C)"
-            className={cn(
-              'hidden min-w-[56px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95 xl:flex',
-              captionsOn
-                ? 'bg-[#30D158]/20 text-[#30D158]'
-                : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
-            )}
-          >
-            <Captions className="h-[18px] w-[18px]" />
-            <span className="text-[10px] font-medium">Captions</span>
-          </button>
-
-          {/* Zoom More (•••) Responsive Popover */}
           <div className="relative">
             <button
               type="button"
               onClick={() => setShowMoreMenu((v) => !v)}
-              title="More Zoom Tools"
+              title="Spatial Suite (Polls, Canvas, Subtitles, Breakouts)"
               className={cn(
-                'flex min-w-[52px] flex-col items-center justify-center gap-1 rounded-2xl px-2.5 py-2 transition active:scale-95',
-                showMoreMenu
-                  ? 'bg-white/15 text-white'
-                  : 'text-white/80 hover:bg-white/[0.08] hover:text-white',
+                'flex items-center gap-1 rounded-full px-3 py-2 text-xs font-semibold transition',
+                showMoreMenu ? 'liquid-orb-gold' : 'liquid-orb text-white/90',
               )}
             >
-              <MoreHorizontal className="h-[18px] w-[18px]" />
-              <span className="hidden text-[10px] font-medium sm:inline">More</span>
+              <MoreHorizontal className="h-4 w-4" />
+              <span className="hidden sm:inline">Suite</span>
             </button>
             {showMoreMenu && (
               <MoreToolsPopover
@@ -6859,36 +6832,39 @@ export function MeetingStudio({
           </div>
         </div>
 
-        {/* Right: Authentic Zoom Crimson End / Leave Pill */}
+        <span className="hidden h-6 w-px bg-white/15 sm:inline-block" />
+
+        {/* Right Pod: Sculpted 3D Ruby Liquid Glass Leave / End Capsule */}
         <div className="relative">
           <button
             type="button"
             onClick={() =>
               canHostControl ? setShowLeaveMenu((v) => !v) : void leaveCall(false)
             }
-            className="flex h-10 items-center gap-1.5 rounded-xl bg-[#E53935] px-4 text-xs font-bold text-white shadow-[0_8px_20px_-4px_rgba(229,57,53,0.55)] transition hover:bg-[#F44336] active:scale-95"
+            className="liquid-orb-ruby flex h-9.5 items-center gap-1.5 rounded-full px-4 py-2 text-xs font-bold"
           >
             <PhoneOff className="h-4 w-4" />
             <span>{canHostControl ? 'End' : 'Leave'}</span>
           </button>
           {showLeaveMenu && (
-            <div className="absolute bottom-14 right-0 z-50 w-56 space-y-1.5 rounded-2xl border border-white/15 bg-[#121620]/95 p-2 shadow-2xl backdrop-blur-2xl">
+            <div className="liquid-glass-popover absolute bottom-14 right-0 z-50 w-56 space-y-2 rounded-[24px] p-2.5">
               <button
                 type="button"
                 onClick={() => void leaveCall(true)}
-                className="w-full rounded-xl bg-[#E53935] px-3 py-2 text-xs font-bold text-white transition hover:bg-[#F44336]"
+                className="liquid-orb-ruby w-full rounded-full px-3 py-2 text-xs font-bold"
               >
-                End Meeting for All
+                End Studio for Everyone
               </button>
               <button
                 type="button"
                 onClick={() => void leaveCall(false)}
-                className="w-full rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/20"
+                className="liquid-orb w-full rounded-full px-3 py-2 text-xs font-semibold text-white"
               >
-                Leave Meeting
+                Leave Studio Myself
               </button>
             </div>
           )}
+        </div>
         </div>
       </footer>
 
@@ -7108,89 +7084,91 @@ export function PreJoinGreenRoom({
   };
 
   return (
-    <div className="mx-auto max-w-5xl rounded-[28px] border border-white/10 bg-[#0b0d13]/95 p-6 text-white shadow-pop backdrop-blur-2xl md:p-8">
+    <div className="liquid-glass mx-auto max-w-5xl rounded-[34px] p-6 text-white md:p-8">
       <div className="grid gap-7 md:grid-cols-[1.45fr_1fr] md:items-center">
-        {/* Live Camera Preview Box (Apple FaceTime + Zoom Pro) */}
-        <div className="relative aspect-video overflow-hidden rounded-[22px] border border-white/10 bg-[#121622] shadow-card">
+        {/* 3D Liquid Glass Spatial Mirror Preview */}
+        <div className="liquid-video-pod relative aspect-video overflow-hidden rounded-[26px]">
           {camOn && previewStream?.getVideoTracks().some((t) => t.readyState === 'live') ? (
             <VideoCanvas stream={previewStream} mirrored />
           ) : (
-            <div className="flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-[#192030] to-[#0b0d13]">
-              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-[#D4A843] to-[#9A7222] font-display text-2xl font-bold text-slate-950 shadow-lg">
+            <div className="flex h-full w-full flex-col items-center justify-center bg-[radial-gradient(ellipse_at_top,rgba(212,168,67,0.18),transparent_60%)]">
+              <div className="liquid-orb-gold flex h-20 w-20 items-center justify-center rounded-full font-display text-2xl font-bold ring-4 ring-white/15">
                 {getInitials(userName)}
               </div>
-              <p className="mt-3 text-xs font-medium text-white/60">Camera is off</p>
+              <p className="mt-3 text-xs font-medium text-white/60">Spatial Avatar Ready</p>
             </div>
           )}
 
-          {/* Top-left live status pill */}
-          <div className="absolute left-3.5 top-3.5 flex items-center gap-2 rounded-full bg-black/45 px-3 py-1 text-[11px] font-medium text-white/85 backdrop-blur-md">
-            <span className={cn('h-2 w-2 rounded-full', micOn || camOn ? 'bg-emerald-400' : 'bg-white/40')} />
-            <span>Pre-Join Check</span>
+          {/* Top-left floating glass badge */}
+          <div className="liquid-glass absolute left-3.5 top-3.5 flex items-center gap-2 rounded-full px-3.5 py-1 text-[11px] font-semibold text-white/90">
+            <span className={cn('h-2 w-2 rounded-full', micOn || camOn ? 'bg-emerald-400 animate-pulse' : 'bg-white/40')} />
+            <span>Yakunex Mirror Check</span>
           </div>
 
-          {/* Floating Apple Frosted Dock toggles */}
+          {/* Floating 3D Liquid Glass Orb Toggles */}
           <div className="absolute inset-x-0 bottom-4 flex items-center justify-center gap-3">
             <button
               type="button"
               onClick={togglePreviewMic}
               className={cn(
-                'flex h-11 items-center gap-2 rounded-full px-4 text-xs font-semibold shadow-lg backdrop-blur-xl transition active:scale-95',
-                micOn ? 'bg-white/15 text-white hover:bg-white/25' : 'bg-rose-600 text-white hover:bg-rose-500',
+                'flex h-11 items-center gap-2 rounded-full px-5 text-xs font-bold transition',
+                micOn ? 'liquid-glass text-white hover:bg-white/20' : 'liquid-orb-ruby',
               )}
               title={micOn ? 'Mute mic' : 'Unmute mic'}
             >
-              {micOn ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
-              <span>{micOn ? 'Mic On' : 'Mic Off'}</span>
+              {micOn ? <Mic className="h-4 w-4 text-emerald-300" /> : <MicOff className="h-4 w-4" />}
+              <span>{micOn ? 'Mic Live' : 'Mic Muted'}</span>
             </button>
             <button
               type="button"
               onClick={togglePreviewCam}
               className={cn(
-                'flex h-11 items-center gap-2 rounded-full px-4 text-xs font-semibold shadow-lg backdrop-blur-xl transition active:scale-95',
-                camOn ? 'bg-white/15 text-white hover:bg-white/25' : 'bg-rose-600 text-white hover:bg-rose-500',
+                'flex h-11 items-center gap-2 rounded-full px-5 text-xs font-bold transition',
+                camOn ? 'liquid-glass text-white hover:bg-white/20' : 'liquid-orb-ruby',
               )}
               title={camOn ? 'Turn camera off' : 'Turn camera on'}
             >
-              {camOn ? <Camera className="h-4 w-4" /> : <CameraOff className="h-4 w-4" />}
-              <span>{camOn ? 'Cam On' : 'Cam Off'}</span>
+              {camOn ? <Camera className="h-4 w-4 text-emerald-300" /> : <CameraOff className="h-4 w-4" />}
+              <span>{camOn ? 'Lens Live' : 'Lens Off'}</span>
             </button>
           </div>
         </div>
 
-        {/* Room Join Details & Device Selectors */}
+        {/* Spatial Studio Details & Device Selectors */}
         <div className="space-y-4">
-          <div className="flex items-center gap-2">
-            <Badge tone="gold" className="w-fit">
-              Room {roomCode}
-            </Badge>
-            <span className="text-[11px] font-medium text-white/50">Zoom + Apple Studio</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="liquid-orb-gold rounded-full px-3 py-1 font-mono text-[11px] font-bold">
+              {roomCode}
+            </span>
+            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#F5D06F]/85">
+              Yakunex Spatial Studio
+            </span>
           </div>
           <div>
             <h3 className="font-display text-2xl font-bold tracking-tight text-white">{meetingTitle}</h3>
-            <p className="mt-1 text-xs text-white/60">Hosted by {organizerName}</p>
+            <p className="mt-1 text-xs text-white/65">Hosted by {organizerName}</p>
           </div>
 
           {deviceWarn && (
-            <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs text-amber-200">
+            <div className="rounded-2xl border border-amber-400/35 bg-amber-400/12 p-3 text-xs text-amber-100">
               {deviceWarn}
             </div>
           )}
 
-          {/* Device Selection Card */}
-          <div className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.05] p-4 text-xs text-white/80 backdrop-blur-md">
+          {/* 3D Glass Device Selection Pod */}
+          <div className="space-y-3 rounded-[24px] border border-white/15 bg-white/[0.06] p-4 text-xs text-white/85 shadow-[inset_0_1px_0.5px_rgba(255,255,255,0.25)]">
             <div>
               <div className="mb-1.5 flex items-center justify-between">
                 <span className="font-semibold text-white/90">Microphone</span>
-                <span className={micOn ? 'font-semibold text-emerald-400' : 'font-semibold text-rose-400'}>
-                  {micOn ? 'On' : 'Muted'}
+                <span className={micOn ? 'font-semibold text-emerald-300' : 'font-semibold text-rose-300'}>
+                  {micOn ? 'Live' : 'Muted'}
                 </span>
               </div>
               <select
                 aria-label="Select Microphone"
                 value={selectedMicId}
                 onChange={(e) => setSelectedMicId(e.target.value)}
-                className="h-9 w-full rounded-xl border border-white/10 bg-black/40 px-3 text-xs text-white focus:border-gold focus:outline-none"
+                className="h-9 w-full rounded-full border border-white/15 bg-black/35 px-3.5 text-xs text-white focus:border-[#F5D06F] focus:outline-none"
               >
                 {audioInputs.length === 0 ? (
                   <option value="">Default Microphone</option>
@@ -7205,7 +7183,7 @@ export function PreJoinGreenRoom({
               {micOn && (
                 <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
                   <div
-                    className="h-full rounded-full bg-emerald-400 transition-all duration-100"
+                    className="h-full rounded-full bg-gradient-to-r from-[#F5D06F] to-emerald-400 transition-all duration-100"
                     style={{ width: `${micLevel}%` }}
                   />
                 </div>
@@ -7218,16 +7196,16 @@ export function PreJoinGreenRoom({
                 <button
                   type="button"
                   onClick={() => void playSpeakerTestTone(selectedSpeakerId || undefined)}
-                  className="rounded-lg bg-[#D4A843]/20 px-2 py-0.5 text-[10px] font-bold text-[#D4A843] hover:bg-[#D4A843]/30"
+                  className="liquid-orb rounded-full px-2.5 py-0.5 text-[10px] font-bold text-[#F5D06F]"
                 >
-                  Test Speaker
+                  Test Sound
                 </button>
               </div>
               <select
                 aria-label="Select Speaker"
                 value={selectedSpeakerId}
                 onChange={(e) => setSelectedSpeakerId(e.target.value)}
-                className="h-9 w-full rounded-xl border border-white/10 bg-black/40 px-3 text-xs text-white focus:border-gold focus:outline-none"
+                className="h-9 w-full rounded-full border border-white/15 bg-black/35 px-3.5 text-xs text-white focus:border-[#F5D06F] focus:outline-none"
               >
                 {audioOutputs.length === 0 ? (
                   <option value="">System Default Speaker</option>
@@ -7243,16 +7221,16 @@ export function PreJoinGreenRoom({
 
             <div>
               <div className="mb-1.5 flex items-center justify-between">
-                <span className="font-semibold text-white/90">Camera</span>
-                <span className={camOn ? 'font-semibold text-emerald-400' : 'font-semibold text-rose-400'}>
-                  {camOn ? 'On' : 'Off'}
+                <span className="font-semibold text-white/90">Camera Lens</span>
+                <span className={camOn ? 'font-semibold text-emerald-300' : 'font-semibold text-rose-300'}>
+                  {camOn ? 'Live' : 'Off'}
                 </span>
               </div>
               <select
                 aria-label="Select Camera"
                 value={selectedCamId}
                 onChange={(e) => setSelectedCamId(e.target.value)}
-                className="h-9 w-full rounded-xl border border-white/10 bg-black/40 px-3 text-xs text-white focus:border-gold focus:outline-none"
+                className="h-9 w-full rounded-full border border-white/15 bg-black/35 px-3.5 text-xs text-white focus:border-[#F5D06F] focus:outline-none"
               >
                 {videoInputs.length === 0 ? (
                   <option value="">Default Camera</option>
@@ -7267,7 +7245,7 @@ export function PreJoinGreenRoom({
             </div>
           </div>
 
-          <div className="flex flex-col gap-2 pt-1">
+          <div className="flex flex-col gap-2.5 pt-1">
             <button
               type="button"
               disabled={joining}
@@ -7281,9 +7259,9 @@ export function PreJoinGreenRoom({
                   speakerDeviceId: selectedSpeakerId || undefined,
                 });
               }}
-              className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-b from-[#2D8CFF] to-[#0E71EB] px-5 text-sm font-bold text-white shadow-[0_12px_28px_-6px_rgba(14,113,235,0.55)] ring-1 ring-inset ring-white/25 transition hover:brightness-110 active:scale-[0.99] disabled:opacity-50"
+              className="liquid-orb-gold flex h-12 w-full items-center justify-center gap-2 rounded-full px-5 text-sm font-bold disabled:opacity-50"
             >
-              <Video className="h-4 w-4" /> {joining ? 'Connecting to Room...' : 'Join Meeting'}
+              <Video className="h-4 w-4" /> {joining ? 'Entering Spatial Studio…' : 'Enter Spatial Studio'}
             </button>
             <button
               type="button"
@@ -7291,9 +7269,9 @@ export function PreJoinGreenRoom({
                 previewStream?.getTracks().forEach((t) => t.stop());
                 onCancel();
               }}
-              className="flex h-10 w-full items-center justify-center rounded-2xl border border-white/10 bg-white/[0.06] text-xs font-semibold text-white/80 transition hover:bg-white/10 hover:text-white"
+              className="liquid-orb flex h-10 w-full items-center justify-center rounded-full text-xs font-semibold text-white/85"
             >
-              Cancel &amp; Close
+              Leave Greenroom
             </button>
           </div>
         </div>

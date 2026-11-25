@@ -71,22 +71,24 @@ export function BreakoutRoomsModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
-      <div className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-white/15 bg-[#111827] text-white shadow-2xl">
-        <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-          <div className="flex items-center gap-2.5">
-            <DoorOpen className="h-5 w-5 text-[#D4A843]" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-md">
+      <div className="liquid-glass-popover flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-[30px] text-white">
+        <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
+          <div className="flex items-center gap-3">
+            <span className="liquid-orb flex h-9 w-9 items-center justify-center rounded-2xl text-[#F5D06F]">
+              <DoorOpen className="h-4.5 w-4.5" />
+            </span>
             <div>
-              <h3 className="font-display text-base font-semibold">Breakout Rooms</h3>
+              <h3 className="font-display text-base font-semibold">Spatial Breakout Pods</h3>
               <p className="text-[11px] text-white/55">
-                Split participants into focused sub-rooms and reconvene anytime.
+                Split your studio into focused glass pods and reconvene in one tap.
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-xl p-1.5 text-white/60 hover:bg-white/10 hover:text-white"
+            className="liquid-orb rounded-full p-1.5 text-white/70 hover:text-white"
           >
             <X className="h-4 w-4" />
           </button>

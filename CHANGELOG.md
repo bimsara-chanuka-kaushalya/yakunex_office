@@ -7,6 +7,14 @@ All notable changes to **Yakunex Hub** follow Semantic Versioning (`vMAJOR.MINOR
 
 ---
 
+## [v1.5.1] - 2026-11-26
+### UI & UX (Yakunex Spatial 3D Liquid Glass Identity)
+- **Apple 3D Liquid Glass Optical Design System (`globals.css`)**: Introduced Yakunex's signature visionOS / iOS 26 multi-layer specular glass primitives (`liquid-spatial-canvas`, `liquid-glass`, `liquid-glass-popover`, `liquid-glass-dock`, `liquid-orb`, `liquid-orb-gold`, `liquid-orb-ruby`, `liquid-video-pod`, `liquid-surface-adaptive`, `liquid-chat-canvas`, `liquid-bubble-own`, `liquid-bubble-peer`) with optical top-rim refraction, frosted backdrop blur/saturation, inner depth bevels, and tactile spring micro-interactions.
+- **Yakunex Spatial Studio Redesign (`/meetings`, `/meet`, `MeetingStudio`)**: Replaced Zoom-style orange/blue lobby buttons and full-width black top/bottom bars with Yakunex's bespoke Spatial Command Deck, Spatial Mirror Pre-Join Check, Guest & Waiting Lounge capsules, floating Top HUD pills (`Orbital` / `Cinema` stage modes + 1-tap studio code), 3D Spatial Video Pods with concentric aura rings, floating Spatial Inspector, and a centered visionOS 3D Liquid Glass Control Dock (`Present`, `Suite`, `Spatial Shield`, `Spatial Board`, `Camera Studio`, `Spatial Breakout Pods`, `Polls & Q&A`).
+- **Yakunex Liquid Glass Chat Redesign (`/chat` & In-Meeting Studio Chat)**: Replaced WhatsApp-style beige/dark backgrounds and green bubbles with an aurora-diffused `liquid-chat-canvas` stage, Champagne-Gold 3D glass own-message bubbles (`liquid-bubble-own`), frosted crystal peer bubbles (`liquid-bubble-peer`), `Whisper` direct-message pills, and floating 3D glass pill composers — with zero changes to backend APIs, WebRTC/LiveKit media logic, or other workspace modules.
+
+---
+
 ## [v1.5.0] - 2026-11-25
 ### Security (World-Class Zero-Trust Hardening)
 - **HKDF Cryptographic Key Separation (`RFC 5869`)**: Domain-separated signing and encryption keys for Access JWTs, Password-Reset/Invite JWTs, Meeting Guest HMAC tokens, Tamper-Evident Audit Chain HMACs, and AES-256-GCM 2FA secrets.

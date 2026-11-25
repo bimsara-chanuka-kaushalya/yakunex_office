@@ -250,13 +250,13 @@ export function WhiteboardOverlay({
     <div
       className={cn(
         'absolute inset-0 z-30 flex flex-col',
-        mode === 'whiteboard' ? 'bg-[#0B101B]' : 'bg-transparent',
+        mode === 'whiteboard' ? 'bg-[#070B14]' : 'bg-transparent',
       )}
     >
-      {/* Floating Annotation / Whiteboard Toolbar */}
-      <div className="pointer-events-auto z-40 mx-auto mt-3 flex flex-wrap items-center gap-1.5 rounded-2xl border border-white/15 bg-[#121927]/95 px-3 py-1.5 text-white shadow-2xl backdrop-blur-md">
-        <span className="mr-1 rounded-lg bg-[#D4A843]/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-[#D4A843]">
-          {mode === 'whiteboard' ? 'Whiteboard' : 'Annotate Screen'}
+      {/* Floating 3D Liquid Glass Spatial Canvas Toolbar */}
+      <div className="liquid-glass-dock pointer-events-auto z-40 mx-auto mt-3 flex flex-wrap items-center gap-1.5 rounded-full px-3.5 py-2 text-white">
+        <span className="liquid-orb-gold mr-1 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em]">
+          {mode === 'whiteboard' ? 'Spatial Board' : 'Live Ink'}
         </span>
         {(
           [
@@ -278,10 +278,10 @@ export function WhiteboardOverlay({
               title={item.label}
               onClick={() => setTool(item.id)}
               className={cn(
-                'rounded-lg p-1.5 transition',
+                'rounded-full p-2 transition',
                 tool === item.id
-                  ? 'bg-[#D4A843] text-slate-950'
-                  : 'text-white/75 hover:bg-white/10 hover:text-white',
+                  ? 'liquid-orb-gold'
+                  : 'liquid-orb text-white/75 hover:text-white',
               )}
             >
               <Icon className="h-3.5 w-3.5" />
@@ -300,7 +300,7 @@ export function WhiteboardOverlay({
             style={{ backgroundColor: c }}
             className={cn(
               'h-4 w-4 rounded-full border transition',
-              color === c ? 'scale-125 border-white ring-2 ring-[#D4A843]' : 'border-white/30',
+              color === c ? 'scale-125 border-white ring-2 ring-[#F2CF78]' : 'border-white/30',
             )}
           />
         ))}
@@ -308,11 +308,11 @@ export function WhiteboardOverlay({
         <select
           value={width}
           onChange={(e) => setWidth(Number(e.target.value))}
-          className="ml-1 rounded-lg border border-white/15 bg-white/10 px-1.5 py-0.5 text-[11px] text-white outline-none"
+          className="liquid-orb ml-1 rounded-full px-2.5 py-1 text-[11px] font-medium text-white outline-none"
         >
-          <option value={2} className="bg-[#121927]">Thin</option>
-          <option value={3} className="bg-[#121927]">Medium</option>
-          <option value={6} className="bg-[#121927]">Thick</option>
+          <option value={2} className="bg-[#0B101B]">Thin</option>
+          <option value={3} className="bg-[#0B101B]">Medium</option>
+          <option value={6} className="bg-[#0B101B]">Thick</option>
         </select>
 
         <div className="mx-1 h-4 w-px bg-white/15" />
@@ -321,7 +321,7 @@ export function WhiteboardOverlay({
           type="button"
           onClick={onUndo}
           title="Undo"
-          className="rounded-lg p-1.5 text-white/75 hover:bg-white/10 hover:text-white"
+          className="liquid-orb rounded-full p-2 text-white/80 hover:text-white"
         >
           <Undo2 className="h-3.5 w-3.5" />
         </button>
@@ -329,7 +329,7 @@ export function WhiteboardOverlay({
           type="button"
           onClick={onClear}
           title="Clear All"
-          className="rounded-lg p-1.5 text-rose-300 hover:bg-rose-500/20"
+          className="liquid-orb rounded-full p-2 text-rose-300 hover:bg-rose-500/20"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
@@ -337,7 +337,7 @@ export function WhiteboardOverlay({
           type="button"
           onClick={exportPng}
           title="Export PNG"
-          className="rounded-lg p-1.5 text-emerald-300 hover:bg-emerald-500/20"
+          className="liquid-orb rounded-full p-2 text-emerald-300 hover:bg-emerald-500/20"
         >
           <Download className="h-3.5 w-3.5" />
         </button>
@@ -345,9 +345,9 @@ export function WhiteboardOverlay({
           type="button"
           onClick={onClose}
           title="Close"
-          className="ml-1 flex items-center gap-1 rounded-lg bg-rose-500/20 px-2 py-1 text-[11px] font-semibold text-rose-200 hover:bg-rose-500/35"
+          className="liquid-orb-ruby ml-1 flex items-center gap-1 rounded-full px-3 py-1.5 text-[11px] font-bold"
         >
-          <X className="h-3.5 w-3.5" /> Close
+          <X className="h-3.5 w-3.5" /> Done
         </button>
       </div>
 
